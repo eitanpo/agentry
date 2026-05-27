@@ -92,7 +92,7 @@ func (r *renderer) initStyles() {
 	r.dim = lipgloss.NewStyle().Foreground(c("8"))
 	r.border = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(c("8")).
+		BorderForeground(c("7")).
 		Padding(0, 1)
 }
 
