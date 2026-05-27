@@ -7,6 +7,6 @@ LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 
 .PHONY: build install
 build:
-	go build $(LDFLAGS) -o ase .
+	go build $(LDFLAGS) -o agentry .
 install:
 	go install $(LDFLAGS) .

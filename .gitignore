@@ -1,5 +1,5 @@
 # build output
-/ase
+/agentry
 /dist/
 
 # go test artifacts

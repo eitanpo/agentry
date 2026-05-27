@@ -14,7 +14,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/eitanpo/ase/internal/model"
+	"github.com/eitanpo/agentry/internal/model"
 	"github.com/muesli/termenv"
 )
 

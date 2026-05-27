@@ -1,6 +1,6 @@
-# ase
+# agentry
 
-**Agent Session Explorer** — render a Claude Code session log into a styled terminal view.
+**Agent Replay** (**agent** + re**play**) — render a Claude Code session log into a styled terminal view.
 
 See [PRODUCT.md](PRODUCT.md) for scope and design rationale.
 
@@ -8,22 +8,26 @@ See [PRODUCT.md](PRODUCT.md) for scope and design rationale.
 
 ## Install
 
+macOS (Homebrew cask):
+
 ```
-brew install eitanpo/tap/ase
+brew install eitanpo/tap/agentry
 ```
+
+Linux: `go install github.com/eitanpo/agentry@latest`, or download a binary from the [releases](https://github.com/eitanpo/agentry/releases).
 
 Available once the first release is tagged.
 
 ## Usage
 
-Run `ase` from the directory you ran Claude Code in:
+Run `agentry` from the directory you ran Claude Code in:
 
 ```
-ase            # the most recent session (by time) in this directory's project
-ase <uuid>     # a specific session, by full id
+agentry            # the most recent session (by time) in this directory's project
+agentry <uuid>     # a specific session, by full id
 ```
 
-`ase` finds the session by mapping the current directory to its Claude project folder under `~/.claude/projects/`.
+`agentry` finds the session by mapping the current directory to its Claude project folder under `~/.claude/projects/`.
 
 ### Options
 

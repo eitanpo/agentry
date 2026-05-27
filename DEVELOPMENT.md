@@ -1,12 +1,12 @@
 # Development
 
-Contributor guide for building, testing, and installing `ase` from source. For what `ase`
+Contributor guide for building, testing, and installing `agentry` from source. For what `agentry`
 does see [PRODUCT.md](PRODUCT.md); for install-via-brew and usage see [README.md](README.md).
 
 ## Prerequisites
 
 - Go — version in the `go` directive of [go.mod](go.mod).
-- For `go install` to make `ase` runnable everywhere, `$(go env GOPATH)/bin` (usually
+- For `go install` to make `agentry` runnable everywhere, `$(go env GOPATH)/bin` (usually
   `~/go/bin`) must be on your `PATH`.
 
 ## Build, run, install
@@ -14,16 +14,16 @@ does see [PRODUCT.md](PRODUCT.md); for install-via-brew and usage see [README.md
 | Command | Use |
 |---|---|
 | `go run .` | quickest iteration inside the repo (prints the bare base version, e.g. `0.1.0`) |
-| `make build` | local binary `./ase` (gitignored), stamped with a build timestamp |
-| `make install` | install to `~/go/bin`, stamped — then run `ase` from any project directory |
+| `make build` | local binary `./agentry` (gitignored), stamped with a build timestamp |
+| `make install` | install to `~/go/bin`, stamped — then run `agentry` from any project directory |
 
 `make build`/`make install` inject a UTC build timestamp as semver build metadata so every
-build is distinguishable (see [Versioning](#versioning)). Plain `go build -o ase .` /
+build is distinguishable (see [Versioning](#versioning)). Plain `go build -o agentry .` /
 `go install .` also work but print the bare base version without a timestamp.
 
-`ase` resolves the session from the **current** directory, so run the installed binary from
+`agentry` resolves the session from the **current** directory, so run the installed binary from
 the project whose log you want — not from this repo. The installed binary is a snapshot, not
-a live link: re-run `make install` after each change you want reflected in the global `ase`.
+a live link: re-run `make install` after each change you want reflected in the global `agentry`.
 
 ## Tests
 
@@ -52,6 +52,28 @@ took effect. Plain `go build`/`go install`/`go run` (no make) print the bare bas
 
 Release builds set the full version from the git tag via `-ldflags "-X main.Version=<v>"`
 (GoReleaser does this on tag).
+
+## Releasing
+
+Releases are cut locally with [GoReleaser](https://goreleaser.com) (`brew install goreleaser`),
+driven by [`.goreleaser.yaml`](.goreleaser.yaml). It builds the binaries, creates the GitHub
+release, and pushes the Homebrew **cask** to the `eitanpo/homebrew-tap` repo (which must exist).
+
+1. Set `var Version` in `main.go` to the release version (drop the `v`, e.g. `0.1.0`) so non-tag
+   builds report it; commit.
+2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. GoReleaser derives the version from
+   the tag and injects it via `-ldflags`.
+3. Dry-run first: `goreleaser release --snapshot --clean` (builds locally, publishes nothing).
+4. Publish — both tokens can be the gh token, since the same account owns both repos:
+
+   ```
+   export GITHUB_TOKEN=$(gh auth token)
+   export HOMEBREW_TAP_GITHUB_TOKEN=$GITHUB_TOKEN
+   goreleaser release --clean
+   ```
+
+The cask lands at `Casks/agentry.rb` in the tap. macOS binaries are unsigned, so the cask's
+post-install hook strips the quarantine attribute. Linux has no cask — `go install` instead.
 
 ## Where things are documented
 

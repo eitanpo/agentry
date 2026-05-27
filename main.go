@@ -1,4 +1,4 @@
-// Command ase renders a Claude Code session log to the terminal.
+// Command agentry renders a Claude Code session log to the terminal.
 package main
 
 import (
@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/eitanpo/ase/internal/locate"
-	"github.com/eitanpo/ase/internal/parse"
-	"github.com/eitanpo/ase/internal/render"
+	"github.com/eitanpo/agentry/internal/locate"
+	"github.com/eitanpo/agentry/internal/parse"
+	"github.com/eitanpo/agentry/internal/render"
 	"golang.org/x/term"
 )
 
@@ -37,7 +37,7 @@ func main() {
 }
 
 func run() int {
-	fs := flag.NewFlagSet("ase", flag.ContinueOnError)
+	fs := flag.NewFlagSet("agentry", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = usage
 
@@ -58,13 +58,13 @@ func run() int {
 	}
 
 	if *showVersion {
-		fmt.Println("ase " + Version)
+		fmt.Println("agentry " + Version)
 		return 0
 	}
 
 	channels, ok := levels[*level]
 	if !ok {
-		fmt.Fprintf(os.Stderr, "ase: invalid --level %q (want minimal|standard|detailed|full)\n", *level)
+		fmt.Fprintf(os.Stderr, "agentry: invalid --level %q (want minimal|standard|detailed|full)\n", *level)
 		return exUsage
 	}
 	set := map[string]bool{}
@@ -80,24 +80,24 @@ func run() int {
 	case 1:
 		id = fs.Arg(0)
 	default:
-		fmt.Fprintln(os.Stderr, "ase: expected at most one session id")
+		fmt.Fprintln(os.Stderr, "agentry: expected at most one session id")
 		return exUsage
 	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ase: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentry: %v\n", err)
 		return exNoInput
 	}
 	path, err := locate.Session(cwd, id)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ase: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentry: %v\n", err)
 		return exNoInput
 	}
 
 	sess, err := parse.Load(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ase: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentry: %v\n", err)
 		return exNoInput
 	}
 
@@ -105,7 +105,7 @@ func run() int {
 	if err := render.Session(os.Stdout, sess, render.Options{
 		Width: width, Color: color, Channels: channels,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "ase: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentry: %v\n", err)
 		return 1
 	}
 	return 0
@@ -137,10 +137,10 @@ func terminal(noColor bool) (color bool, width int) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `ase — render a Claude Code session log to the terminal
+	fmt.Fprint(os.Stderr, `agentry — render a Claude Code session log to the terminal
 
 Usage:
-  ase [flags] [session-uuid]
+  agentry [flags] [session-uuid]
 
 With no argument, renders the most recent session (by modification time) for the
 current directory's project. With a full UUID, renders that session.

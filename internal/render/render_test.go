@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eitanpo/ase/internal/model"
+	"github.com/eitanpo/agentry/internal/model"
 )
 
 func minimalSession() *model.Session {

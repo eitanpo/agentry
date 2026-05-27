@@ -2,7 +2,7 @@
 // into the canonical model.Session. The extraction logic is ported from the
 // claude-logs-search Python reference, verified against live logs under
 // ~/.claude/projects/. The LLM-safety envelope from the reference is
-// deliberately omitted — ase renders for humans, not for re-ingestion.
+// deliberately omitted — agentry renders for humans, not for re-ingestion.
 package parse
 
 import (
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eitanpo/ase/internal/model"
+	"github.com/eitanpo/agentry/internal/model"
 )
 
 // Only user and assistant entries carry content we render; every other type

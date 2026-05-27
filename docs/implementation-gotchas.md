@@ -1,6 +1,6 @@
 # Implementation gotchas
 
-Non-obvious traps hit while building ase. Append new ones as they're found — see
+Non-obvious traps hit while building agentry. Append new ones as they're found — see
 [AGENTS.md](../AGENTS.md) → Implementation notes for when. Format: symptom → cause → fix.
 Format-of-the-log findings go in [session-format.md](session-format.md) instead.
 

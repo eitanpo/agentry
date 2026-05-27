@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/eitanpo/ase/internal/model"
+	"github.com/eitanpo/agentry/internal/model"
 )
 
 func TestLoad(t *testing.T) {

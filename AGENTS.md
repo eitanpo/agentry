@@ -1,6 +1,6 @@
-# ase — Agent Guide
+# agentry — Agent Guide
 
-`ase` (Agent Session Explorer) renders Claude Code session logs to the terminal. See [PRODUCT.md](PRODUCT.md) for what it does and why, and [README.md](README.md) for install and usage. Do not restate their content here.
+`agentry` (Agent Replay) renders Claude Code session logs to the terminal. See [PRODUCT.md](PRODUCT.md) for what it does and why, and [README.md](README.md) for install and usage. Do not restate their content here.
 
 ## Authority order
 
@@ -44,7 +44,7 @@ Living reference docs:
 
 - [DEVELOPMENT.md](DEVELOPMENT.md) — build, test, and install workflow from source.
 - [docs/session-format.md](docs/session-format.md) — structure of Claude Code session logs (files, folders, JSONL schema). The parser and locator encode this; update it when the observed format changes.
-- [docs/implementation-gotchas.md](docs/implementation-gotchas.md) — non-obvious traps in ase's own code and runtime.
+- [docs/implementation-gotchas.md](docs/implementation-gotchas.md) — non-obvious traps in agentry's own code and runtime.
 
 **Capture habit.** During any change, record a terse symptom → cause → fix entry when any of these occur:
 

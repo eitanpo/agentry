@@ -1,0 +1,49 @@
+# GoReleaser config. Cut a release locally: see DEVELOPMENT.md "Releasing".
+# Validate after edits with `goreleaser check`.
+version: 2
+
+project_name: agentry
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    # Version is canonical in main.go (var Version); the tag overrides it here.
+    ldflags:
+      - -s -w -X main.Version={{ .Version }}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+# macOS-only cask, pushed to the personal tap. Binaries are unsigned, so the
+# post-install hook strips the quarantine attribute that would otherwise block
+# the first run. Linux users install via `go install` instead (no cask).
+homebrew_casks:
+  - name: agentry
+    repository:
+      owner: eitanpo
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/eitanpo/agentry"
+    description: "Render a Claude Code session log into a styled terminal view"
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/agentry"]
+          end

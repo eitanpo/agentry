@@ -1,4 +1,4 @@
-module github.com/eitanpo/ase
+module github.com/eitanpo/agentry
 
 go 1.26.3
 
