@@ -1,0 +1,53 @@
+# ase — Product
+
+Agent Session Explorer: a single-binary CLI that renders a Claude Code session log into a readable, styled terminal view.
+
+## Why
+
+Claude Code stores each session as JSONL under `~/.claude/projects/`. Reading that raw is impractical. Routing the log through an agent's context instead strips terminal styling, forces a prompt-injection envelope, and is bounded by context size. `ase` renders the log directly to the human's terminal: styling is native, there is no injection surface, and session size is unbounded.
+
+## Users and usage
+
+A developer who runs Claude Code in a project directory and wants to review a past session. The user runs `ase` from the same directory they ran Claude in:
+
+```
+ase            # the most recent completed session in this directory's project
+ase <uuid>     # a specific session, by full id
+```
+
+With no argument, `ase` selects the **most recent completed session** — the latest log in the current project that is not still being written. With an argument, the session id must be a **full UUID**; partial-id matching and content search are on the roadmap.
+
+`ase` resolves logs from the current directory: it maps `$PWD` to the Claude project folder under `~/.claude/projects/`. Running from a different directory targets a different project — this is intentional. If the directory has no matching project, or the named session does not exist, `ase` writes an error to stderr and exits with a distinct non-zero code.
+
+## Output
+
+`ase` prints a styled view of the session: colorized, boxed turns with per-actor glyphs, plus code blocks, thinking, tool calls, and subagents (subject to verbosity).
+
+Color is auto-detected: styled (ANSI) when stdout is a terminal; plain, unstyled text when stdout is piped or redirected, or when `NO_COLOR` is set. `--no-color` forces plain output. Output is not paged in this version — pipe to a pager if you want one.
+
+## Verbosity
+
+`--level minimal | standard | detailed | full` selects how much of each turn is shown: prompts only → + thinking → + tools → + subagents. Per-channel overrides (`--thinking` / `--no-thinking`, `--tools` / `--no-tools`, …) adjust individual channels. Default is `detailed`.
+
+## CLI conventions
+
+Data on stdout, diagnostics on stderr. `NO_COLOR` (any non-empty value) or a non-TTY stdout disables color. `--help` and `--version` are always available. Exit codes follow `sysexits` — a missing project or session exits with a distinct non-zero code, not a generic failure.
+
+## Scope
+
+**MVP:** resolve a session from the current directory (no-arg → most recent completed; full-UUID arg → that session); styled terminal output with auto color detection; verbosity levels and channel overrides.
+
+**Roadmap:**
+
+- Session selection beyond a full id: content search, partial-id match, recency selectors.
+- `--format json`: the structured session model emitted for agent consumption. The model is built in memory first and drives terminal rendering; exposing it is serialization.
+- `--format md` / `-o FILE`: markdown-file export.
+- Interactive session browser.
+- Paging.
+- homebrew-core distribution.
+
+**Non-goals:** editing or replaying sessions; inline images; non–Claude Code log formats, until explicitly scoped.
+
+## Distribution
+
+Built as a single static binary by GoReleaser and installed from a personal tap: `brew install eitanpo/tap/ase`. homebrew-core is a later target.

@@ -1,0 +1,7 @@
+# build output
+/ase
+/dist/
+
+# go test artifacts
+*.test
+*.out
