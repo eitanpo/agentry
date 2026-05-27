@@ -31,6 +31,10 @@ a live link: re-run `make install` after each change you want reflected in the g
 - Tests sit beside the code as `*_test.go`; fixtures live in `testdata/` (e.g.
   `internal/parse/testdata/sample.jsonl`). Add a fixture session there to cover new parsing
   cases.
+- A render test that asserts on color must `lipgloss.SetColorProfile(termenv.ANSI256)` first.
+  Test stdout is not a TTY, so lipgloss auto-detects "no color" and strips all lipgloss styling
+  (backgrounds, foregrounds) even when `Options.Color` is true — glamour keeps its own colors,
+  which makes the stripping easy to miss.
 
 ## Auto build-test-install hook (optional, per-developer)
 

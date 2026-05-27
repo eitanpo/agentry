@@ -21,9 +21,9 @@ With no argument, `ase` selects the **most recent session by modification time**
 
 ## Output
 
-`ase` prints a styled view of the session: colorized, boxed turns with per-actor glyphs, plus code blocks, thinking, tool calls, and subagents (subject to verbosity).
+`ase` prints a styled view of the session: colorized turns with per-actor glyphs, plus code blocks, thinking, tool calls, and subagents (subject to verbosity).
 
-A turn shows the user prompt in a box, then the assistant's reply as an indented left rail (`│`) headed by a `◆` glyph aligned with the rail — prose, thinking, and tool calls hang off the rail, which a closing rule (`╰─`) terminates.
+A turn shows the user prompt as a highlighted block enclosed in a rounded border — the prompt text prefixed with a `❯` glyph (wrapped lines hang-indent to align under the prompt) — then the assistant's reply as an indented left rail (`│`) headed by a `◆` glyph aligned with the rail — prose, thinking, and tool calls hang off the rail, which a closing rule (`╰─`) terminates. With color off, the prompt highlight degrades to plain `❯`-prefixed text.
 
 Color is auto-detected: styled (ANSI) when stdout is a terminal; plain, unstyled text when stdout is piped or redirected, or when `NO_COLOR` is set. `--no-color` forces plain output. Output is not paged in this version — pipe to a pager if you want one.
 

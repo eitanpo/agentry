@@ -34,5 +34,12 @@ prefix. To remove it, copy the style config (`styles.DarkStyleConfig` /
 `WithStyles` instead of `WithStandardStyle`. Do *not* strip leading spaces from output
 lines — that also flattens the relative indentation of code blocks and nested lists.
 
+**lipgloss `Background`/`BorderBackground` emit an empty `\x1b[;m` under the Ascii
+profile.** Setting a background on a style still writes a (color-stripped but non-empty)
+SGR sequence, so a style that renders clean under `termenv.Ascii` starts leaking ESC
+bytes once a background is added — breaking any "no color → zero ESC bytes" check. A
+plain foreground-only border does not. Fix: apply background colors only when color is
+on (guard on the color flag), not relying on the Ascii profile to strip them.
+
 **`bufio.Scanner`'s default 64 KB token limit is too small.** Session lines embed full
 tool results and can exceed it; raise the scanner buffer or long lines silently drop.

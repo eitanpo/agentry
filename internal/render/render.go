@@ -21,8 +21,8 @@ import (
 const (
 	fallbackWidth    = 100 // used when stdout is not a TTY
 	toolBodyMaxLines = 10
-	assistantIndent  = "   " // left pad before the assistant turn's rail (│ … ╰─)
-	glyphUser        = "▸"
+	assistantIndent  = "  " // left pad before the assistant turn's rail (│ … ╰─)
+	glyphUser        = "❯"
 	glyphClaude      = "◆"
 	glyphTool        = "●"
 	glyphSubagent    = "▶"
@@ -44,17 +44,19 @@ type Options struct {
 }
 
 type renderer struct {
-	opts   Options
-	gcache map[int]*glamour.TermRenderer
-	user   lipgloss.Style
-	claude lipgloss.Style
-	tool   lipgloss.Style
-	subnt  lipgloss.Style
-	think  lipgloss.Style
-	ok     lipgloss.Style
-	bad    lipgloss.Style
-	dim    lipgloss.Style
-	border lipgloss.Style
+	opts    Options
+	gcache  map[int]*glamour.TermRenderer
+	user    lipgloss.Style
+	userRow lipgloss.Style
+	claude  lipgloss.Style
+	tool    lipgloss.Style
+	subnt   lipgloss.Style
+	think   lipgloss.Style
+	ok      lipgloss.Style
+	bad     lipgloss.Style
+	dim     lipgloss.Style
+	border  lipgloss.Style
+	userBox lipgloss.Style
 }
 
 // Session writes the styled session to w.
@@ -84,7 +86,9 @@ func Session(w io.Writer, s *model.Session, opts Options) error {
 
 func (r *renderer) initStyles() {
 	c := func(code string) lipgloss.Color { return lipgloss.Color(code) }
-	r.user = lipgloss.NewStyle().Foreground(c("6")).Bold(true)   // cyan
+	userBg := c("237")                                                            // prompt-row highlight
+	r.user = lipgloss.NewStyle().Foreground(c("6")).Bold(true).Background(userBg) // cyan ❯ on highlight
+	r.userRow = lipgloss.NewStyle().Background(userBg)
 	r.claude = lipgloss.NewStyle().Foreground(c("5")).Bold(true) // magenta
 	r.tool = lipgloss.NewStyle().Foreground(c("3")).Bold(true)   // yellow
 	r.subnt = lipgloss.NewStyle().Foreground(c("4")).Bold(true)  // blue
@@ -96,6 +100,10 @@ func (r *renderer) initStyles() {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(c("7")).
 		Padding(0, 1)
+	r.userBox = r.border // prompt box: border + padding sit on the highlight
+	if r.opts.Color {    // guard: BorderBackground emits empty ANSI under the Ascii profile
+		r.userBox = r.border.Background(userBg).BorderBackground(userBg)
+	}
 }
 
 // ── Session header ─────────────────────────────────────────────────────────
@@ -139,14 +147,14 @@ func (r *renderer) box(content string) string {
 	if w < 20 {
 		w = 20
 	}
-	return r.border.Width(min(w, 96)).Render(content) + "\n"
+	return r.border.Width(w).Render(content) + "\n"
 }
 
 // ── Turns ────────────────────────────────────────────────────────────────
 
 func (r *renderer) turn(t model.Turn) string {
 	var b strings.Builder
-	b.WriteString(r.box(r.user.Render(glyphUser+" You") + "\n" + t.Prompt))
+	b.WriteString(r.userPrompt(t.Prompt))
 
 	bar := assistantIndent + r.dim.Render("│") + " "
 	b.WriteString(assistantIndent + r.claude.Render(glyphClaude) + "\n")
@@ -155,6 +163,29 @@ func (r *renderer) turn(t model.Turn) string {
 	}
 	b.WriteString(r.turnClose(t) + "\n")
 	return b.String()
+}
+
+// userPrompt renders the prompt as a highlighted block enclosed in a rounded
+// border, the prompt text prefixed with the ❯ glyph. Wrapped and continuation
+// lines hang-indent two columns (the width of "❯ ") so they align under the
+// first character of the prompt. The highlight fills the box's inner width so it
+// spans edge to edge inside the border.
+func (r *renderer) userPrompt(prompt string) string {
+	w := r.opts.Width - 2
+	if w < 20 {
+		w = 20
+	}
+	inner := w - 2 // text area inside the border's horizontal padding
+	lines := wrapPlain(prompt, inner-2)
+	for i, line := range lines {
+		if i == 0 {
+			lines[i] = r.user.Render(glyphUser) + r.userRow.Render(" "+line)
+		} else {
+			lines[i] = r.userRow.Render("  " + line)
+		}
+	}
+	block := r.userRow.Width(inner).Render(strings.Join(lines, "\n"))
+	return r.userBox.Width(w).Render(block) + "\n"
 }
 
 func (r *renderer) turnClose(t model.Turn) string {
