@@ -38,6 +38,23 @@ Design docs do not accumulate. The durable record is PRODUCT.md + README.md + co
 
 For each behavior you touched, name three things: the PRODUCT.md section, the README.md section (or "no user-facing change"), and the code location. If the three disagree, the change is not done.
 
+## Implementation notes
+
+Living reference docs:
+
+- [DEVELOPMENT.md](DEVELOPMENT.md) — build, test, and install workflow from source.
+- [docs/session-format.md](docs/session-format.md) — structure of Claude Code session logs (files, folders, JSONL schema). The parser and locator encode this; update it when the observed format changes.
+- [docs/implementation-gotchas.md](docs/implementation-gotchas.md) — non-obvious traps in ase's own code and runtime.
+
+**Capture habit.** During any change, record a terse symptom → cause → fix entry when any of these occur:
+
+- a dependency or API behaved opposite to its name or documentation;
+- you chose a concrete behavior for something the spec left unspecified;
+- real data or a real API diverged from the reference or from your assumption;
+- a fix resolved a crash, infinite loop, or silent wrong-output that a naive reading would not predict.
+
+Route by subject: log-format findings → `docs/session-format.md`; build/test/install or local-tooling findings → `DEVELOPMENT.md`; everything else (code/runtime traps) → `docs/implementation-gotchas.md`.
+
 ## Stack
 
 Go; Charm Glamour + Lip Gloss for rendering; GoReleaser + a Homebrew tap for distribution. Build and run details live in README.md — do not duplicate them here.

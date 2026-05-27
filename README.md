@@ -19,7 +19,7 @@ Available once the first release is tagged.
 Run `ase` from the directory you ran Claude Code in:
 
 ```
-ase            # the most recent completed session in this directory's project
+ase            # the most recent session (by time) in this directory's project
 ase <uuid>     # a specific session, by full id
 ```
 
@@ -37,7 +37,7 @@ JSON output, markdown-file export, content search, and an interactive browser ar
 
 ## Development
 
-Go + [Charm](https://charm.sh) (Glamour, Lip Gloss). Released via GoReleaser to a Homebrew tap.
+Go + [Charm](https://charm.sh) (Glamour, Lip Gloss). Released via GoReleaser to a Homebrew tap. Build, test, and install workflow: [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 

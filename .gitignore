@@ -5,3 +5,9 @@
 # go test artifacts
 *.test
 *.out
+
+# throwaway phase design docs — kept local, never committed
+/design/
+
+# personal Claude Code overrides (per-developer; e.g. local install hook)
+/.claude/settings.local.json

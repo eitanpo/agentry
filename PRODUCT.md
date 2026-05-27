@@ -11,11 +11,11 @@ Claude Code stores each session as JSONL under `~/.claude/projects/`. Reading th
 A developer who runs Claude Code in a project directory and wants to review a past session. The user runs `ase` from the same directory they ran Claude in:
 
 ```
-ase            # the most recent completed session in this directory's project
+ase            # the most recent session (by time) in this directory's project
 ase <uuid>     # a specific session, by full id
 ```
 
-With no argument, `ase` selects the **most recent completed session** — the latest log in the current project that is not still being written. With an argument, the session id must be a **full UUID**; partial-id matching and content search are on the roadmap.
+With no argument, `ase` selects the **most recent session by modification time** in the current project — which may include a session that is still in progress. With an argument, the session id must be a **full UUID**; partial-id matching and content search are on the roadmap.
 
 `ase` resolves logs from the current directory: it maps `$PWD` to the Claude project folder under `~/.claude/projects/`. Running from a different directory targets a different project — this is intentional. If the directory has no matching project, or the named session does not exist, `ase` writes an error to stderr and exits with a distinct non-zero code.
 
@@ -35,7 +35,7 @@ Data on stdout, diagnostics on stderr. `NO_COLOR` (any non-empty value) or a non
 
 ## Scope
 
-**MVP:** resolve a session from the current directory (no-arg → most recent completed; full-UUID arg → that session); styled terminal output with auto color detection; verbosity levels and channel overrides.
+**MVP:** resolve a session from the current directory (no-arg → most recent by modification time; full-UUID arg → that session); styled terminal output with auto color detection; verbosity levels and channel overrides.
 
 **Roadmap:**
 
@@ -43,10 +43,15 @@ Data on stdout, diagnostics on stderr. `NO_COLOR` (any non-empty value) or a non
 - `--format json`: the structured session model emitted for agent consumption. The model is built in memory first and drives terminal rendering; exposing it is serialization.
 - `--format md` / `-o FILE`: markdown-file export.
 - Interactive session browser.
+- Terminal hyperlinks: render URLs as clickable links (OSC 8) on terminals that support it; plain URLs otherwise.
 - Paging.
 - homebrew-core distribution.
 
 **Non-goals:** editing or replaying sessions; inline images; non–Claude Code log formats, until explicitly scoped.
+
+## Log format compatibility
+
+Claude Code's on-disk log format evolves across versions. `ase` tracks the current format and retains support for older ones it has previously handled: a format change must not break rendering of sessions written by earlier Claude Code versions. Unrecognized fields and entry types are ignored, not treated as errors.
 
 ## Distribution
 
