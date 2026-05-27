@@ -26,5 +26,13 @@ bytes in piped output, not by eye.
 **glamour pads wrapped lines with trailing spaces.** Right-trim each rendered line or
 boxed/prefixed layouts inherit ragged trailing whitespace.
 
+**glamour bakes a 2-space left margin into every rendered line.** The standard `dark`
+and `notty` styles set `Document.Margin = 2`, so prose never hugs a custom left-rail
+prefix. To remove it, copy the style config (`styles.DarkStyleConfig` /
+`NoTTYStyleConfig` — both values, so assignment is a safe deep copy of the embedded
+`Document` block), set `Document.Margin` to a pointer to `0`, and pass it via
+`WithStyles` instead of `WithStandardStyle`. Do *not* strip leading spaces from output
+lines — that also flattens the relative indentation of code blocks and nested lists.
+
 **`bufio.Scanner`'s default 64 KB token limit is too small.** Session lines embed full
 tool results and can exceed it; raise the scanner buffer or long lines silently drop.

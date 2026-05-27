@@ -29,7 +29,7 @@ ase <uuid>     # a specific session, by full id
 
 | Flag | Default | Description |
 |---|---|---|
-| `--level minimal\|standard\|detailed\|full` | `detailed` | How much of each turn to show. |
+| `--level minimal\|standard\|detailed\|full` | `minimal` | How much of each turn to show. |
 | `--no-color` | — | Disable color (also honors the `NO_COLOR` env var). |
 | `--help`, `--version` | — | — |
 

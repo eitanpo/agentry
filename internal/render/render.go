@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/ase/internal/model"
 	"github.com/muesli/termenv"
@@ -20,6 +21,7 @@ import (
 const (
 	fallbackWidth    = 100 // used when stdout is not a TTY
 	toolBodyMaxLines = 10
+	assistantIndent  = "   " // left pad before the assistant turn's rail (│ … ╰─)
 	glyphUser        = "▸"
 	glyphClaude      = "◆"
 	glyphTool        = "●"
@@ -146,8 +148,8 @@ func (r *renderer) turn(t model.Turn) string {
 	var b strings.Builder
 	b.WriteString(r.box(r.user.Render(glyphUser+" You") + "\n" + t.Prompt))
 
-	bar := r.dim.Render("│") + " "
-	b.WriteString(r.claude.Render(glyphClaude+" Claude") + "\n")
+	bar := assistantIndent + r.dim.Render("│") + " "
+	b.WriteString(assistantIndent + r.claude.Render(glyphClaude) + "\n")
 	for _, line := range r.events(t.Events, bar, 0) {
 		b.WriteString(line + "\n")
 	}
@@ -166,7 +168,7 @@ func (r *renderer) turnClose(t model.Turn) string {
 	if t.ErrorCount > 0 {
 		parts = append(parts, r.bad.Render(plural(t.ErrorCount, "error")))
 	}
-	return r.dim.Render("╰─ ") + strings.Join(parts, " · ")
+	return assistantIndent + r.dim.Render("╰─ ") + strings.Join(parts, " · ")
 }
 
 // events renders an assistant event stream, each line carrying the left-bar
@@ -279,12 +281,16 @@ func (r *renderer) glamourFor(width int) *glamour.TermRenderer {
 	if g, ok := r.gcache[width]; ok {
 		return g
 	}
-	style := "dark"
+	style := styles.DarkStyleConfig
 	if !r.opts.Color {
-		style = "notty"
+		style = styles.NoTTYStyleConfig
 	}
+	// Drop glamour's 2-space document margin so prose hugs the left rail; the
+	// rail prefix (assistantIndent + "│ ") supplies all the indentation.
+	zero := uint(0)
+	style.Document.Margin = &zero
 	g, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle(style),
+		glamour.WithStyles(style),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {

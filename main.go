@@ -41,7 +41,7 @@ func run() int {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = usage
 
-	level := fs.String("level", "detailed", "verbosity: minimal|standard|detailed|full")
+	level := fs.String("level", "minimal", "verbosity: minimal|standard|detailed|full")
 	noColor := fs.Bool("no-color", false, "disable color (also honors NO_COLOR)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	// Channel overrides are presence flags; their value is read via fs.Visit.
@@ -146,7 +146,7 @@ With no argument, renders the most recent session (by modification time) for the
 current directory's project. With a full UUID, renders that session.
 
 Flags:
-  --level minimal|standard|detailed|full   how much of each turn to show (default detailed)
+  --level minimal|standard|detailed|full   how much of each turn to show (default minimal)
   --[no-]thinking|tools|subagents|metrics   override a single channel
   --no-color                                disable color (also honors NO_COLOR)
   --version                                 print version

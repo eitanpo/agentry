@@ -23,11 +23,13 @@ With no argument, `ase` selects the **most recent session by modification time**
 
 `ase` prints a styled view of the session: colorized, boxed turns with per-actor glyphs, plus code blocks, thinking, tool calls, and subagents (subject to verbosity).
 
+A turn shows the user prompt in a box, then the assistant's reply as an indented left rail (`│`) headed by a `◆` glyph aligned with the rail — prose, thinking, and tool calls hang off the rail, which a closing rule (`╰─`) terminates.
+
 Color is auto-detected: styled (ANSI) when stdout is a terminal; plain, unstyled text when stdout is piped or redirected, or when `NO_COLOR` is set. `--no-color` forces plain output. Output is not paged in this version — pipe to a pager if you want one.
 
 ## Verbosity
 
-`--level minimal | standard | detailed | full` selects how much of each turn is shown: prompts only → + thinking → + tools → + subagents. Per-channel overrides (`--thinking` / `--no-thinking`, `--tools` / `--no-tools`, …) adjust individual channels. Default is `detailed`.
+`--level minimal | standard | detailed | full` selects how much of each turn is shown: prompts only → + thinking → + tools → + subagents. Per-channel overrides (`--thinking` / `--no-thinking`, `--tools` / `--no-tools`, …) adjust individual channels. Default is `minimal`.
 
 ## CLI conventions
 
