@@ -1,6 +1,6 @@
 # agentry
 
-**Agent Replay** (**agent** + re**play**) — render a Claude Code session log into a styled terminal view.
+**AGENT ReplaY**  — render a Claude Code session log into a styled terminal view.
 
 See [PRODUCT.md](PRODUCT.md) for scope and design rationale.
 

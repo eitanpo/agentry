@@ -54,6 +54,8 @@ type renderer struct {
 	think   lipgloss.Style
 	ok      lipgloss.Style
 	bad     lipgloss.Style
+	body    lipgloss.Style
+	args    lipgloss.Style
 	dim     lipgloss.Style
 	border  lipgloss.Style
 	userBox lipgloss.Style
@@ -92,9 +94,11 @@ func (r *renderer) initStyles() {
 	r.claude = lipgloss.NewStyle().Foreground(c("5")).Bold(true) // magenta
 	r.tool = lipgloss.NewStyle().Foreground(c("3")).Bold(true)   // yellow
 	r.subnt = lipgloss.NewStyle().Foreground(c("4")).Bold(true)  // blue
-	r.think = lipgloss.NewStyle().Foreground(c("8")).Italic(true)
+	r.think = lipgloss.NewStyle().Foreground(c("243")).Italic(true) // medium gray, readable but secondary
 	r.ok = lipgloss.NewStyle().Foreground(c("2")).Bold(true)  // green
 	r.bad = lipgloss.NewStyle().Foreground(c("1")).Bold(true) // red
+	r.body = lipgloss.NewStyle().Foreground(c("15"))          // tool result body: bright white
+	r.args = lipgloss.NewStyle().Foreground(c("248"))         // tool args parenthetical: light gray
 	r.dim = lipgloss.NewStyle().Foreground(c("8"))
 	r.border = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -251,7 +255,7 @@ func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 
 	head := fmt.Sprintf("%s%s %s%s %s %s",
 		prefix, r.dim.Render("╭─"), style.Render(glyph+" "+t.Name),
-		r.dim.Render("("+truncate(oneLine(t.Args), 60)+")"), status, dur)
+		r.args.Render("("+truncate(oneLine(t.Args), 60)+")"), status, dur)
 	out := []string{strings.TrimRight(head, " ")}
 
 	if t.Subagent != nil && r.opts.Channels.Subagents {
@@ -278,7 +282,7 @@ func (r *renderer) toolBody(text, prefix string) []string {
 			break
 		}
 		for _, w := range wrapPlain(raw, width) {
-			out = append(out, prefix+r.dim.Render(w))
+			out = append(out, prefix+r.body.Render(w))
 			if len(out) >= toolBodyMaxLines {
 				break
 			}
