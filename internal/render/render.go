@@ -101,7 +101,7 @@ func (r *renderer) initStyles() {
 	r.bad = lipgloss.NewStyle().Foreground(c("1")).Bold(true)       // red
 	r.body = lipgloss.NewStyle().Foreground(c("15"))                // tool result body: bright white
 	r.args = lipgloss.NewStyle().Foreground(c("248"))               // tool args parenthetical: light gray
-	r.link = lipgloss.NewStyle().Foreground(c("39"))                // hyperlink text: blue (underline omitted — lipgloss renders it per-rune)
+	r.link = lipgloss.NewStyle().Foreground(c("80"))                // hyperlink text: sky cyan, distinct from glamour's heading blue (39) (underline omitted — lipgloss renders it per-rune)
 	r.dim = lipgloss.NewStyle().Foreground(c("8"))
 	r.border = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
