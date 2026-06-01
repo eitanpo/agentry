@@ -116,6 +116,89 @@ func TestWrapPlain(t *testing.T) {
 	})
 }
 
+func TestStripMarkdownLinks(t *testing.T) {
+	src, links := stripMarkdownLinks(
+		"Top: [Researcher task](obsidian://open?vault=research&file=06-Tasks%2FR.md) — see [Diffy](obsidian://open?vault=research&file=02-Wiki%2FDiffy.md).")
+	wantSrc := "Top: Researcher task — see Diffy."
+	if src != wantSrc {
+		t.Errorf("src = %q, want %q", src, wantSrc)
+	}
+	if len(links) != 2 || links[0].text != "Researcher task" || links[1].text != "Diffy" {
+		t.Fatalf("links = %+v", links)
+	}
+	if links[0].url != "obsidian://open?vault=research&file=06-Tasks%2FR.md" {
+		t.Errorf("links[0].url = %q", links[0].url)
+	}
+	if got := mustStrip(t, "no links here"); got != "no links here" {
+		t.Errorf("plain text altered: %q", got)
+	}
+}
+
+func mustStrip(t *testing.T, s string) string {
+	t.Helper()
+	out, links := stripMarkdownLinks(s)
+	if len(links) != 0 {
+		t.Fatalf("expected no links, got %+v", links)
+	}
+	return out
+}
+
+// stripOSC removes OSC 8 hyperlink sequences (ESC ] … ST) so the remaining
+// CSI-styled text can be checked for what's actually visible.
+func stripOSC(s string) string {
+	for {
+		i := strings.Index(s, "\x1b]")
+		if i < 0 {
+			return s
+		}
+		end := strings.Index(s[i:], "\x1b\\")
+		if end < 0 {
+			return s[:i]
+		}
+		s = s[:i] + s[i+end+2:]
+	}
+}
+
+func TestLinkifyMarkdown(t *testing.T) {
+	const osc = "\x1b]8;;"
+	r := &renderer{}
+	r.initStyles()
+	// visible reduces a styled line to the text the user actually sees.
+	visible := func(s string) string { p, _ := stripANSI(stripOSC(s)); return p }
+
+	t.Run("wraps styled text, drops url from view", func(t *testing.T) {
+		// glamour fragments the text with SGR codes; linkify must still match it.
+		out := []string{"see \x1b[1mResearcher task\x1b[0m here"}
+		url := "obsidian://open?vault=research&file=R.md"
+		r.linkifyMarkdown(out, []mdLinkSpec{{text: "Researcher task", url: url}})
+		if !strings.Contains(out[0], osc+url+"\x1b\\") || !strings.Contains(out[0], "\x1b]8;;\x1b\\") {
+			t.Errorf("missing OSC 8 hyperlink, got %q", out[0])
+		}
+		if got := visible(out[0]); got != "see Researcher task here" {
+			t.Errorf("visible text = %q, want %q", got, "see Researcher task here")
+		}
+	})
+
+	t.Run("unmatched link leaves line unchanged", func(t *testing.T) {
+		out := []string{"nothing to see"}
+		r.linkifyMarkdown(out, []mdLinkSpec{{text: "absent", url: "u"}})
+		if out[0] != "nothing to see" {
+			t.Errorf("line changed: %q", out[0])
+		}
+	})
+
+	t.Run("multiple links in source order", func(t *testing.T) {
+		out := []string{"A and B"}
+		r.linkifyMarkdown(out, []mdLinkSpec{{text: "A", url: "ua"}, {text: "B", url: "ub"}})
+		if !strings.Contains(out[0], osc+"ua\x1b\\") || !strings.Contains(out[0], osc+"ub\x1b\\") {
+			t.Errorf("missing hyperlinks, got %q", out[0])
+		}
+		if got := visible(out[0]); got != "A and B" {
+			t.Errorf("visible text = %q, want %q", got, "A and B")
+		}
+	})
+}
+
 func TestTruncateAndOneLine(t *testing.T) {
 	if got := truncate("abcdef", 3); got != "abc…" {
 		t.Errorf("truncate = %q, want abc…", got)

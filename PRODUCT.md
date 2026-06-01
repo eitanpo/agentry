@@ -25,6 +25,8 @@ With no argument, `agentry` selects the **most recent session by modification ti
 
 A turn shows the user prompt as a highlighted block enclosed in a rounded border — the prompt text prefixed with a `❯` glyph (wrapped lines hang-indent to align under the prompt) — then the assistant's reply as an indented left rail (`│`) headed by a `◆` glyph aligned with the rail — prose, thinking, and tool calls hang off the rail, which a closing rule (`╰─`) terminates. With color off, the prompt highlight degrades to plain `❯`-prefixed text.
 
+Markdown links (`[text](url)`) in assistant prose render as OSC 8 terminal hyperlinks: the link text is shown in a dedicated link color and is clickable, and the raw URL is hidden. The URL is used verbatim as the href, for any scheme (`https://`, `obsidian://`, …) — agentry constructs nothing. Only assistant prose is linkified (not tool output, thinking, or prompts), and a link whose text glamour wrapped across lines stays plain. Like color, this is gated on a terminal: with color off, the link renders in glamour's default form (the text followed by the URL).
+
 Color is auto-detected: styled (ANSI) when stdout is a terminal; plain, unstyled text when stdout is piped or redirected, or when `NO_COLOR` is set. `--no-color` forces plain output. Output is not paged in this version — pipe to a pager if you want one.
 
 ## Verbosity
@@ -45,7 +47,7 @@ Data on stdout, diagnostics on stderr. `NO_COLOR` (any non-empty value) or a non
 - `--format json`: the structured session model emitted for agent consumption. The model is built in memory first and drives terminal rendering; exposing it is serialization.
 - `--format md` / `-o FILE`: markdown-file export.
 - Interactive session browser.
-- Terminal hyperlinks: render URLs as clickable links (OSC 8) on terminals that support it; plain URLs otherwise.
+- Bare-URL autolinks: render plain `https://…` URLs (not wrapped in markdown link syntax) as OSC 8 hyperlinks too.
 - Paging.
 - homebrew-core distribution.
 

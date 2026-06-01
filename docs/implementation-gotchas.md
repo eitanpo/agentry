@@ -41,5 +41,25 @@ bytes once a background is added — breaking any "no color → zero ESC bytes" 
 plain foreground-only border does not. Fix: apply background colors only when color is
 on (guard on the color flag), not relying on the Ascii profile to strip them.
 
+**glamour renders inline links as `text url`, never OSC 8 — and pre-render OSC 8 gets
+mangled.** glamour v1.0.0's `LinkElement` prints the link text then the raw URL (its
+`SkipHref` is set only for links inside tables; there is no global option). Injecting an
+OSC 8 hyperlink into the markdown *source* before glamour fails too: glamour's reflow
+word-wrap is CSI-aware but treats OSC sequences as ordinary text, so it counts the URL
+bytes as width and wraps *inside* the escape, leaking the URL. The working approach
+(`stripMarkdownLinks` + `linkifyMarkdown`): strip `[text](url)` to just `text` before
+glamour so it renders clean prose, then wrap the rendered text in OSC 8 afterward.
+
+**glamour interleaves SGR codes through inline text — even between adjacent chars.** Text
+comes back fragmented as `Re`·`\x1b[0m\x1b[1m`·`searcher`·…, so a regex/substring run on
+the styled output can miss a span. To match text in glamour output, strip ANSI to a plain
+string while recording each plain byte's offset in the styled string (`stripANSI`), match
+on the plain text, then splice insertions back at the mapped offsets.
+
+**A CSI-skip loop must step past the `[` before scanning for the final byte.** `[` is
+0x5b, inside the CSI final-byte range 0x40–0x7e, so a loop that stops at the first
+in-range byte treats the `[` itself as the terminator and consumes only `\x1b[`, leaving
+the parameter bytes in the "plain" text. Advance past `[` first, then scan.
+
 **`bufio.Scanner`'s default 64 KB token limit is too small.** Session lines embed full
 tool results and can exceed it; raise the scanner buffer or long lines silently drop.
