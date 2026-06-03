@@ -21,6 +21,17 @@ type Meta struct {
 	NumSubagents int
 }
 
+// Summary is a lightweight session descriptor for listing: enough to identify
+// and choose a session without parsing its full turn stream.
+type Summary struct {
+	ID       string
+	Start    time.Time
+	End      time.Time
+	Title    string   // chosen title (ai-title, else first non-/clear prompt)
+	Prompts  []string // user prompts in order, /clear omitted (for --include prompts)
+	NumTurns int
+}
+
 // Usage is a token tally. Cache fields mirror the Anthropic usage object.
 type Usage struct {
 	Input       int

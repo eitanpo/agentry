@@ -15,7 +15,7 @@ agentry            # the most recent session (by time) in this directory's proje
 agentry <uuid>     # a specific session, by full id
 ```
 
-With no argument, `agentry` selects the **most recent session by modification time** in the current project — which may include a session that is still in progress. With an argument, the session id must be a **full UUID**; partial-id matching and content search are on the roadmap.
+With no argument, `agentry` selects the **most recent session by modification time** in the current project — which may include a session that is still in progress. With an argument, the session id must be a **full UUID**; partial-id matching and content search are on the roadmap. To find a session, list them with `--list` (see Listing sessions).
 
 `agentry` resolves logs from the current directory: it maps `$PWD` to the Claude project folder under `~/.claude/projects/`. Running from a different directory targets a different project — this is intentional. If the directory has no matching project, or the named session does not exist, `agentry` writes an error to stderr and exits with a distinct non-zero code.
 
@@ -29,6 +29,23 @@ Markdown links (`[text](url)`) in assistant prose render as OSC 8 terminal hyper
 
 Color is auto-detected: styled (ANSI) when stdout is a terminal; plain, unstyled text when stdout is piped or redirected, or when `NO_COLOR` is set. `--no-color` forces plain output. Output is not paged in this version — pipe to a pager if you want one.
 
+## Listing sessions
+
+`agentry --list` lists the sessions in the current directory's project instead of rendering one, so you can find the one you want. Sessions are selected by recency (most-recent activity) and printed oldest-to-newest, so the most recent sits at the bottom, nearest your prompt — the convention of `ls -ltr`, shell history, and chat logs for unpaged scrolling output. Each is one row: the session's start time, its duration (first prompt to last output), its turn count, a title, and the full session id — which you pass back to `agentry <id>` to render it. The title is chosen by a fallback ladder: Claude Code's own session summary (the `ai-title` it writes into the log, latest one winning) when present; otherwise the first user prompt, skipping a leading `/clear` (which only resets context and says nothing about the session) in favor of the next prompt; a session that is nothing but `/clear` keeps it.
+
+By default the list shows the 10 most-recent sessions. `--limit N` changes the cap; `--limit 0` removes it. Two time-frame filters narrow the window, both compared against a session's last-activity time:
+
+- `--since WHEN` — sessions active at or after WHEN.
+- `--until WHEN` — sessions active at or before WHEN.
+
+WHEN is one of: `today` or `yesterday` (local midnight of that day); a span back from now with a unit — `Nh`, `Nd`, or `Nw` (e.g. `24h`, `7d`, `2w`); or an absolute local date `YYYY-MM-DD`. An unrecognized WHEN is a usage error.
+
+`--include CHANNELS` adds per-session detail, given as a comma-separated list of channels. The one channel today is `prompts`: under each session's row, its user prompts are listed in order on a left rail closed by a rule — the same chrome as a rendered turn — each prefixed with the `❯` glyph, with `/clear` omitted; every prompt is shown (the view is opt-in). The rail-and-rule groups a session's prompts and bounds the block, separating one session from the next. `all` selects every channel. An unknown channel is a usage error.
+
+When a time filter is given and `--limit` is not, the cap is lifted — `agentry --list --since today` shows every session from today, not just ten. A window that matches no session prints nothing and exits zero; a project with no sessions at all is an error, the same as in render mode. List mode takes no session-id argument and ignores the rendering flags (`--level`, channel toggles).
+
+Color follows the same rule as rendered output: styled on a terminal, plain when piped or with `NO_COLOR` / `--no-color`.
+
 ## Verbosity
 
 `--level minimal | standard | detailed | full` selects how much of each turn is shown: prompts only → + thinking → + tools → + subagents. Per-channel overrides (`--thinking` / `--no-thinking`, `--tools` / `--no-tools`, …) adjust individual channels. Default is `minimal`.
@@ -39,11 +56,11 @@ Data on stdout, diagnostics on stderr. `NO_COLOR` (any non-empty value) or a non
 
 ## Scope
 
-**MVP:** resolve a session from the current directory (no-arg → most recent by modification time; full-UUID arg → that session); styled terminal output with auto color detection; verbosity levels and channel overrides.
+**MVP:** resolve a session from the current directory (no-arg → most recent by modification time; full-UUID arg → that session); list sessions with recency and time-frame selectors (`--list`); styled terminal output with auto color detection; verbosity levels and channel overrides.
 
 **Roadmap:**
 
-- Session selection beyond a full id: content search, partial-id match, recency selectors.
+- Session selection beyond a full id: content search, partial-id match.
 - `--format json`: the structured session model emitted for agent consumption. The model is built in memory first and drives terminal rendering; exposing it is serialization.
 - `--format md` / `-o FILE`: markdown-file export.
 - Interactive session browser.
