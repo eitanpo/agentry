@@ -27,6 +27,7 @@ var agentIDRe = regexp.MustCompile(`agentId:\s*(\S+)`)
 var injectedMarkers = []string{
 	"<local-command-caveat>", "<bash-stdout>", "<bash-stderr>",
 	"<bash-input>", "Base directory for this skill:", "<local-command-stdout>",
+	"<task-notification>", // harness-injected background-task event/completion, not a typed prompt
 }
 
 // Load parses the session at jsonlPath into a Session.
@@ -67,6 +68,71 @@ func Load(jsonlPath string) (*model.Session, error) {
 	return sess, nil
 }
 
+// Summarize scans a session JSONL into a lightweight Summary without building
+// the full event tree or loading subagents — cheap enough to run over every
+// session in a project for `--list`. Title reuses the same turn-splitting as
+// Load, so it matches the prompt the renderer would show.
+func Summarize(jsonlPath string) (model.Summary, error) {
+	entries, err := loadEntries(jsonlPath)
+	if err != nil {
+		return model.Summary{}, err
+	}
+	stem := strings.TrimSuffix(filepath.Base(jsonlPath), filepath.Ext(jsonlPath))
+	start, end := timeRange(entries)
+	turns := splitTurns(entries)
+	var prompts []string
+	for _, tn := range turns {
+		if !isClearCmd(tn.prompt) {
+			prompts = append(prompts, tn.prompt)
+		}
+	}
+	return model.Summary{
+		ID:       stem,
+		Start:    start,
+		End:      end,
+		Title:    sessionTitle(lastAITitle(entries), turns),
+		Prompts:  prompts,
+		NumTurns: len(turns),
+	}, nil
+}
+
+// lastAITitle returns the most recent non-empty ai-title — Claude Code's own
+// session summary, regenerated as the session evolves, so the last wins.
+func lastAITitle(entries []entry) string {
+	title := ""
+	for _, e := range entries {
+		if e.typ == "ai-title" && strings.TrimSpace(e.aiTitle) != "" {
+			title = e.aiTitle
+		}
+	}
+	return title
+}
+
+// sessionTitle picks a listing title by a fallback ladder: Claude Code's
+// ai-title if present, else the first turn's prompt skipping a leading /clear
+// (which resets context and describes nothing), else the first prompt.
+func sessionTitle(aiTitle string, turns []rawTurn) string {
+	if t := strings.TrimSpace(aiTitle); t != "" {
+		return t
+	}
+	for _, t := range turns {
+		if !isClearCmd(t.prompt) {
+			return t.prompt
+		}
+	}
+	if len(turns) > 0 {
+		return turns[0].prompt
+	}
+	return ""
+}
+
+// isClearCmd reports whether a turn prompt is the /clear command. The recorded
+// command-name already carries a leading slash, so userPrompt yields "//clear";
+// trimming all leading slashes matches regardless of how many there are.
+func isClearCmd(prompt string) bool {
+	return strings.TrimLeft(strings.TrimSpace(prompt), "/") == "clear"
+}
+
 // ── Raw JSONL decoding ───────────────────────────────────────────────────
 
 type entry struct {
@@ -74,6 +140,7 @@ type entry struct {
 	t          time.Time
 	model      string
 	usage      model.Usage
+	aiTitle    string  // set on ai-title entries
 	contentStr string  // set when message.content is a JSON string
 	hasStr     bool    // distinguishes "" content from absent/array content
 	blocks     []block // set when message.content is a JSON array
@@ -95,6 +162,7 @@ type rawEntry struct {
 	Type      string          `json:"type"`
 	Timestamp string          `json:"timestamp"`
 	Message   json.RawMessage `json:"message"`
+	AiTitle   string          `json:"aiTitle"` // ai-title entries: Claude Code's own session summary
 }
 
 type rawMessage struct {
@@ -141,7 +209,7 @@ func loadEntries(path string) ([]entry, error) {
 		if json.Unmarshal([]byte(line), &re) != nil {
 			continue // skip malformed lines, as the reference does
 		}
-		e := entry{typ: re.Type}
+		e := entry{typ: re.Type, aiTitle: re.AiTitle}
 		if ts, err := time.Parse(time.RFC3339, re.Timestamp); err == nil {
 			e.t = ts
 		}

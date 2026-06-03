@@ -3,9 +3,88 @@ package parse
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/eitanpo/agentry/internal/model"
 )
+
+func TestSummarize(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "sample.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.ID != "sample" {
+		t.Errorf("ID = %q, want sample", s.ID)
+	}
+	if s.NumTurns != 2 {
+		t.Errorf("NumTurns = %d, want 2", s.NumTurns)
+	}
+	if s.Title != "first prompt" {
+		t.Errorf("Title = %q, want %q", s.Title, "first prompt")
+	}
+	wantPrompts := []string{"first prompt", "second prompt"}
+	if len(s.Prompts) != len(wantPrompts) {
+		t.Fatalf("Prompts = %v, want %v", s.Prompts, wantPrompts)
+	}
+	for i, w := range wantPrompts {
+		if s.Prompts[i] != w {
+			t.Errorf("Prompts[%d] = %q, want %q", i, s.Prompts[i], w)
+		}
+	}
+	wantStart := time.Date(2026, 5, 27, 10, 0, 0, 0, time.UTC)
+	wantEnd := time.Date(2026, 5, 27, 10, 1, 3, 0, time.UTC)
+	if !s.Start.Equal(wantStart) {
+		t.Errorf("Start = %v, want %v", s.Start, wantStart)
+	}
+	if !s.End.Equal(wantEnd) {
+		t.Errorf("End = %v, want %v", s.End, wantEnd)
+	}
+}
+
+func TestSummarizePrefersAITitle(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "ai-title.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The latest ai-title wins over the first prompt and over an earlier ai-title.
+	if s.Title != "Refactor the widget pipeline and add tests" {
+		t.Errorf("Title = %q, want the latest ai-title", s.Title)
+	}
+}
+
+func TestSummarizeSkipsLeadingClear(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "clear-start.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// /clear is the first turn but is skipped: the title is the next prompt.
+	if s.Title != "actually fix the parser" {
+		t.Errorf("Title = %q, want %q", s.Title, "actually fix the parser")
+	}
+	// The /clear turn still counts toward the turn total.
+	if s.NumTurns != 2 {
+		t.Errorf("NumTurns = %d, want 2", s.NumTurns)
+	}
+	// /clear is omitted from the prompt list, leaving only the real prompt.
+	if len(s.Prompts) != 1 || s.Prompts[0] != "actually fix the parser" {
+		t.Errorf("Prompts = %v, want [actually fix the parser]", s.Prompts)
+	}
+}
+
+func TestIsClearCmd(t *testing.T) {
+	clear := []string{"//clear", "/clear", "  //clear  ", "clear"}
+	notClear := []string{"//clear-cache", "/research-lookup x", "clear the table", ""}
+	for _, p := range clear {
+		if !isClearCmd(p) {
+			t.Errorf("isClearCmd(%q) = false, want true", p)
+		}
+	}
+	for _, p := range notClear {
+		if isClearCmd(p) {
+			t.Errorf("isClearCmd(%q) = true, want false", p)
+		}
+	}
+}
 
 func TestLoad(t *testing.T) {
 	sess, err := Load(filepath.Join("testdata", "sample.jsonl"))
@@ -25,7 +104,8 @@ func TestLoad(t *testing.T) {
 		t.Errorf("subagents = %d, want 0", sess.Meta.NumSubagents)
 	}
 
-	// The injected <bash-input> entry must not start a third turn.
+	// The injected <bash-input> and <task-notification> entries must not start
+	// their own turns.
 	if len(sess.Turns) != 2 {
 		t.Fatalf("turns = %d, want 2", len(sess.Turns))
 	}

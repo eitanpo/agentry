@@ -32,6 +32,11 @@ content**; ignore the rest.
 The last entry's type is not an end-of-session marker — it is whatever happened last.
 There is no reliable in-file "session complete" signal.
 
+`ai-title` entries carry a top-level `aiTitle` string — Claude Code's own session
+summary, rewritten as the session evolves, so multiple appear and the last is the
+current one (`sessionId` names the session). It is not renderable content, but the
+session listing (`--list`) uses the latest `aiTitle` as the session's title.
+
 ### message
 
 `{ role, model, content, usage, ... }`. `content` is **either** a JSON string **or** an
@@ -53,10 +58,12 @@ array of typed blocks:
 
 A `user` entry's string content is a human-typed prompt **unless** it is
 system-injected. Injected markers include `<local-command-caveat>`, `<bash-input>`,
-`<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>`, and
-`Base directory for this skill:`. Slash commands appear as
-`<command-name>…</command-name>` / `<command-args>…</command-args>`. Array-of-`text`
-user content is also injected (e.g. skill bodies), not a typed prompt.
+`<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>`,
+`Base directory for this skill:`, and `<task-notification>` (the harness's
+background-task event/completion reports — a `user` entry wrapping `<task-id>`,
+`<status>`, `<summary>`, `<output-file>`, not anything the human typed). Slash
+commands appear as `<command-name>…</command-name>` / `<command-args>…</command-args>`.
+Array-of-`text` user content is also injected (e.g. skill bodies), not a typed prompt.
 
 ## Subagent stitching
 

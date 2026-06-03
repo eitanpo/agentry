@@ -1,0 +1,5 @@
+{"type":"user","timestamp":"2026-05-27T09:00:00Z","message":{"role":"user","content":"<local-command-caveat>Caveat: local command.</local-command-caveat>"}}
+{"type":"user","timestamp":"2026-05-27T09:00:01Z","message":{"role":"user","content":"<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"}}
+{"type":"user","timestamp":"2026-05-27T09:00:02Z","message":{"role":"user","content":"<local-command-stdout></local-command-stdout>"}}
+{"type":"user","timestamp":"2026-05-27T09:00:10Z","message":{"role":"user","content":"actually fix the parser"}}
+{"type":"assistant","timestamp":"2026-05-27T09:00:12Z","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":3,"output_tokens":4},"content":[{"type":"text","text":"on it"}]}}

@@ -45,13 +45,17 @@ or editing it, open `/hooks` once or restart so Claude Code reloads the config.
 
 ## Versioning
 
-The base version is canonical in `main.go` (`var Version`, currently `0.1.0`). `make build`
+The base version is canonical in `main.go` (`var Version`, currently `0.2.0`). `make build`
 and `make install` append a UTC build timestamp as the semver build-metadata segment, e.g.
-`0.1.0+20260527T131005Z`, so every local build is distinct — useful for confirming a rebuild
-took effect. Plain `go build`/`go install`/`go run` (no make) print the bare base `0.1.0`.
+`0.2.0+20260527T131005Z`, so every local build is distinct — useful for confirming a rebuild
+took effect. Plain `go build`/`go install`/`go run` (no make) print the bare base `0.2.0`.
 
 Release builds set the full version from the git tag via `-ldflags "-X main.Version=<v>"`
 (GoReleaser does this on tag).
+
+Increment policy (pre-1.0): bump MINOR (`0.x.0`) for a backward-compatible feature or
+behavior addition, PATCH (`0.x.y`) for bug fixes and refactors; MAJOR is reserved for the
+1.0 stabilization. Bump `var Version` in the same change that adds the surface.
 
 ## Releasing
 

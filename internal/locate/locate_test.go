@@ -80,6 +80,47 @@ func TestSession(t *testing.T) {
 	})
 }
 
+func TestSessions(t *testing.T) {
+	root := t.TempDir()
+	old := ProjectsRoot
+	ProjectsRoot = root
+	t.Cleanup(func() { ProjectsRoot = old })
+
+	const cwd = "/fake/proj"
+	projDir := filepath.Join(root, "-fake-proj")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("empty project is ErrNoSession", func(t *testing.T) {
+		if _, err := Sessions(cwd); !errors.Is(err, ErrNoSession) {
+			t.Errorf("got %v, want ErrNoSession", err)
+		}
+	})
+
+	for _, name := range []string{"a.jsonl", "b.jsonl"} {
+		if err := os.WriteFile(filepath.Join(projDir, name), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("lists every session jsonl", func(t *testing.T) {
+		got, err := Sessions(cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 {
+			t.Errorf("got %d sessions, want 2: %v", len(got), got)
+		}
+	})
+
+	t.Run("unknown project is ErrNoProject", func(t *testing.T) {
+		if _, err := Sessions("/no/such/project"); !errors.Is(err, ErrNoProject) {
+			t.Errorf("got %v, want ErrNoProject", err)
+		}
+	})
+}
+
 func mustChtime(t *testing.T, path string, mod time.Time) {
 	t.Helper()
 	if err := os.Chtimes(path, mod, mod); err != nil {

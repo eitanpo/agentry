@@ -68,6 +68,24 @@ func Session(cwd, id string) (string, error) {
 	return mostRecent(dir)
 }
 
+// Sessions returns the paths of every session JSONL in cwd's project, in no
+// particular order. ErrNoProject if the directory maps to no project,
+// ErrNoSession if the project holds no sessions.
+func Sessions(cwd string) ([]string, error) {
+	dir, err := ProjectDir(cwd)
+	if err != nil {
+		return nil, err
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) == 0 {
+		return nil, ErrNoSession
+	}
+	return matches, nil
+}
+
 func mostRecent(dir string) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
 	if err != nil {

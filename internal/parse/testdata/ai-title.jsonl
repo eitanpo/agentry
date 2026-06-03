@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-05-27T09:00:00Z","message":{"role":"user","content":"do the thing"}}
+{"type":"ai-title","timestamp":"2026-05-27T09:00:05Z","aiTitle":"Refactor the widget pipeline","sessionId":"ai-title"}
+{"type":"assistant","timestamp":"2026-05-27T09:00:06Z","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"ok"}]}}
+{"type":"ai-title","timestamp":"2026-05-27T09:00:09Z","aiTitle":"Refactor the widget pipeline and add tests","sessionId":"ai-title"}
