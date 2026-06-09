@@ -62,8 +62,11 @@ system-injected. Injected markers include `<local-command-caveat>`, `<bash-input
 `Base directory for this skill:`, and `<task-notification>` (the harness's
 background-task event/completion reports — a `user` entry wrapping `<task-id>`,
 `<status>`, `<summary>`, `<output-file>`, not anything the human typed). Slash
-commands appear as `<command-name>…</command-name>` / `<command-args>…</command-args>`.
-Array-of-`text` user content is also injected (e.g. skill bodies), not a typed prompt.
+commands appear as `<command-name>…</command-name>` / `<command-args>…</command-args>`;
+the `<command-name>` value **already includes the leading slash** (e.g. `/clear`,
+`/research-lookup`), so code that prefixes `/` itself doubles it (`//clear`) — strip or
+skip the prefix. Array-of-`text` user content is also injected (e.g. skill bodies), not a
+typed prompt.
 
 ## Subagent stitching
 
