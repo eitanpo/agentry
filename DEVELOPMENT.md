@@ -79,6 +79,12 @@ release, and pushes the Homebrew **cask** to the `eitanpo/homebrew-tap` repo (wh
 The cask lands at `Casks/agentry.rb` in the tap. macOS binaries are unsigned, so the cask's
 post-install hook strips the quarantine attribute. Linux has no cask — `go install` instead.
 
+The `--snapshot` cask under `dist/homebrew/` is **not** representative: its `version` is
+`<last-tag>-SNAPSHOT-<sha>` and its download URLs are pinned to the previous tag. Only the
+real `release --clean` regenerates the cask with the correct `version` and `v#{version}`
+URLs. Verify the published cask in the tap (read `Casks/agentry.rb` back from
+`eitanpo/homebrew-tap`), not the snapshot artifact.
+
 ## Where things are documented
 
 - Claude Code log format (files, folders, JSONL): [docs/session-format.md](docs/session-format.md)
