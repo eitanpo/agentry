@@ -35,7 +35,7 @@ There is no reliable in-file "session complete" signal.
 `ai-title` entries carry a top-level `aiTitle` string — Claude Code's own session
 summary, rewritten as the session evolves, so multiple appear and the last is the
 current one (`sessionId` names the session). It is not renderable content, but the
-session listing (`--list`) uses the latest `aiTitle` as the session's title.
+session listing (`agentry list`) uses the latest `aiTitle` as the session's title.
 
 ### message
 

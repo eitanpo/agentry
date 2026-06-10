@@ -63,3 +63,22 @@ the parameter bytes in the "plain" text. Advance past `[` first, then scan.
 
 **`bufio.Scanner`'s default 64 KB token limit is too small.** Session lines embed full
 tool results and can exceed it; raise the scanner buffer or long lines silently drop.
+
+## CLI / Cobra
+
+**Cobra's built-in did-you-mean (`SuggestionsMinimumDistance`) never fires when the root
+command is runnable.** It triggers only on the "unknown subcommand" path. A root with its
+own `RunE` (agentry renders on the bare command) treats an unmatched first token as a
+positional arg and passes it to `RunE` — so `agentry lst` reaches the render path with
+id `"lst"`, not an unknown-command error. Verb suggestions are therefore hand-rolled in
+`renderSession`: a first token that is not hex-shaped (`looksLikeID`) can only be a
+mistyped verb, so it is run through `nearest()` against the verb list. The hex-vs-word
+invariant is what makes this unambiguous — a real session id never reaches the verb check.
+
+**pflag emits a bare `unknown flag: --x` with no suggestion.** Cobra's suggestion machinery
+covers subcommands only; flag-name typos are not covered. agentry layers `nearest()` over
+the failing command's flag set via `SetFlagErrorFunc` on the root (Cobra resolves it up the
+parent chain, so it applies to every verb, and the `*cobra.Command` it receives is the verb
+whose flags failed — the correct candidate pool). Flag *values* (`--include prompt`,
+`--level detaild`) are validated by agentry itself, so those suggestions live at each enum
+site, not in the flag-error hook.

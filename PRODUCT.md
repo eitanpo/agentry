@@ -11,11 +11,15 @@ Claude Code stores each session as JSONL under `~/.claude/projects/`. Reading th
 A developer who runs Claude Code in a project directory and wants to review a past session. The user runs `agentry` from the same directory they ran Claude in:
 
 ```
-agentry            # the most recent session (by time) in this directory's project
-agentry <uuid>     # a specific session, by full id
+agentry                # the most recent session (by time) in this directory's project
+agentry <uuid>         # a specific session, by full id
+agentry view [<uuid>]  # explicit alias of the above; owns the render flags' help page
+agentry list           # list this project's sessions (see Listing sessions)
 ```
 
-With no argument, `agentry` selects the **most recent session by modification time** in the current project — which may include a session that is still in progress. With an argument, the session id must be a **full UUID**; partial-id matching and content search are on the roadmap. To find a session, list them with `--list` (see Listing sessions).
+With no argument, `agentry` selects the **most recent session by modification time** in the current project — which may include a session that is still in progress. With an argument, the session id must be a **full UUID**; partial-id matching and content search are on the roadmap. To find a session, list them with `agentry list` (see Listing sessions).
+
+`agentry` is organized as verbs. The first token is treated as a verb when it names one (`view`, `list`), otherwise as a session id — unambiguous because ids are hex (`0-9a-f`, hyphens) and verbs are English words, so they never collide. `view` is an explicit alias of the bare-render path: `agentry`, `agentry <uuid>`, and `agentry view <uuid>` render identically, but `view` owns the render flags' own help page and is discoverable in `agentry --help`.
 
 `agentry` resolves logs from the current directory: it maps `$PWD` to the Claude project folder under `~/.claude/projects/`. Running from a different directory targets a different project — this is intentional. If the directory has no matching project, or the named session does not exist, `agentry` writes an error to stderr and exits with a distinct non-zero code.
 
@@ -31,7 +35,7 @@ Color is auto-detected: styled (ANSI) when stdout is a terminal; plain, unstyled
 
 ## Listing sessions
 
-`agentry --list` lists the sessions in the current directory's project instead of rendering one, so you can find the one you want. Sessions are selected by recency (most-recent activity) and printed oldest-to-newest, so the most recent sits at the bottom, nearest your prompt — the convention of `ls -ltr`, shell history, and chat logs for unpaged scrolling output. Each is one row: the session's start time, its duration (first prompt to last output), its turn count, a title, and the full session id — which you pass back to `agentry <id>` to render it. The title is chosen by a fallback ladder: Claude Code's own session summary (the `ai-title` it writes into the log, latest one winning) when present; otherwise the first user prompt, skipping a leading `/clear` (which only resets context and says nothing about the session) in favor of the next prompt; a session that is nothing but `/clear` keeps it.
+`agentry list` lists the sessions in the current directory's project instead of rendering one, so you can find the one you want. Sessions are selected by recency (most-recent activity) and printed oldest-to-newest, so the most recent sits at the bottom, nearest your prompt — the convention of `ls -ltr`, shell history, and chat logs for unpaged scrolling output. Each is one row: the session's start time, its duration (first prompt to last output), its turn count, a title, and the full session id — which you pass back to `agentry <id>` to render it. The title is chosen by a fallback ladder: Claude Code's own session summary (the `ai-title` it writes into the log, latest one winning) when present; otherwise the first user prompt, skipping a leading `/clear` (which only resets context and says nothing about the session) in favor of the next prompt; a session that is nothing but `/clear` keeps it.
 
 By default the list shows the 10 most-recent sessions. `--limit N` changes the cap; `--limit 0` removes it. Two time-frame filters narrow the window, both compared against a session's last-activity time:
 
@@ -42,7 +46,7 @@ WHEN is one of: `today` or `yesterday` (local midnight of that day); a span back
 
 `--include CHANNELS` adds per-session detail, given as a comma-separated list of channels. The one channel today is `prompts`: under each session's row, its user prompts are listed in order on a left rail closed by a rule — the same chrome as a rendered turn — each prefixed with the `❯` glyph, with `/clear` omitted; every prompt is shown (the view is opt-in). The rail-and-rule groups a session's prompts and bounds the block, separating one session from the next. `all` selects every channel. An unknown channel is a usage error.
 
-When a time filter is given and `--limit` is not, the cap is lifted — `agentry --list --since today` shows every session from today, not just ten. A window that matches no session prints nothing and exits zero; a project with no sessions at all is an error, the same as in render mode. List mode takes no session-id argument and ignores the rendering flags (`--level`, channel toggles).
+When a time filter is given and `--limit` is not, the cap is lifted — `agentry list --since today` shows every session from today, not just ten. A window that matches no session prints nothing and exits zero; a project with no sessions at all is an error, the same as in render mode. `list` takes no session-id argument; the rendering flags (`--level`, channel toggles) do not exist on it — they live on the render path, not as flags `list` silently ignores.
 
 Color follows the same rule as rendered output: styled on a terminal, plain when piped or with `NO_COLOR` / `--no-color`.
 
@@ -52,15 +56,17 @@ Color follows the same rule as rendered output: styled on a terminal, plain when
 
 ## CLI conventions
 
-Data on stdout, diagnostics on stderr. `NO_COLOR` (any non-empty value) or a non-TTY stdout disables color. `--help` and `--version` are always available. Exit codes follow `sysexits` — a missing project or session exits with a distinct non-zero code, not a generic failure.
+Data on stdout, diagnostics on stderr. `NO_COLOR` (any non-empty value) or a non-TTY stdout disables color. `--help` and `--version` are always available, and each verb has its own `--help` listing only the flags valid in that mode. The bare command's help leads with the program version, groups the render flags (which also apply to `view`, not to `list`) under their own heading so their scope is legible, and every help screen carries usage examples. Exit codes follow `sysexits` — a missing project or session exits with a distinct non-zero code, not a generic failure.
+
+Flags and operands may appear in any order (`agentry list --since today` and `agentry list` with flags before or after operands both parse). A mistyped verb, flag name, or enum value (e.g. `--include prompt` for `prompts`) errors to stderr, names the offending token, and suggests the nearest valid name by edit distance when one is close enough — it never auto-runs the guess and never dumps full help.
 
 ## Scope
 
-**MVP:** resolve a session from the current directory (no-arg → most recent by modification time; full-UUID arg → that session); list sessions with recency and time-frame selectors (`--list`); styled terminal output with auto color detection; verbosity levels and channel overrides.
+**MVP:** resolve a session from the current directory (no-arg → most recent by modification time; full-UUID arg → that session); list sessions with recency and time-frame selectors (`agentry list`); styled terminal output with auto color detection; verbosity levels and channel overrides.
 
 **Roadmap:**
 
-- Session selection beyond a full id: content search, partial-id match.
+- Session selection beyond a full id: content search (a `search` verb), partial-id match.
 - `--format json`: the structured session model emitted for agent consumption. The model is built in memory first and drives terminal rendering; exposing it is serialization.
 - `--format md` / `-o FILE`: markdown-file export.
 - Interactive session browser.

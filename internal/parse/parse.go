@@ -70,7 +70,7 @@ func Load(jsonlPath string) (*model.Session, error) {
 
 // Summarize scans a session JSONL into a lightweight Summary without building
 // the full event tree or loading subagents — cheap enough to run over every
-// session in a project for `--list`. Title reuses the same turn-splitting as
+// session in a project for `agentry list`. Title reuses the same turn-splitting as
 // Load, so it matches the prompt the renderer would show.
 func Summarize(jsonlPath string) (model.Summary, error) {
 	entries, err := loadEntries(jsonlPath)

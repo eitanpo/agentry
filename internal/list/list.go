@@ -1,4 +1,4 @@
-// Package list selects and formats session summaries for `agentry --list`:
+// Package list selects and formats session summaries for `agentry list`:
 // recency ordering, time-window filtering, and a one-row-per-session view. It is
 // the listing counterpart to the render package; both consume model types and
 // share the project's color/width conventions.
