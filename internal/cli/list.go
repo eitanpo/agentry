@@ -32,9 +32,19 @@ func newListCmd(noColor *bool) *cobra.Command {
 	cmd.Flags().Int("limit", 10, "cap to N most-recent sessions (0 = no cap)")
 	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
 	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
-	cmd.Flags().String("include", "", "add detail channels (comma-separated): prompts, all")
+	cmd.Flags().String("include", "", "add detail channels (comma-separated): prompts, tools, all")
+	cmd.Flags().String("used-tool", "", "only sessions that used this tool, by name (Bash, Skill, Agent, WebFetch, …)")
+	cmd.Flags().String("used-skill", "", "only sessions that invoked this skill")
+	cmd.Flags().String("used-agent", "", "only sessions that spawned this subagent type")
+	cmd.Flags().String("used-command", "", "only sessions that ran a Bash command matching this text")
+	cmd.Flags().String("used", "", "only sessions that used this as a skill, agent, or command")
+	cmd.Flags().String("format", "", "output format: json (default: text table)")
 	return cmd
 }
+
+// usedFlags are the --used* filter flags; any of them, like a time filter,
+// lifts the default --limit so a filtered listing is not silently capped.
+var usedFlags = []string{"used-tool", "used-skill", "used-agent", "used-command", "used"}
 
 func runList(cmd *cobra.Command, noColor *bool) error {
 	limit, _ := cmd.Flags().GetInt("limit")
@@ -42,18 +52,34 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	until, _ := cmd.Flags().GetString("until")
 	include, _ := cmd.Flags().GetString("include")
 
-	var showPrompts bool
+	var showPrompts, showTools bool
 	for _, tok := range strings.Split(include, ",") {
 		switch tok = strings.TrimSpace(tok); tok {
 		case "": // empty entries (e.g. unset flag) contribute nothing
-		case "prompts", "all":
+		case "prompts":
 			showPrompts = true
+		case "tools":
+			showTools = true
+		case "all":
+			showPrompts, showTools = true, true
 		default:
 			if g := nearest(tok, includeNames); g != "" {
 				return usageErr("--include: unknown channel %q — did you mean %q?", tok, g)
 			}
-			return usageErr("--include: unknown channel %q (want: prompts, all)", tok)
+			return usageErr("--include: unknown channel %q (want: prompts, tools, all)", tok)
 		}
+	}
+
+	// Validate --format before touching the filesystem, so a bad value errors
+	// (with a suggestion) the same way a bad --include channel does.
+	format, _ := cmd.Flags().GetString("format")
+	switch format {
+	case "", "text", "json":
+	default:
+		if g := nearest(format, formatNames); g != "" {
+			return usageErr("--format: unknown format %q — did you mean %q?", format, g)
+		}
+		return usageErr("--format: unknown format %q (want: json, text)", format)
 	}
 
 	now := time.Now()
@@ -72,10 +98,23 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		}
 		untilT = t
 	}
-	// A time filter without an explicit --limit lifts the default cap, so
-	// "list --since today" shows every session in the window, not just ten.
-	if (cmd.Flags().Changed("since") || cmd.Flags().Changed("until")) && !cmd.Flags().Changed("limit") {
+	// A time or --used* filter without an explicit --limit lifts the default
+	// cap, so a filtered listing shows every match, not just ten.
+	filtering := cmd.Flags().Changed("since") || cmd.Flags().Changed("until")
+	for _, f := range usedFlags {
+		filtering = filtering || cmd.Flags().Changed(f)
+	}
+	if filtering && !cmd.Flags().Changed("limit") {
 		limit = 0
+	}
+
+	get := func(name string) string { v, _ := cmd.Flags().GetString(name); return v }
+	filters := list.Filters{
+		Tool:    get("used-tool"),
+		Skill:   get("used-skill"),
+		Agent:   get("used-agent"),
+		Command: get("used-command"),
+		Any:     get("used"),
 	}
 
 	cwd, err := os.Getwd()
@@ -96,9 +135,16 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		sums = append(sums, s)
 	}
 
+	selected := list.Select(list.FilterByTools(sums, filters), sinceT, untilT, limit)
+	if format == "json" {
+		if err := list.RenderJSON(os.Stdout, selected); err != nil {
+			return &exitError{code: 1, err: err}
+		}
+		return nil
+	}
 	color, width := terminal(*noColor)
-	if err := list.Render(os.Stdout, list.Select(sums, sinceT, untilT, limit), list.Options{
-		Width: width, Color: color, Prompts: showPrompts,
+	if err := list.Render(os.Stdout, selected, list.Options{
+		Width: width, Color: color, Prompts: showPrompts, Tools: showTools,
 	}); err != nil {
 		return &exitError{code: 1, err: err}
 	}

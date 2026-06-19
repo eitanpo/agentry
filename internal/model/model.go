@@ -24,12 +24,26 @@ type Meta struct {
 // Summary is a lightweight session descriptor for listing: enough to identify
 // and choose a session without parsing its full turn stream.
 type Summary struct {
-	ID       string
-	Start    time.Time
-	End      time.Time
-	Title    string   // chosen title (ai-title, else first non-/clear prompt)
-	Prompts  []string // user prompts in order, /clear omitted (for --include prompts)
-	NumTurns int
+	ID       string     `json:"id"`
+	Start    time.Time  `json:"start"`
+	End      time.Time  `json:"end"`
+	Title    string     `json:"title"`             // chosen title (ai-title, else first non-/clear prompt)
+	Prompts  []string   `json:"prompts,omitempty"` // user prompts in order, /clear omitted (for --include prompts)
+	NumTurns int        `json:"numTurns"`
+	Tools    []ToolStat `json:"tools,omitempty"`    // top-level tool calls aggregated by identity (for --include tools)
+	Commands []string   `json:"commands,omitempty"` // distinct top-level Bash commands (for --used-command / --used)
+}
+
+// ToolStat counts the top-level tool calls in a session that share a tool name
+// and identity, for `agentry list --include tools`. Identity is the call's
+// grouping label: the invoked program for Bash, the skill for Skill, the
+// subagent type for Agent; empty for tools whose name is their own identity
+// (Edit, Read, WebFetch, …). Top-level only — calls made inside subagents are
+// not counted, matching Turn.ToolCount.
+type ToolStat struct {
+	Tool     string `json:"tool"`
+	Identity string `json:"identity,omitempty"`
+	Count    int    `json:"count"`
 }
 
 // Usage is a token tally. Cache fields mirror the Anthropic usage object.

@@ -5,6 +5,7 @@
 package list
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -25,6 +26,7 @@ type Options struct {
 	Width   int
 	Color   bool
 	Prompts bool // --include prompts: list each session's prompts under its row
+	Tools   bool // --include tools: break down each session's tool calls under its row
 }
 
 // Prompt blocks reuse the renderer's turn chrome: a left rail closed by a rule.
@@ -67,6 +69,94 @@ func Select(sums []model.Summary, since, until time.Time, limit int) []model.Sum
 		out = out[:limit]
 	}
 	return out
+}
+
+// Filters narrows a listing to sessions whose top-level tool calls match. An
+// empty field imposes no constraint; set fields AND together. Tool is matched
+// case-insensitively and exact (the tool-use name); the rest are
+// case-insensitive substring. Any is the identity catch-all — a skill name,
+// subagent type, or command — and deliberately ignores tool names.
+type Filters struct {
+	Tool    string
+	Skill   string
+	Agent   string
+	Command string
+	Any     string
+}
+
+// Empty reports whether no constraint is set, so callers can skip filtering.
+func (f Filters) Empty() bool {
+	return f.Tool == "" && f.Skill == "" && f.Agent == "" && f.Command == "" && f.Any == ""
+}
+
+// Match reports whether s satisfies every set field.
+func (f Filters) Match(s model.Summary) bool {
+	if f.Tool != "" && !hasTool(s.Tools, f.Tool) {
+		return false
+	}
+	if f.Skill != "" && !hasIdentity(s.Tools, "Skill", f.Skill) {
+		return false
+	}
+	if f.Agent != "" && !hasIdentity(s.Tools, "Agent", f.Agent) {
+		return false
+	}
+	if f.Command != "" && !hasCommand(s.Commands, f.Command) {
+		return false
+	}
+	if f.Any != "" &&
+		!hasIdentity(s.Tools, "Skill", f.Any) &&
+		!hasIdentity(s.Tools, "Agent", f.Any) &&
+		!hasCommand(s.Commands, f.Any) {
+		return false
+	}
+	return true
+}
+
+// FilterByTools keeps only the summaries matching f, preserving input order. A
+// no-op (returns the input) when f is empty.
+func FilterByTools(sums []model.Summary, f Filters) []model.Summary {
+	if f.Empty() {
+		return sums
+	}
+	out := make([]model.Summary, 0, len(sums))
+	for _, s := range sums {
+		if f.Match(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func hasTool(stats []model.ToolStat, name string) bool {
+	for _, st := range stats {
+		if strings.EqualFold(st.Tool, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasIdentity(stats []model.ToolStat, tool, sub string) bool {
+	for _, st := range stats {
+		if st.Tool == tool && containsFold(st.Identity, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCommand(cmds []string, sub string) bool {
+	for _, c := range cmds {
+		if containsFold(c, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsFold reports whether sub occurs in s, case-insensitively.
+func containsFold(s, sub string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
 }
 
 // ParseWhen interprets a --since/--until value relative to now:
@@ -119,6 +209,22 @@ func parseSpan(s string) (time.Duration, bool) {
 	return 0, false
 }
 
+// RenderJSON writes the summaries as an indented JSON array — the listing's
+// machine-readable form. It serializes the full model per session regardless of
+// the --include channels (which shape only the text view); an empty slice
+// emits "[]". sums arrives in Select order (most-recent first), preserved here.
+func RenderJSON(w io.Writer, sums []model.Summary) error {
+	if sums == nil {
+		sums = []model.Summary{} // marshal an empty array, not null
+	}
+	b, err := json.MarshalIndent(sums, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
+}
+
 // Render writes one row per session: start time, turn count, title, and full id.
 // The id is last and the title padded to a fixed column so ids align and a row
 // can be selected and its id passed back to `agentry <id>`.
@@ -147,10 +253,13 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	if promptW < 10 {
 		promptW = 10
 	}
+	// A session shows a detail block (rail + closing rule) when any --include
+	// channel is on; the channels share one block.
+	block := opts.Prompts || opts.Tools
 	var b strings.Builder
 	for i := len(sums) - 1; i >= 0; i-- {
 		s := sums[i]
-		if opts.Prompts && i < len(sums)-1 {
+		if block && i < len(sums)-1 {
 			b.WriteByte('\n') // blank line separates session blocks
 		}
 		when := "????-??-?? ??:??"
@@ -166,16 +275,73 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			dim.Render(fmt.Sprintf("%*dt", turnsW-1, s.NumTurns)),
 			pad(title, titleW),
 			meta.Render(s.ID))
+		rail := railIndent + dim.Render(railGlyph) + " "
 		if opts.Prompts {
-			rail := railIndent + dim.Render(railGlyph) + " "
 			for _, p := range s.Prompts {
 				fmt.Fprintf(&b, "%s%s %s\n", rail, dim.Render(promptGlyph), truncate(oneLine(p), promptW))
 			}
+		}
+		if opts.Tools {
+			for _, line := range toolLines(s.Tools) {
+				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncate(line, promptW)))
+			}
+		}
+		if block {
 			fmt.Fprintf(&b, "%s%s\n", railIndent, dim.Render(railClose))
 		}
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// toolLines renders a session's tool breakdown as one line per non-empty
+// category: Skills / Agents / Bash labelled by identity, Other by tool name.
+// Entries within a line are ordered by count descending, then name ascending.
+func toolLines(stats []model.ToolStat) []string {
+	var skills, agents, bash, other []model.ToolStat
+	for _, st := range stats {
+		switch st.Tool {
+		case "Skill":
+			skills = append(skills, st)
+		case "Agent":
+			agents = append(agents, st)
+		case "Bash":
+			bash = append(bash, st)
+		default:
+			other = append(other, st)
+		}
+	}
+	var lines []string
+	emit := func(label string, group []model.ToolStat, byTool bool) {
+		if len(group) == 0 {
+			return
+		}
+		name := func(st model.ToolStat) string {
+			if byTool {
+				return st.Tool
+			}
+			if st.Identity == "" {
+				return "?"
+			}
+			return st.Identity
+		}
+		sort.SliceStable(group, func(i, j int) bool {
+			if group[i].Count != group[j].Count {
+				return group[i].Count > group[j].Count
+			}
+			return name(group[i]) < name(group[j])
+		})
+		parts := make([]string, len(group))
+		for i, st := range group {
+			parts[i] = fmt.Sprintf("%s ×%d", name(st), st.Count)
+		}
+		lines = append(lines, fmt.Sprintf("%-7s %s", label, strings.Join(parts, ", ")))
+	}
+	emit("Skills", skills, false)
+	emit("Agents", agents, false)
+	emit("Bash", bash, false)
+	emit("Other", other, true)
+	return lines
 }
 
 // pad right-fills s with spaces to width display columns (rune count). s is

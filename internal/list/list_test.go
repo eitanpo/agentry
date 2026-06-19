@@ -1,6 +1,7 @@
 package list
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -180,6 +181,137 @@ func TestRenderIncludePrompts(t *testing.T) {
 	if !strings.Contains(out, "│ ❯ first ask") {
 		t.Errorf("prompt not on the rail: %q", out)
 	}
+	if !strings.Contains(out, "╰─") {
+		t.Errorf("session block not closed by a rule: %q", out)
+	}
+}
+
+func TestRenderJSON(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "s1", Title: "do work", NumTurns: 3,
+			Tools:    []model.ToolStat{{Tool: "Bash", Identity: "git", Count: 2}},
+			Commands: []string{"git status"}},
+	}
+	var b strings.Builder
+	if err := RenderJSON(&b, sums); err != nil {
+		t.Fatal(err)
+	}
+	// Parses back as an array carrying the tagged model fields.
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(b.String()), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, b.String())
+	}
+	if len(got) != 1 || got[0]["id"] != "s1" || got[0]["title"] != "do work" {
+		t.Fatalf("unexpected JSON: %s", b.String())
+	}
+	tools, ok := got[0]["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools missing/wrong: %s", b.String())
+	}
+	tool := tools[0].(map[string]any)
+	if tool["tool"] != "Bash" || tool["identity"] != "git" || tool["count"].(float64) != 2 {
+		t.Errorf("tool entry wrong: %s", b.String())
+	}
+	if cmds := got[0]["commands"].([]any); len(cmds) != 1 || cmds[0] != "git status" {
+		t.Errorf("commands wrong: %s", b.String())
+	}
+
+	// Empty input serializes as an array, not null.
+	var empty strings.Builder
+	if err := RenderJSON(&empty, nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(empty.String()) != "[]" {
+		t.Errorf("empty input = %q, want []", empty.String())
+	}
+}
+
+func TestFilterByTools(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "expert-run", Tools: []model.ToolStat{
+			{Tool: "Skill", Identity: "expert", Count: 2},
+			{Tool: "Agent", Identity: "general-purpose", Count: 9},
+		}, Commands: []string{"git status", "python3 collect.py"}},
+		{ID: "exa-run", Tools: []model.ToolStat{
+			{Tool: "Bash", Identity: "exa", Count: 1},
+			{Tool: "Skill", Identity: "sonar-search", Count: 1},
+		}, Commands: []string{"/skills/exa/scripts/exa --contents q"}},
+		{ID: "research", Tools: []model.ToolStat{
+			{Tool: "Agent", Identity: "researcher", Count: 3},
+		}, Commands: nil},
+	}
+	match := func(f Filters) []string { return ids(FilterByTools(sums, f)) }
+	eq := func(got, want []string) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+		return true
+	}
+
+	cases := []struct {
+		name string
+		f    Filters
+		want []string
+	}{
+		{"empty is no-op", Filters{}, []string{"expert-run", "exa-run", "research"}},
+		{"used-tool exact, case-insensitive", Filters{Tool: "bash"}, []string{"exa-run"}},
+		{"used-skill substring", Filters{Skill: "sonar"}, []string{"exa-run"}}, // sonar-search
+		{"used-agent", Filters{Agent: "researcher"}, []string{"research"}},
+		{"used-command substring", Filters{Command: "git"}, []string{"expert-run"}},
+		{"used matches command", Filters{Any: "exa"}, []string{"exa-run"}}, // via command text
+		{"used matches skill", Filters{Any: "expert"}, []string{"expert-run"}},
+		{"used does not match tool name", Filters{Any: "Bash"}, nil}, // identity axis only
+		{"AND of two fields", Filters{Skill: "expert", Agent: "general"}, []string{"expert-run"}},
+		{"AND with no overlap", Filters{Skill: "expert", Agent: "researcher"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := match(c.f); !eq(got, c.want) {
+				t.Errorf("FilterByTools(%+v) = %v, want %v", c.f, got, c.want)
+			}
+		})
+	}
+}
+
+func TestRenderIncludeTools(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "s1", Title: "do work", Tools: []model.ToolStat{
+			{Tool: "Bash", Identity: "gh", Count: 12},
+			{Tool: "Bash", Identity: "git", Count: 40},
+			{Tool: "Skill", Identity: "expert", Count: 2},
+			{Tool: "Agent", Identity: "researcher", Count: 9},
+			{Tool: "Read", Identity: "", Count: 100},
+		}},
+	}
+	// Off: breakdown absent.
+	var off strings.Builder
+	if err := Render(&off, sums, Options{Width: 100, Color: false, Tools: false}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(off.String(), "git ×40") {
+		t.Errorf("tools should be hidden without Tools: %q", off.String())
+	}
+	// On: one line per category, entries count-desc, Other by tool name.
+	var on strings.Builder
+	if err := Render(&on, sums, Options{Width: 100, Color: false, Tools: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := on.String()
+	for _, want := range []string{"Skills", "expert ×2", "Agents", "researcher ×9", "Bash", "Other", "Read ×100"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+	// Within Bash, the higher count sorts first.
+	if i, j := strings.Index(out, "git ×40"), strings.Index(out, "gh ×12"); i < 0 || j < 0 || i > j {
+		t.Errorf("Bash entries not ordered count-desc (git before gh): %q", out)
+	}
+	// The block is closed by a rule, like --include prompts.
 	if !strings.Contains(out, "╰─") {
 		t.Errorf("session block not closed by a rule: %q", out)
 	}

@@ -14,8 +14,10 @@ does see [PRODUCT.md](PRODUCT.md); for install-via-brew and usage see [README.md
 | Command | Use |
 |---|---|
 | `go run .` | quickest iteration inside the repo (prints the bare base version, e.g. `0.1.0`) |
-| `make build` | local binary `./agentry` (gitignored), stamped with a build timestamp |
-| `make install` | install to `~/go/bin`, stamped — then run `agentry` from any project directory |
+| `make` / `make install` | install to `~/go/bin`, stamped — the default goal, since you run the global `agentry` from other projects |
+| `make build` | throwaway local binary `./agentry` (gitignored) for one-off inspection — does **not** update the global install |
+
+Any local change you want to *run* goes through `make install` (or bare `make`) — the global binary is the only one you invoke, so building a throwaway copy instead leaves it stale.
 
 `make build`/`make install` inject a UTC build timestamp as semver build metadata so every
 build is distinguishable (see [Versioning](#versioning)). Plain `go build -o agentry .` /

@@ -5,6 +5,12 @@ BASE    := $(shell sed -n 's/^var Version = "\(.*\)"/\1/p' main.go)
 VERSION := $(BASE)+$(shell date -u +%Y%m%dT%H%M%SZ)
 LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 
+# install is the default goal: while iterating you run the global `agentry` (it
+# resolves sessions from the cwd, not this repo), so a bare `make` keeps that
+# binary current. `make build` is the explicit escape hatch for a throwaway
+# local artifact that does NOT touch the global install.
+.DEFAULT_GOAL := install
+
 .PHONY: build install release release-dry
 build:
 	go build $(LDFLAGS) -o agentry .

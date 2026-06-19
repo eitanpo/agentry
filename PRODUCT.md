@@ -44,9 +44,22 @@ By default the list shows the 10 most-recent sessions. `--limit N` changes the c
 
 WHEN is one of: `today` or `yesterday` (local midnight of that day); a span back from now with a unit — `Nh`, `Nd`, or `Nw` (e.g. `24h`, `7d`, `2w`); or an absolute local date `YYYY-MM-DD`. An unrecognized WHEN is a usage error.
 
-`--include CHANNELS` adds per-session detail, given as a comma-separated list of channels. The one channel today is `prompts`: under each session's row, its user prompts are listed in order on a left rail closed by a rule — the same chrome as a rendered turn — each prefixed with the `❯` glyph, with `/clear` omitted; every prompt is shown (the view is opt-in). The rail-and-rule groups a session's prompts and bounds the block, separating one session from the next. `all` selects every channel. An unknown channel is a usage error.
+`--include CHANNELS` adds per-session detail, given as a comma-separated list of channels. All detail renders under the session's row on a left rail closed by a rule — the same chrome as a rendered turn — and the rail-and-rule bounds the block, separating one session from the next. When more than one channel is selected they share a single block (one rail, one closing rule). `all` selects every channel. An unknown channel is a usage error. The channels:
 
-When a time filter is given and `--limit` is not, the cap is lifted — `agentry list --since today` shows every session from today, not just ten. A window that matches no session prints nothing and exits zero; a project with no sessions at all is an error, the same as in render mode. `list` takes no session-id argument; the rendering flags (`--level`, channel toggles) do not exist on it — they live on the render path, not as flags `list` silently ignores.
+- `prompts` — the session's user prompts, listed in order each prefixed with the `❯` glyph, `/clear` omitted; every prompt is shown (the view is opt-in).
+- `tools` — a breakdown of the session's **top-level** tool calls, grouped by identity rather than by bare tool name, because the signal is *which* commands, skills, and agents ran. Four category lines, each shown only when non-empty: `Skills` (by skill name), `Agents` (by subagent type — named agents appear by name), `Bash` (by invoked program — the first command token, leading `VAR=` assignments stripped, reduced to its basename), and `Other` (every remaining tool by its own name). Within a line, entries read `name ×count`, ordered by count descending then name. "Top-level" means the calls the main thread made — calls inside subagents are not counted, matching the per-turn tool count.
+
+A second family of flags filters the listing by the tool calls a session made — answering "which sessions used X?" without reading each one. Two axes:
+
+- `--used-tool NAME` — sessions where that tool fired, matched against the tool-use name (`Bash`, `WebFetch`, `Skill`, `Agent`, …), case-insensitive and exact. This is the "which mechanism" axis.
+- `--used-skill NAME`, `--used-agent TYPE`, `--used-command PATTERN` — the identity axis: what was invoked *through* the three identity-bearing tools — a Skill call's skill, an Agent call's subagent type, a Bash command's text.
+- `--used TOKEN` — a catch-all over the identity axis: matches a skill name, an agent type, or a command. It deliberately does **not** match tool names, so the two axes never collide — to filter by tool name use `--used-tool`.
+
+Identity-axis matches (everything but `--used-tool`) are case-insensitive substring, so `--used-skill sonar` also catches `sonar-search` and `--used-command 'git push'` matches that phrase anywhere in a command. Substring cuts both ways: a short token over-matches (`--used-command exa` also hits `exact`), so disambiguate with a more specific pattern (`scripts/exa`) when a token is also a common substring. The population is the same top-level calls `--include tools` counts — calls inside subagents are not considered. Multiple filter flags combine with AND (a session must satisfy all); for OR, run separate listings. Like the `--include tools` breakdown, these read a session's tool calls, so they pair naturally: filter to the sessions that used something, then `--include tools` to see what else those sessions did.
+
+`--format json` emits the selected sessions as a JSON array instead of the text table — the listing's machine-readable form, for piping into `jq`. It carries the full model per session (`id`, `start`, `end`, `title`, `numTurns`, `prompts`, `tools`, `commands`), in the same order the table shows (most-recent first). Being the complete model, it ignores `--include` (a text-shaping flag) and color; the selectors (`--since`/`--until`/`--limit`/`--used*`) still choose which sessions appear, and an empty selection emits `[]`. `--format` also accepts `text` (the default); an unknown value is a usage error. The default text table renders as below.
+
+When a time filter **or any `--used*` filter** is given and `--limit` is not, the cap is lifted — `agentry list --since today` shows every session from today, not just ten. A window that matches no session prints nothing and exits zero; a project with no sessions at all is an error, the same as in render mode. `list` takes no session-id argument; the rendering flags (`--level`, channel toggles) do not exist on it — they live on the render path, not as flags `list` silently ignores.
 
 Color follows the same rule as rendered output: styled on a terminal, plain when piped or with `NO_COLOR` / `--no-color`.
 
@@ -82,7 +95,7 @@ Flags and operands may appear in any order (`agentry list --since today` and `ag
 **Roadmap:**
 
 - Session selection beyond a full id: content search (a `search` verb), partial-id match.
-- `--format json`: the structured session model emitted for agent consumption. The model is built in memory first and drives terminal rendering; exposing it is serialization.
+- `--format json` (render path): the full structured session model emitted for agent consumption. The model is built in memory first and drives terminal rendering; exposing it is serialization. `agentry list --format json` already serializes the session summaries (see Listing sessions); this extends the same flag to a rendered session.
 - `--format md` / `-o FILE`: markdown-file export.
 - Interactive session browser.
 - Bare-URL autolinks: render plain `https://…` URLs (not wrapped in markdown link syntax) as OSC 8 hyperlinks too.

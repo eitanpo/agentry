@@ -93,7 +93,111 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		Title:    sessionTitle(lastAITitle(entries), turns),
 		Prompts:  prompts,
 		NumTurns: len(turns),
+		Tools:    toolStats(entries),
+		Commands: bashCommands(entries),
 	}, nil
+}
+
+// bashCommands returns the session's distinct top-level Bash commands in
+// first-seen order, the corpus --used-command and --used substring-match.
+func bashCommands(entries []entry) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range entries {
+		if e.typ != "assistant" {
+			continue
+		}
+		for _, b := range e.blocks {
+			if b.typ != "tool_use" || b.name != "Bash" {
+				continue
+			}
+			cmd, _ := b.input["command"].(string)
+			if cmd == "" || seen[cmd] {
+				continue
+			}
+			seen[cmd] = true
+			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
+// toolStats aggregates the session's top-level tool calls by (tool, identity),
+// preserving first-seen order so output is stable before the renderer sorts it.
+// It counts only the main thread's calls — subagent sidecars are not loaded —
+// matching the top-level population of turnMetrics.
+func toolStats(entries []entry) []model.ToolStat {
+	type key struct{ tool, identity string }
+	counts := map[key]int{}
+	var order []key
+	for _, e := range entries {
+		if e.typ != "assistant" {
+			continue
+		}
+		for _, b := range e.blocks {
+			if b.typ != "tool_use" {
+				continue
+			}
+			k := key{b.name, toolIdentity(b.name, b.input)}
+			if counts[k] == 0 {
+				order = append(order, k)
+			}
+			counts[k]++
+		}
+	}
+	out := make([]model.ToolStat, 0, len(order))
+	for _, k := range order {
+		out = append(out, model.ToolStat{Tool: k.tool, Identity: k.identity, Count: counts[k]})
+	}
+	return out
+}
+
+// toolIdentity is the grouping label for a tool call: the invoked program for
+// Bash, the skill for Skill, the subagent type for Agent. Empty for every other
+// tool, whose own name is its identity. Field names verified against live logs.
+func toolIdentity(name string, input map[string]any) string {
+	str := func(k string) string { s, _ := input[k].(string); return s }
+	switch name {
+	case "Bash":
+		return bashProgram(str("command"))
+	case "Skill":
+		return str("skill")
+	case "Agent":
+		return str("subagent_type")
+	default:
+		return ""
+	}
+}
+
+// bashProgram reduces a shell command to the program a histogram groups by: the
+// first token after any leading VAR=value assignments, reduced to its basename
+// ("/a/b/exa --x" → "exa"). A heuristic — a pipeline or "cd x && y" reports only
+// its first program, which is enough for a usage tally.
+func bashProgram(cmd string) string {
+	fields := strings.Fields(cmd)
+	i := 0
+	for i < len(fields) && isAssignment(fields[i]) {
+		i++
+	}
+	if i >= len(fields) {
+		return ""
+	}
+	return filepath.Base(fields[i])
+}
+
+// isAssignment reports whether tok is a leading shell VAR=value assignment (the
+// name left of '=' is a non-empty run of identifier characters).
+func isAssignment(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	if eq <= 0 {
+		return false
+	}
+	for _, r := range tok[:eq] {
+		if r != '_' && !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // lastAITitle returns the most recent non-empty ai-title — Claude Code's own

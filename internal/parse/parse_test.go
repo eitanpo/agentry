@@ -39,6 +39,73 @@ func TestSummarize(t *testing.T) {
 	if !s.End.Equal(wantEnd) {
 		t.Errorf("End = %v, want %v", s.End, wantEnd)
 	}
+	// sample.jsonl has one Bash (ls -la) and one Read.
+	assertToolStats(t, s.Tools, []model.ToolStat{
+		{Tool: "Bash", Identity: "ls", Count: 1},
+		{Tool: "Read", Identity: "", Count: 1},
+	})
+}
+
+func TestSummarizeToolStats(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "tools.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// git ×2 (status + push), exa ×1, jq ×1 (after leading VAR= assignments),
+	// Skill expert ×1, Agent researcher ×2, Edit ×1. Order is first-seen.
+	assertToolStats(t, s.Tools, []model.ToolStat{
+		{Tool: "Bash", Identity: "git", Count: 2},
+		{Tool: "Bash", Identity: "exa", Count: 1},
+		{Tool: "Skill", Identity: "expert", Count: 1},
+		{Tool: "Agent", Identity: "researcher", Count: 2},
+		{Tool: "Edit", Identity: "", Count: 1},
+		{Tool: "Bash", Identity: "jq", Count: 1},
+	})
+	// Commands are the distinct full Bash commands, first-seen order, for
+	// --used-command / --used substring matching.
+	wantCmds := []string{
+		"git status",
+		"/Users/x/.claude/skills/exa/scripts/exa --contents -n 5 query",
+		"git push origin main",
+		"FOO=1 BAR=2 jq . file.json",
+	}
+	if len(s.Commands) != len(wantCmds) {
+		t.Fatalf("Commands = %q, want %q", s.Commands, wantCmds)
+	}
+	for i, w := range wantCmds {
+		if s.Commands[i] != w {
+			t.Errorf("Commands[%d] = %q, want %q", i, s.Commands[i], w)
+		}
+	}
+}
+
+func TestBashProgram(t *testing.T) {
+	tests := []struct{ cmd, want string }{
+		{"ls -la", "ls"},
+		{"git push origin main", "git"},
+		{"/Users/x/.claude/skills/exa/scripts/exa --contents q", "exa"},
+		{"FOO=1 BAR=2 jq . f.json", "jq"},
+		{"   ", ""},
+		{"", ""},
+		{"=notassign cmd", "=notassign"}, // leading '=' is not a VAR= assignment
+	}
+	for _, tt := range tests {
+		if got := bashProgram(tt.cmd); got != tt.want {
+			t.Errorf("bashProgram(%q) = %q, want %q", tt.cmd, got, tt.want)
+		}
+	}
+}
+
+func assertToolStats(t *testing.T, got, want []model.ToolStat) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("ToolStats = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ToolStats[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
 }
 
 func TestSummarizePrefersAITitle(t *testing.T) {

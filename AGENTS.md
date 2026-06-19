@@ -48,6 +48,10 @@ Three exits, each requiring a stated reason in the report:
 
 Commit directly to `main`; do not create a feature branch. This is a solo repo whose releases are tags on `main`, so branch-and-PR adds ceremony without a reviewer. Pushing is still a separate, explicit step.
 
+## Versioning
+
+`main.go`'s `var Version` holds the **last published** version — the Makefile and release tags derive from it. It changes **only when publishing a release**, never in a feature commit: feature work leaves it untouched and accumulates under the next version. To publish, bump `var Version` and create the matching `vX.Y.Z` tag in the same step (see the release flow below), choosing the bump from the accumulated change under pre-1.0 SemVer — MINOR (`0.Y`) for backward-compatible public-surface additions, PATCH (`0.y.Z`) for fixes only. So a feature commit states no version; the bump decision is made once, at release, covering everything since the last tag.
+
 ## Implementation notes
 
 Living reference docs:

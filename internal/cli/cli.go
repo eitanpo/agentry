@@ -35,7 +35,8 @@ var levels = map[string]render.Channels{
 var (
 	verbNames    = []string{"view", "list"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
-	includeNames = []string{"prompts", "all"}
+	includeNames = []string{"prompts", "tools", "all"}
+	formatNames  = []string{"json", "text"}
 )
 
 // exitError carries the sysexits code a failure should exit with. RunE returns

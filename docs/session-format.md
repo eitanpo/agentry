@@ -44,7 +44,9 @@ array of typed blocks:
 
 - `text` — `.text`
 - `thinking` — `.thinking` (+ `.signature`)
-- `tool_use` — `.id`, `.name`, `.input` (object)
+- `tool_use` — `.id`, `.name`, `.input` (object). `.input` shape varies by tool;
+  the fields used for a call's identity (`list --include tools`) are `.command`
+  (Bash), `.skill` (Skill), and `.subagent_type` (Agent).
 - `tool_result` (inside `user` entries) — `.tool_use_id`, `.is_error`, `.content`
   (a string, or an array of `{type:"text", text}`)
 

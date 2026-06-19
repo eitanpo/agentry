@@ -42,6 +42,7 @@ func TestNearest(t *testing.T) {
 		{"prompt", includeNames, "prompts"}, // the reported flag-value typo
 		{"detaild", levelNames, "detailed"}, // mistyped level
 		{"al", includeNames, "all"},
+		{"tols", includeNames, "tools"},      // mistyped tools channel
 		{"xyzzy", verbNames, ""},             // nothing close enough
 		{"zzzzzzzz", levelNames, ""},         // far from every candidate
 		{"prompts", includeNames, "prompts"}, // exact match returns itself
@@ -97,6 +98,8 @@ func TestUsageErrorsSuggest(t *testing.T) {
 		{"mistyped flag value", []string{"list", "--include", "prompt"}, `did you mean "prompts"`},
 		{"mistyped flag name", []string{"--thnking"}, "did you mean --thinking"},
 		{"mistyped level value", []string{"--level", "detaild"}, `did you mean "detailed"`},
+		{"mistyped used flag", []string{"list", "--user-tool", "x"}, "did you mean --used-tool"},
+		{"mistyped format value", []string{"list", "--format", "jsn"}, `did you mean "json"`},
 		{"list rejects positional", []string{"list", "foo"}, `unknown command "foo"`},
 	}
 	for _, c := range cases {
