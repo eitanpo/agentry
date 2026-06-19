@@ -36,7 +36,13 @@ Design docs do not accumulate. The durable record is PRODUCT.md + README.md + co
 
 ## Before reporting a change done
 
-For each behavior you touched, name three things: the PRODUCT.md section, the README.md section (or "no user-facing change"), and the code location. If the three disagree, the change is not done.
+For each observable behavior you changed, name four things: the PRODUCT.md section, the README.md section (or "no user-facing change"), the code location, and the test that fails if the behavior regresses. If the first three disagree, the change is not done. Write the test as part of the change — a green build and a manual check show it works now, not that it stays working; do not offer the test as optional or defer it to a follow-up.
+
+Three exits, each requiring a stated reason in the report:
+
+- **No observable behavior changed** — a pure refactor (name the existing suite that still passes) or a doc/process-only edit (state "no behavior surface"). No new test required; this mirrors the code-only exceptions in §Change workflow.
+- **Genuinely unobservable** — "can't be pinned" holds only when the behavior produces no output a test could assert. agentry renders to a writer and sets exit codes, so rendered text, stdout, and exit status are all observable; effort or fiddliness is not a valid reason. Name the specific technical barrier.
+- **Explicit user instruction to skip** — honor it, and record in the report that you skipped the test and why, so the decision is visible rather than silent.
 
 ## Implementation notes
 
