@@ -44,6 +44,10 @@ Three exits, each requiring a stated reason in the report:
 - **Genuinely unobservable** — "can't be pinned" holds only when the behavior produces no output a test could assert. agentry renders to a writer and sets exit codes, so rendered text, stdout, and exit status are all observable; effort or fiddliness is not a valid reason. Name the specific technical barrier.
 - **Explicit user instruction to skip** — honor it, and record in the report that you skipped the test and why, so the decision is visible rather than silent.
 
+## Git
+
+Commit directly to `main`; do not create a feature branch. This is a solo repo whose releases are tags on `main`, so branch-and-PR adds ceremony without a reviewer. Pushing is still a separate, explicit step.
+
 ## Implementation notes
 
 Living reference docs:
