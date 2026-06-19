@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+
+	"github.com/eitanpo/agentry/internal/render"
 )
 
 func TestLevenshtein(t *testing.T) {
@@ -171,8 +175,63 @@ func TestListHelpOmitsRenderGroup(t *testing.T) {
 	}
 }
 
+// resolveChannels parses render flags off a throwaway command and returns the
+// Channels they resolve to — the level preset with any per-channel overrides
+// applied.
+func resolveChannels(t *testing.T, args ...string) render.Channels {
+	t.Helper()
+	cmd := &cobra.Command{RunE: func(*cobra.Command, []string) error { return nil }}
+	addRenderFlags(cmd)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("parse %v: %v", args, err)
+	}
+	ch, err := channelsFromFlags(cmd)
+	if err != nil {
+		t.Fatalf("channelsFromFlags %v: %v", args, err)
+	}
+	return ch
+}
+
+// TestLevelChannels pins the level→channel ladder (PRODUCT.md §Verbosity):
+// breadth before depth — detailed adds tool *activation* and subagent
+// expansion, full alone adds tool-result bodies; metrics rides from standard up.
+// It also checks per-channel overrides add and subtract on top of a level,
+// including the hyphenated --tool-results flag and its --no- form.
+func TestLevelChannels(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want render.Channels
+	}{
+		{"default is minimal", nil, render.Channels{}},
+		{"minimal", []string{"--level", "minimal"}, render.Channels{}},
+		{"standard adds thinking+metrics", []string{"--level", "standard"},
+			render.Channels{Thinking: true, Metrics: true}},
+		{"detailed adds tools+subagents, no results", []string{"--level", "detailed"},
+			render.Channels{Thinking: true, Tools: true, Subagents: true, Metrics: true}},
+		{"full adds tool-results", []string{"--level", "full"},
+			render.Channels{Thinking: true, Tools: true, ToolResults: true, Subagents: true, Metrics: true}},
+		{"override subtracts thinking", []string{"--level", "detailed", "--no-thinking"},
+			render.Channels{Tools: true, Subagents: true, Metrics: true}},
+		{"override adds metrics to minimal", []string{"--level", "minimal", "--metrics"},
+			render.Channels{Metrics: true}},
+		{"override adds tool-results to detailed", []string{"--level", "detailed", "--tool-results"},
+			render.Channels{Thinking: true, Tools: true, ToolResults: true, Subagents: true, Metrics: true}},
+		{"override subtracts tool-results from full", []string{"--level", "full", "--no-tool-results"},
+			render.Channels{Thinking: true, Tools: true, Subagents: true, Metrics: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveChannels(t, c.args...); got != c.want {
+				t.Errorf("channels = %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestIsRenderFlag(t *testing.T) {
-	render := []string{"level", "thinking", "no-thinking", "tools", "no-metrics", "subagents"}
+	render := []string{"level", "thinking", "no-thinking", "tools", "tool-results", "no-tool-results", "no-metrics", "subagents"}
 	for _, n := range render {
 		if !isRenderFlag(n) {
 			t.Errorf("isRenderFlag(%q) = false, want true", n)

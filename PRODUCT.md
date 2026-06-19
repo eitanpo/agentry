@@ -52,7 +52,22 @@ Color follows the same rule as rendered output: styled on a terminal, plain when
 
 ## Verbosity
 
-`--level minimal | standard | detailed | full` selects how much of each turn is shown: prompts only → + thinking → + tools → + subagents. Per-channel overrides (`--thinking` / `--no-thinking`, `--tools` / `--no-tools`, …) adjust individual channels. Default is `minimal`.
+`--level minimal | standard | detailed | full` is a preset over independent channels; default `minimal`. Each level is just a named set of channel defaults — per-channel overrides (`--thinking` / `--no-thinking`, `--tools`, `--tool-results`, `--subagents`, `--metrics`, and their `--no-` forms) adjust any channel on top of the level, adding or subtracting (e.g. `--level detailed --no-thinking`).
+
+The user prompt and the agent's response text are always shown — they are the irreducible transcript, not a channel. Levels layer notions of the work onto that base, breadth before depth: each level adds more *kinds* of detail until the deepest level adds the result bodies.
+
+- **minimal** — prompts and response only.
+- **standard** — + thinking; + metrics.
+- **detailed** — + tools (the notion that a tool fired) and + subagents (skill and subagent expansion). The shape of the work, without tool output.
+- **full** — + tool-results (each tool's output body). The content of the work.
+
+The channels:
+
+- **thinking** — assistant reasoning blocks.
+- **tools** — one line per tool call: that it fired, with name, truncated args, status, and duration.
+- **tool-results** — the result body of each tool call. `tools` shows *that* a tool fired; `tool-results` shows *what it returned*.
+- **subagents** — expansion of nested work: a skill or subagent call renders its inner event stream instead of a result body. Inside that stream the same channels apply, so at `detailed` a skill expands to its tool-activation lines without their bodies.
+- **metrics** — the session summary table (per-turn token and tool breakdown). The per-turn footer (duration, tool count, errors) is always shown, independent of this channel.
 
 ## CLI conventions
 

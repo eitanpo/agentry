@@ -26,9 +26,9 @@ const (
 // levels maps each verbosity preset to the channels it enables.
 var levels = map[string]render.Channels{
 	"minimal":  {},
-	"standard": {Thinking: true},
-	"detailed": {Thinking: true, Tools: true, Metrics: true},
-	"full":     {Thinking: true, Tools: true, Subagents: true, Metrics: true},
+	"standard": {Thinking: true, Metrics: true},
+	"detailed": {Thinking: true, Tools: true, Subagents: true, Metrics: true},
+	"full":     {Thinking: true, Tools: true, ToolResults: true, Subagents: true, Metrics: true},
 }
 
 // Candidate sets for nearest(): valid verbs, --level values, --include channels.

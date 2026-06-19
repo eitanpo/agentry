@@ -47,8 +47,8 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 
 | Flag | Mode | Default | Description |
 |---|---|---|---|
-| `--level minimal\|standard\|detailed\|full` | render | `minimal` | How much of each turn to show. |
-| `--[no-]thinking\|tools\|subagents\|metrics` | render | — | Override a single channel on top of `--level`. |
+| `--level minimal\|standard\|detailed\|full` | render | `minimal` | Preset of channel defaults. `minimal` prompts+response; `standard` +thinking+metrics; `detailed` +tools+subagents (no output); `full` +tool-results. |
+| `--[no-]thinking\|tools\|tool-results\|subagents\|metrics` | render | — | Override a single channel on top of `--level` (adds or subtracts). `tools` = a tool fired; `tool-results` = its output. |
 | `--limit N` | `list` | `10` | Cap to N most-recent (`0` = no cap; lifted when a time filter is set). |
 | `--since WHEN`, `--until WHEN` | `list` | — | Filter by last-activity time. WHEN: `today`/`yesterday`, `Nh`/`Nd`/`Nw`, or `YYYY-MM-DD`. |
 | `--include CHANNELS` | `list` | — | Add per-session detail. Comma-separated; channels: `prompts` (or `all`). |

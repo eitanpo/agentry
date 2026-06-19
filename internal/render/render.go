@@ -32,9 +32,10 @@ const (
 	glyphErr         = "✗"
 )
 
-// Channels selects which optional sections render.
+// Channels selects which optional sections render. Tools gates the per-call
+// activation line (that a tool fired); ToolResults gates its result body.
 type Channels struct {
-	Thinking, Tools, Subagents, Metrics bool
+	Thinking, Tools, ToolResults, Subagents, Metrics bool
 }
 
 // Options configures a render pass.
@@ -265,9 +266,14 @@ func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 		nested := prefix + r.dim.Render("│") + " "
 		return append(out, r.events(t.Subagent, nested, depth+1)...)
 	}
-	// Otherwise show the (possibly truncated) result body.
-	bodyPrefix := prefix + r.dim.Render("│") + " "
-	return append(out, r.toolBody(t.Result, bodyPrefix)...)
+	// Otherwise show the (possibly truncated) result body, if enabled. With
+	// ToolResults off the activation line stands alone — the notion that the
+	// tool fired, without its output.
+	if r.opts.Channels.ToolResults {
+		bodyPrefix := prefix + r.dim.Render("│") + " "
+		return append(out, r.toolBody(t.Result, bodyPrefix)...)
+	}
+	return out
 }
 
 func (r *renderer) toolBody(text, prefix string) []string {

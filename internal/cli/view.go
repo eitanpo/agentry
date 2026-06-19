@@ -10,7 +10,7 @@ import (
 
 // channelNames are the per-channel overrides, each exposed as --name / --no-name.
 // Single source for both flag registration and render-flag-group detection.
-var channelNames = []string{"thinking", "tools", "subagents", "metrics"}
+var channelNames = []string{"thinking", "tools", "tool-results", "subagents", "metrics"}
 
 // newViewCmd is the explicit render verb. It behaves exactly like the bare
 // command but owns the render flags' own help page and is listed in
@@ -71,6 +71,7 @@ func channelsFromFlags(cmd *cobra.Command) (render.Channels, error) {
 	}
 	applyChannel(&channels.Thinking, cmd, "thinking")
 	applyChannel(&channels.Tools, cmd, "tools")
+	applyChannel(&channels.ToolResults, cmd, "tool-results")
 	applyChannel(&channels.Subagents, cmd, "subagents")
 	applyChannel(&channels.Metrics, cmd, "metrics")
 	return channels, nil

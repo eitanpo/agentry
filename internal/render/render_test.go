@@ -211,6 +211,85 @@ func TestTruncateAndOneLine(t *testing.T) {
 	}
 }
 
+// gatingSession has one turn with a plain tool (a result body) and a subagent
+// call (a nested event stream plus its own result body), so a render can be
+// probed for which channels surfaced what.
+func gatingSession() *model.Session {
+	return &model.Session{
+		Meta: model.Meta{Model: "claude-opus-4-7"},
+		Turns: []model.Turn{{
+			Prompt: "go",
+			Events: []model.Event{
+				{Kind: model.EventText, Text: "RESPONSEMARKER"},
+				{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: "TOOLBODYMARKER"}},
+				{Kind: model.EventTool, Tool: &model.Tool{
+					Name:     "Agent",
+					Result:   "AGENTRESULTMARKER",
+					Subagent: []model.Event{{Kind: model.EventText, Text: "NESTEDMARKER"}},
+				}},
+			},
+		}},
+	}
+}
+
+func renderChannels(t *testing.T, ch Channels) string {
+	t.Helper()
+	var b strings.Builder
+	if err := Session(&b, gatingSession(), Options{Width: 80, Color: false, Channels: ch}); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+// TestChannelGating verifies the activation/body/expansion split: Tools gates
+// whether a tool's head line appears, ToolResults gates its result body, and
+// Subagents gates expansion of a nested stream (falling through to the
+// ToolResults body when off). The response text is always shown.
+func TestChannelGating(t *testing.T) {
+	has := func(t *testing.T, s, marker string, want bool) {
+		t.Helper()
+		if got := strings.Contains(s, marker); got != want {
+			t.Errorf("contains %q = %v, want %v", marker, got, want)
+		}
+	}
+
+	t.Run("minimal shows response, no tools", func(t *testing.T) {
+		out := renderChannels(t, Channels{})
+		has(t, out, "RESPONSEMARKER", true)
+		has(t, out, "Read", false)
+		has(t, out, "TOOLBODYMARKER", false)
+		has(t, out, "NESTEDMARKER", false)
+	})
+
+	t.Run("detailed: activation + expansion, no bodies", func(t *testing.T) {
+		out := renderChannels(t, Channels{Thinking: true, Tools: true, Subagents: true, Metrics: true})
+		has(t, out, "Read", true)            // tool fired
+		has(t, out, "TOOLBODYMARKER", false) // but no result body
+		has(t, out, "NESTEDMARKER", true)    // subagent expanded
+		has(t, out, "AGENTRESULTMARKER", false)
+	})
+
+	t.Run("full: activation + expansion + bodies", func(t *testing.T) {
+		out := renderChannels(t, Channels{Thinking: true, Tools: true, ToolResults: true, Subagents: true, Metrics: true})
+		has(t, out, "Read", true)
+		has(t, out, "TOOLBODYMARKER", true)
+		has(t, out, "NESTEDMARKER", true)
+	})
+
+	t.Run("subagents off falls through to result body", func(t *testing.T) {
+		out := renderChannels(t, Channels{Tools: true, ToolResults: true})
+		has(t, out, "Agent", true)              // head line present
+		has(t, out, "NESTEDMARKER", false)      // not expanded
+		has(t, out, "AGENTRESULTMARKER", true)  // its result body shown instead
+	})
+
+	t.Run("tools on, results off: head without body", func(t *testing.T) {
+		out := renderChannels(t, Channels{Tools: true})
+		has(t, out, "Read", true)
+		has(t, out, "TOOLBODYMARKER", false)
+	})
+}
+
 func TestSessionPlainNoANSI(t *testing.T) {
 	// A minimal render must contain no ESC bytes when color is off.
 	var b strings.Builder
