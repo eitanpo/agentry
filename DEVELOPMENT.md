@@ -67,14 +67,11 @@ release, and pushes the Homebrew **cask** to the `eitanpo/homebrew-tap` repo (wh
    builds report it; commit.
 2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. GoReleaser derives the version from
    the tag and injects it via `-ldflags`.
-3. Dry-run first: `goreleaser release --snapshot --clean` (builds locally, publishes nothing).
-4. Publish — both tokens can be the gh token, since the same account owns both repos:
-
-   ```
-   export GITHUB_TOKEN=$(gh auth token)
-   export HOMEBREW_TAP_GITHUB_TOKEN=$GITHUB_TOKEN
-   goreleaser release --clean
-   ```
+3. Dry-run first: `make release-dry` (builds all targets locally, publishes nothing, installs nothing).
+4. Publish: `make release`. This runs `goreleaser release --clean` (sourcing both tokens from
+   `gh auth token`, since the same account owns both repos) and then `make install`, so this
+   machine ends up running the version just shipped. Refreshing the local install is part of the
+   release target, not a separate step to remember.
 
 The cask lands at `Casks/agentry.rb` in the tap. macOS binaries are unsigned, so the cask's
 post-install hook strips the quarantine attribute. Linux has no cask — `go install` instead.
