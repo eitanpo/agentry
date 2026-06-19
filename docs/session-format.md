@@ -24,7 +24,7 @@ Common top-level fields: `type`, `timestamp` (RFC3339), `message`, plus context 
 
 ### Entry types
 
-Observed: `assistant`, `user`, `system`, `ai-title`, `attachment`,
+Observed: `assistant`, `user`, `system`, `ai-title`, `custom-title`, `attachment`,
 `file-history-snapshot`, `last-prompt`, `permission-mode` (and `progress`,
 `queue-operation` as transient noise). **Only `assistant` and `user` carry renderable
 content**; ignore the rest.
@@ -36,6 +36,12 @@ There is no reliable in-file "session complete" signal.
 summary, rewritten as the session evolves, so multiple appear and the last is the
 current one (`sessionId` names the session). It is not renderable content, but the
 session listing (`agentry list`) uses the latest `aiTitle` as the session's title.
+
+`custom-title` entries carry a top-level `customTitle` string — the name you give a
+session by renaming it in Claude Code. It overrides `aiTitle` in the listing (see the
+title ladder in PRODUCT.md §`agentry list`), and once one is written Claude Code stops
+appending fresh `ai-title` entries, so the latest `aiTitle` is frozen at its pre-rename
+value. The latest non-empty `customTitle` wins.
 
 ### message
 

@@ -90,7 +90,7 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		ID:       stem,
 		Start:    start,
 		End:      end,
-		Title:    sessionTitle(lastAITitle(entries), turns),
+		Title:    sessionTitle(lastTitleOf(entries, "custom-title"), lastTitleOf(entries, "ai-title"), turns),
 		Prompts:  prompts,
 		NumTurns: len(turns),
 		Tools:    toolStats(entries),
@@ -200,22 +200,27 @@ func isAssignment(tok string) bool {
 	return true
 }
 
-// lastAITitle returns the most recent non-empty ai-title — Claude Code's own
-// session summary, regenerated as the session evolves, so the last wins.
-func lastAITitle(entries []entry) string {
+// lastTitleOf returns the most recent non-empty title carried on entries of the
+// given type. ai-title and custom-title both regenerate/rewrite as the session
+// evolves, so the last one wins.
+func lastTitleOf(entries []entry, typ string) string {
 	title := ""
 	for _, e := range entries {
-		if e.typ == "ai-title" && strings.TrimSpace(e.aiTitle) != "" {
-			title = e.aiTitle
+		if e.typ == typ && strings.TrimSpace(e.title) != "" {
+			title = e.title
 		}
 	}
 	return title
 }
 
-// sessionTitle picks a listing title by a fallback ladder: Claude Code's
-// ai-title if present, else the first turn's prompt skipping a leading /clear
-// (which resets context and describes nothing), else the first prompt.
-func sessionTitle(aiTitle string, turns []rawTurn) string {
+// sessionTitle picks a listing title by a fallback ladder: the manual
+// custom-title (set by renaming the session) if present, else Claude Code's
+// ai-title, else the first turn's prompt skipping a leading /clear (which resets
+// context and describes nothing), else the first prompt.
+func sessionTitle(customTitle, aiTitle string, turns []rawTurn) string {
+	if t := strings.TrimSpace(customTitle); t != "" {
+		return t
+	}
 	if t := strings.TrimSpace(aiTitle); t != "" {
 		return t
 	}
@@ -244,7 +249,7 @@ type entry struct {
 	t          time.Time
 	model      string
 	usage      model.Usage
-	aiTitle    string  // set on ai-title entries
+	title      string  // set on ai-title (aiTitle) and custom-title (customTitle) entries
 	contentStr string  // set when message.content is a JSON string
 	hasStr     bool    // distinguishes "" content from absent/array content
 	blocks     []block // set when message.content is a JSON array
@@ -263,10 +268,11 @@ type block struct {
 }
 
 type rawEntry struct {
-	Type      string          `json:"type"`
-	Timestamp string          `json:"timestamp"`
-	Message   json.RawMessage `json:"message"`
-	AiTitle   string          `json:"aiTitle"` // ai-title entries: Claude Code's own session summary
+	Type        string          `json:"type"`
+	Timestamp   string          `json:"timestamp"`
+	Message     json.RawMessage `json:"message"`
+	AiTitle     string          `json:"aiTitle"`     // ai-title entries: Claude Code's own session summary
+	CustomTitle string          `json:"customTitle"` // custom-title entries: the name set by renaming the session
 }
 
 type rawMessage struct {
@@ -313,7 +319,7 @@ func loadEntries(path string) ([]entry, error) {
 		if json.Unmarshal([]byte(line), &re) != nil {
 			continue // skip malformed lines, as the reference does
 		}
-		e := entry{typ: re.Type, aiTitle: re.AiTitle}
+		e := entry{typ: re.Type, title: re.AiTitle + re.CustomTitle}
 		if ts, err := time.Parse(time.RFC3339, re.Timestamp); err == nil {
 			e.t = ts
 		}

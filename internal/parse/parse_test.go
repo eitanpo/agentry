@@ -119,6 +119,18 @@ func TestSummarizePrefersAITitle(t *testing.T) {
 	}
 }
 
+func TestSummarizePrefersCustomTitle(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "custom-title.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A manual rename (custom-title) wins over the ai-title, which Claude Code
+	// freezes at its stale pre-rename value once a custom title is set.
+	if s.Title != "widgets" {
+		t.Errorf("Title = %q, want the custom-title", s.Title)
+	}
+}
+
 func TestSummarizeSkipsLeadingClear(t *testing.T) {
 	s, err := Summarize(filepath.Join("testdata", "clear-start.jsonl"))
 	if err != nil {

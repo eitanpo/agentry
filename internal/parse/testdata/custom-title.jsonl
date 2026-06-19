@@ -1,0 +1,6 @@
+{"type":"user","timestamp":"2026-05-27T09:00:00Z","message":{"role":"user","content":"do the thing"}}
+{"type":"ai-title","timestamp":"2026-05-27T09:00:05Z","aiTitle":"Fetch the widget pipeline details","sessionId":"custom-title"}
+{"type":"assistant","timestamp":"2026-05-27T09:00:06Z","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"ok"}]}}
+{"type":"custom-title","customTitle":"widgets","sessionId":"custom-title"}
+{"type":"user","timestamp":"2026-05-27T09:01:00Z","message":{"role":"user","content":"another prompt after the rename"}}
+{"type":"assistant","timestamp":"2026-05-27T09:01:06Z","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"done"}]}}
