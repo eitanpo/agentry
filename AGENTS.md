@@ -52,6 +52,10 @@ Commit directly to `main`; do not create a feature branch. This is a solo repo w
 
 `main.go`'s `var Version` holds the **last published** version — the Makefile and release tags derive from it. It changes **only when publishing a release**, never in a feature commit: feature work leaves it untouched and accumulates under the next version. To publish, bump `var Version` and create the matching `vX.Y.Z` tag in the same step (see the release flow below), choosing the bump from the accumulated change under pre-1.0 SemVer — MINOR (`0.Y`) for backward-compatible public-surface additions, PATCH (`0.y.Z`) for fixes only. So a feature commit states no version; the bump decision is made once, at release, covering everything since the last tag.
 
+## Building
+
+When you compile-check in this repo, run `make` (or `make build`), never bare `go build` / `go install`. `make` compiles the whole module **and** installs the working-tree binary to `~/go/bin`; bare `go build` only compiles. The user tests your changes by running the global `agentry` from other projects, so a bare `go build` that skips the install leaves them testing stale behavior. See [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ## Implementation notes
 
 Living reference docs:

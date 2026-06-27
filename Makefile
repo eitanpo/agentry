@@ -1,19 +1,23 @@
 # Local build/install. The base version is canonical in main.go (var Version); here we append
-# a UTC build timestamp as the semver build-metadata segment so every local build is distinct.
+# a UTC build timestamp as the semver build-metadata segment so every local build is distinct,
+# plus a ".dirty" marker when the working tree has uncommitted changes — so the global binary's
+# --version shows at a glance it is an unreleased dev build, not the clean release.
 # Plain `go build`/`go install` (no make) print the bare base version.
 BASE    := $(shell sed -n 's/^var Version = "\(.*\)"/\1/p' main.go)
-VERSION := $(BASE)+$(shell date -u +%Y%m%dT%H%M%SZ)
+DIRTY   := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo .dirty)
+VERSION := $(BASE)+$(shell date -u +%Y%m%dT%H%M%SZ)$(DIRTY)
 LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 
-# install is the default goal: while iterating you run the global `agentry` (it
-# resolves sessions from the cwd, not this repo), so a bare `make` keeps that
-# binary current. `make build` is the explicit escape hatch for a throwaway
-# local artifact that does NOT touch the global install.
-.DEFAULT_GOAL := install
+# build is the default goal: it compile-checks the whole module, then installs to ~/go/bin so
+# the global `agentry` (which resolves sessions from the cwd, not this repo) always reflects the
+# latest work. Running the build IS the install — there is no non-installing variant. `install`
+# is the install step on its own, reused by `release`.
+.DEFAULT_GOAL := build
 
 .PHONY: build install release release-dry
 build:
-	go build $(LDFLAGS) -o agentry .
+	go build ./...
+	go install $(LDFLAGS) .
 install:
 	go install $(LDFLAGS) .
 

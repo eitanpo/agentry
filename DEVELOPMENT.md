@@ -14,18 +14,22 @@ does see [PRODUCT.md](PRODUCT.md); for install-via-brew and usage see [README.md
 | Command | Use |
 |---|---|
 | `go run .` | quickest iteration inside the repo (prints the bare base version, e.g. `0.1.0`) |
-| `make` / `make install` | install to `~/go/bin`, stamped — the default goal, since you run the global `agentry` from other projects |
-| `make build` | throwaway local binary `./agentry` (gitignored) for one-off inspection — does **not** update the global install |
+| `make` / `make build` | compile-check the whole module **and** install to `~/go/bin`, stamped — the default goal, so the global `agentry` you run from other projects always reflects your latest work |
+| `make install` | install only, skipping the whole-module compile-check — the install step `make release` reuses |
 
-Any local change you want to *run* goes through `make install` (or bare `make`) — the global binary is the only one you invoke, so building a throwaway copy instead leaves it stale.
+The global binary is the only one you invoke — `agentry` resolves the session from the
+**current** directory, so you run the installed binary from the project whose log you want, not
+from this repo. So any change you want to *run* must be installed; bare `make` (or `make build`)
+does that as the second half of building, which is why building no longer produces a throwaway
+local artifact.
 
-`make build`/`make install` inject a UTC build timestamp as semver build metadata so every
-build is distinguishable (see [Versioning](#versioning)). Plain `go build -o agentry .` /
-`go install .` also work but print the bare base version without a timestamp.
+`make build`/`make install` stamp the binary with a UTC build timestamp as semver build metadata,
+plus a `.dirty` suffix when the working tree has uncommitted changes — so `agentry --version`
+both distinguishes each rebuild and flags an unreleased dev build (see [Versioning](#versioning)).
+Plain `go build`/`go install` (no make) print the bare base version.
 
-`agentry` resolves the session from the **current** directory, so run the installed binary from
-the project whose log you want — not from this repo. The installed binary is a snapshot, not
-a live link: re-run `make install` after each change you want reflected in the global `agentry`.
+The installed binary is a snapshot, not a live link: re-run `make` after each change you want
+reflected in the global `agentry`.
 
 ## Tests
 
@@ -49,9 +53,10 @@ or editing it, open `/hooks` once or restart so Claude Code reloads the config.
 
 The base version is canonical in `main.go` (`var Version`), and holds the **last published**
 release. `make build` and `make install` append a UTC build timestamp as the semver
-build-metadata segment, e.g. `0.5.0+20260527T131005Z`, so every local build is distinct —
-useful for confirming a rebuild took effect. Plain `go build`/`go install`/`go run` (no make)
-print the bare base version.
+build-metadata segment, plus a `.dirty` suffix when the working tree has uncommitted changes —
+e.g. `0.5.0+20260527T131005Z` when clean, `0.5.0+20260527T131005Z.dirty` with local edits — so
+every local build is distinct (confirming a rebuild took effect) and an unreleased dev build is
+obvious. Plain `go build`/`go install`/`go run` (no make) print the bare base version.
 
 Release builds set the full version from the git tag via `-ldflags "-X main.Version=<v>"`
 (GoReleaser does this on tag).
