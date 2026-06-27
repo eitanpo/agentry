@@ -95,10 +95,16 @@ system-injected. Injected markers include `<local-command-caveat>`, `<bash-input
 `Base directory for this skill:`, and `<task-notification>` (the harness's
 background-task event/completion reports — a `user` entry wrapping `<task-id>`,
 `<status>`, `<summary>`, `<output-file>`, not anything the human typed). Slash
-commands appear as `<command-name>…</command-name>` / `<command-args>…</command-args>`;
-the `<command-name>` value **already includes the leading slash** (e.g. `/clear`,
-`/research-lookup`), so code that prefixes `/` itself doubles it (`//clear`) — strip or
-skip the prefix. Array-of-`text` user content is also injected (e.g. skill bodies), not a
+commands appear as `<command-name>…</command-name>` / `<command-args>…</command-args>`.
+The leading slash in `<command-name>` is **inconsistent**: built-ins carry it (`/clear`,
+`/compact`, `/refine`), custom commands do not (`sonar`, `exa`, `agent-guidelines`). So
+code that reconstructs the prompt must normalize — strip any leading slashes and add
+exactly one — rather than blindly prefixing `/` (which doubles built-ins to `//clear`).
+Trailing text typed on the same line as a command lands in `<command-args>`, so
+`/clear improve the parser` records as name `/clear`, args `improve the parser` — not a
+separate prompt. Note: a command can also appear as **plain string content** (no
+`<command-name>` wrapper, e.g. a literal `/commit push`), which renders verbatim with its
+single slash. Array-of-`text` user content is also injected (e.g. skill bodies), not a
 typed prompt.
 
 ## Subagent stitching

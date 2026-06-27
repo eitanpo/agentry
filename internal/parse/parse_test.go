@@ -151,7 +151,8 @@ func TestSummarizeSkipsLeadingClear(t *testing.T) {
 }
 
 func TestIsClearCmd(t *testing.T) {
-	clear := []string{"//clear", "/clear", "  //clear  ", "clear"}
+	clear := []string{"//clear", "/clear", "  //clear  ", "clear",
+		"/clear improve the parser", "//clear do the thing"}
 	notClear := []string{"//clear-cache", "/research-lookup x", "clear the table", ""}
 	for _, p := range clear {
 		if !isClearCmd(p) {
@@ -300,6 +301,7 @@ func TestUserPrompt(t *testing.T) {
 		{"bash injected", entry{hasStr: true, contentStr: "<bash-input>x</bash-input>"}, "", false},
 		{"skill injected", entry{hasStr: true, contentStr: "Base directory for this skill: /x"}, "", false},
 		{"command", entry{hasStr: true, contentStr: "<command-name>foo</command-name><command-args>bar</command-args>"}, "/foo bar", true},
+		{"command name with slash not doubled", entry{hasStr: true, contentStr: "<command-name>/clear</command-name><command-args>fix it</command-args>"}, "/clear fix it", true},
 		{"compaction", entry{hasStr: true, contentStr: "...This session is being continued from a previous conversation..."}, "[context compacted — see session log for full summary]", true},
 		{"empty", entry{hasStr: true, contentStr: "   "}, "", false},
 		{"array content not a prompt", entry{hasStr: false}, "", false},

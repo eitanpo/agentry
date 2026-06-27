@@ -235,11 +235,18 @@ func sessionTitle(customTitle, aiTitle string, turns []rawTurn) string {
 	return ""
 }
 
-// isClearCmd reports whether a turn prompt is the /clear command. The recorded
-// command-name already carries a leading slash, so userPrompt yields "//clear";
-// trimming all leading slashes matches regardless of how many there are.
+// isClearCmd reports whether a turn prompt is the /clear command. userPrompt
+// renders it with one leading slash ("/clear"), but trimming all leading slashes
+// also matches an older "//clear" rendering and a bare "clear".
+//
+// "/clear <text>" — Claude Code records same-line text after /clear as the
+// command's arguments — still counts: the clear resets context and the trailing
+// text describes the reset, not the session. The leading-slash check (s != rest)
+// keeps prose like "clear the table" from being misread as a reset.
 func isClearCmd(prompt string) bool {
-	return strings.TrimLeft(strings.TrimSpace(prompt), "/") == "clear"
+	s := strings.TrimSpace(prompt)
+	rest := strings.TrimLeft(s, "/")
+	return rest == "clear" || (s != rest && strings.HasPrefix(rest, "clear "))
 }
 
 // ── Raw JSONL decoding ───────────────────────────────────────────────────
@@ -643,7 +650,10 @@ func userPrompt(e entry) (string, bool) {
 		if m := cmdArgsRe.FindStringSubmatch(content); m != nil {
 			args = strings.TrimSpace(m[1])
 		}
-		return strings.TrimRight("/"+cmd+" "+args, " "), true
+		// Claude Code records command-name inconsistently — built-ins carry a
+		// leading slash ("/clear"), custom commands do not ("sonar") — so strip any
+		// leading slashes and add exactly one rather than doubling to "//clear".
+		return strings.TrimRight("/"+strings.TrimLeft(cmd, "/")+" "+args, " "), true
 	}
 	if text := strings.TrimSpace(content); text != "" {
 		return text, true
