@@ -253,6 +253,10 @@ type entry struct {
 	contentStr string  // set when message.content is a JSON string
 	hasStr     bool    // distinguishes "" content from absent/array content
 	blocks     []block // set when message.content is a JSON array
+	// toolUseResultAgentID is the structured spawn-child id from the top-level
+	// toolUseResult.agentId, set on the user entry carrying an Agent/forked-Skill
+	// tool_result. Empty when absent (older logs) or for non-spawning tools.
+	toolUseResultAgentID string
 }
 
 type block struct {
@@ -268,11 +272,12 @@ type block struct {
 }
 
 type rawEntry struct {
-	Type        string          `json:"type"`
-	Timestamp   string          `json:"timestamp"`
-	Message     json.RawMessage `json:"message"`
-	AiTitle     string          `json:"aiTitle"`     // ai-title entries: Claude Code's own session summary
-	CustomTitle string          `json:"customTitle"` // custom-title entries: the name set by renaming the session
+	Type          string          `json:"type"`
+	Timestamp     string          `json:"timestamp"`
+	Message       json.RawMessage `json:"message"`
+	AiTitle       string          `json:"aiTitle"`       // ai-title entries: Claude Code's own session summary
+	CustomTitle   string          `json:"customTitle"`   // custom-title entries: the name set by renaming the session
+	ToolUseResult json.RawMessage `json:"toolUseResult"` // structured tool-result mirror; carries agentId for spawn children
 }
 
 type rawMessage struct {
@@ -322,6 +327,16 @@ func loadEntries(path string) ([]entry, error) {
 		e := entry{typ: re.Type, title: re.AiTitle + re.CustomTitle}
 		if ts, err := time.Parse(time.RFC3339, re.Timestamp); err == nil {
 			e.t = ts
+		}
+		// toolUseResult is sometimes a structured object (spawn children carry
+		// agentId), sometimes a plain string — only the object form has an id.
+		if len(re.ToolUseResult) > 0 && re.ToolUseResult[0] == '{' {
+			var tur struct {
+				AgentID string `json:"agentId"`
+			}
+			if json.Unmarshal(re.ToolUseResult, &tur) == nil {
+				e.toolUseResultAgentID = tur.AgentID
+			}
 		}
 		if len(re.Message) > 0 {
 			var msg rawMessage
@@ -451,17 +466,21 @@ func toolResultMap(entries []entry) map[string]toolResult {
 	return m
 }
 
-// agentIDMap maps an Agent tool_use id to its subagent log key ("agent-xxx"),
-// recovered from the "agentId: …" line in the tool's result text.
-func agentIDMap(entries []entry) map[string]string {
-	agentTools := map[string]bool{}
+// sidecarIDs maps the tool_use ids of spawning calls (the named tool) to their
+// subagent log key ("agent-xxx"). It prefers the structured toolUseResult.agentId
+// carried on the result entry and falls back to the "agentId: …" line in the
+// result text — the only mechanism in pre-structured logs, present on Agent
+// results. Restricting to a single tool name keeps an "agentId:" string in some
+// unrelated result from being misread as a spawn link.
+func sidecarIDs(entries []entry, toolName string) map[string]string {
+	tools := map[string]bool{}
 	for _, e := range entries {
 		if e.typ != "assistant" {
 			continue
 		}
 		for _, b := range e.blocks {
-			if b.typ == "tool_use" && b.name == "Agent" {
-				agentTools[b.id] = true
+			if b.typ == "tool_use" && b.name == toolName {
+				tools[b.id] = true
 			}
 		}
 	}
@@ -471,16 +490,31 @@ func agentIDMap(entries []entry) map[string]string {
 			continue
 		}
 		for _, b := range e.blocks {
-			if b.typ != "tool_result" || !agentTools[b.toolUseID] {
+			if b.typ != "tool_result" || !tools[b.toolUseID] {
 				continue
 			}
-			if mt := agentIDRe.FindStringSubmatch(b.resultText); mt != nil {
-				m[b.toolUseID] = "agent-" + mt[1]
+			id := e.toolUseResultAgentID
+			if id == "" {
+				if mt := agentIDRe.FindStringSubmatch(b.resultText); mt != nil {
+					id = mt[1]
+				}
+			}
+			if id != "" {
+				m[b.toolUseID] = "agent-" + id
 			}
 		}
 	}
 	return m
 }
+
+// agentIDMap maps an Agent tool_use id to its subagent log key.
+func agentIDMap(entries []entry) map[string]string { return sidecarIDs(entries, "Agent") }
+
+// skillSidecarMap maps a forked-Skill tool_use id to its subagent log key.
+// Inline skills run in the main chain and write no sidecar, so they never appear
+// here — leaving attachSubagent to fall back to legacy name matching, then to no
+// expansion.
+func skillSidecarMap(entries []entry) map[string]string { return sidecarIDs(entries, "Skill") }
 
 // ── Subagents ────────────────────────────────────────────────────────────
 
@@ -625,6 +659,7 @@ func userPrompt(e entry) (string, bool) {
 func buildEvents(entries []entry, subs map[string]*subagent, seen map[string]bool) []model.Event {
 	results := toolResultMap(entries)
 	agents := agentIDMap(entries)
+	skills := skillSidecarMap(entries)
 	var out []model.Event
 	for _, e := range entries {
 		if e.typ != "assistant" {
@@ -650,7 +685,7 @@ func buildEvents(entries []entry, subs map[string]*subagent, seen map[string]boo
 					Start:   e.t,
 					End:     res.end,
 				}
-				attachSubagent(tool, b, agents, subs, seen)
+				attachSubagent(tool, b, agents, skills, subs, seen)
 				out = append(out, model.Event{Kind: model.EventTool, Tool: tool})
 			}
 		}
@@ -658,18 +693,26 @@ func buildEvents(entries []entry, subs map[string]*subagent, seen map[string]boo
 	return out
 }
 
-// attachSubagent fills tool.Subagent for Agent and Skill calls that spawned one.
-func attachSubagent(tool *model.Tool, b block, agents map[string]string, subs map[string]*subagent, seen map[string]bool) {
+// attachSubagent fills tool.Subagent for Agent and forked-Skill calls that
+// spawned a sidecar. Agent and forked-Skill links resolve by id (the structured
+// agentId, see sidecarIDs); for a Skill with no id link it falls back to matching
+// a sidecar by skill name (pre-structured forked logs). An inline skill — which
+// runs in the main chain and writes no sidecar — matches nothing and renders as a
+// leaf call, its work staying inline in the transcript.
+func attachSubagent(tool *model.Tool, b block, agents, skills map[string]string, subs map[string]*subagent, seen map[string]bool) {
 	key := ""
 	switch b.name {
 	case "Agent":
 		key = agents[b.id]
 	case "Skill":
-		if skill, _ := b.input["skill"].(string); skill != "" {
-			for id, s := range subs {
-				if s.skillName == skill {
-					key = id
-					break
+		key = skills[b.id]
+		if key == "" {
+			if skill, _ := b.input["skill"].(string); skill != "" {
+				for id, s := range subs {
+					if s.skillName == skill {
+						key = id
+						break
+					}
 				}
 			}
 		}

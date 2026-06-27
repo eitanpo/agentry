@@ -6,11 +6,20 @@ Format-of-the-log findings go in [session-format.md](session-format.md) instead.
 
 ## Subagent parsing
 
-**Skill→subagent matching is by name, first match wins.** A `Skill` call carries no
-agentId, so `internal/parse` matches it to a sidecar by skill name. When the same skill
-runs more than once in a turn, every call resolves to the first matching sidecar — later
-invocations render the wrong stream. (`Agent` calls avoid this; they stitch by explicit
-agentId.)
+**Forked-skill stitching prefers `toolUseResult.agentId`; name-match is a fallback.**
+`Agent` and forked-`Skill` results both carry `toolUseResult.agentId`, which `sidecarIDs`
+maps to the sidecar unambiguously. Only pre-structured logs (no `agentId`) fall back to
+matching a sidecar by skill name — and that fallback is first-match-wins, so a skill
+forked more than once in those old logs still resolves later calls to the first sidecar.
+
+**Inline skills must NOT be nested under their `Skill` call.** A skill that runs inline
+(result `Launching skill: <name>`) writes no sidecar; its work is ordinary main-chain
+turns tagged `attributionSkill: <name>`. That tag persists until the next user prompt, so
+it covers the bulk of the turn's real work — not a short delimited sub-execution. Folding
+those turns into the call's `Subagent` would hide them whenever the subagents channel is
+off (minimal/standard), violating PRODUCT.md's "response text is always shown." So
+`attachSubagent` leaves an inline skill as a leaf; only forked skills (real sidecars)
+expand.
 
 **Subagent references can cycle.** A skill sidecar can contain a `Skill` call that
 matches itself by name, so naive recursive expansion infinite-loops (stack overflow).

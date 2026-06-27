@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-06-19T10:00:04Z","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /skills/alpha"}]}}
+{"type":"assistant","timestamp":"2026-06-19T10:00:04Z","message":{"role":"assistant","model":"claude-x","content":[{"type":"text","text":"alpha work"}]}}

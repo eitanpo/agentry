@@ -79,7 +79,7 @@ The channels:
 - **thinking** — assistant reasoning blocks.
 - **tools** — one line per tool call: that it fired, with name, truncated args, status, and duration.
 - **tool-results** — the result body of each tool call. `tools` shows *that* a tool fired; `tool-results` shows *what it returned*.
-- **subagents** — expansion of nested work: a skill or subagent call renders its inner event stream instead of a result body. Inside that stream the same channels apply, so at `detailed` a skill expands to its tool-activation lines without their bodies.
+- **subagents** — expansion of nested work: a call that spawned a child session renders that session's inner event stream instead of a result body. This covers `Agent` calls and **forked** skills — the ones that run in a separate session. An **inline** skill runs in the main chain, so its work already shows as ordinary turns there and the call stays a leaf (nothing to expand). Inside an expanded stream the same channels apply, so at `detailed` a forked skill expands to its tool-activation lines without their bodies.
 - **metrics** — the session summary table (per-turn token and tool breakdown). The per-turn footer (duration, tool count, errors) is always shown, independent of this channel.
 
 ## CLI conventions

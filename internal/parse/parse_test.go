@@ -225,6 +225,70 @@ func TestLoad(t *testing.T) {
 	}
 }
 
+// TestLoadStitching pins subagent stitching across both the structured
+// toolUseResult.agentId key and the legacy fallbacks, so a regression in either
+// path is caught. The session wires four spawning calls to sidecars plus one
+// inline skill that must stay a leaf:
+//   - Agent  via toolUseResult.agentId (result text has no agentId line)
+//   - Agent  via the legacy "agentId:" result line (no toolUseResult)
+//   - Skill  forked via toolUseResult.agentId
+//   - Skill  forked via legacy skill-name match (toolUseResult is a bare string)
+//   - Skill  inline ("Launching skill") with no sidecar → no expansion
+func TestLoadStitching(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "stitch.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Meta.NumSubagents != 4 {
+		t.Errorf("subagents = %d, want 4", sess.Meta.NumSubagents)
+	}
+	if len(sess.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(sess.Turns))
+	}
+
+	var tools []*model.Tool
+	for _, e := range sess.Turns[0].Events {
+		if e.Kind == model.EventTool {
+			tools = append(tools, e.Tool)
+		}
+	}
+	if len(tools) != 5 {
+		t.Fatalf("tool events = %d, want 5", len(tools))
+	}
+
+	// firstText returns the first text event of a tool's expansion, or "" if the
+	// tool has no subagent attached.
+	firstText := func(tool *model.Tool) string {
+		for _, e := range tool.Subagent {
+			if e.Kind == model.EventText {
+				return e.Text
+			}
+		}
+		return ""
+	}
+
+	cases := []struct {
+		idx      int
+		wantText string // "" means: expect no expansion
+	}{
+		{0, "explorer aaa1 work"}, // Agent, structured agentId
+		{1, "explorer aaa2 work"}, // Agent, legacy agentId line
+		{2, "alpha work"},         // Skill, structured agentId
+		{3, "beta work"},          // Skill, legacy name match
+		{4, ""},                   // Skill, inline — leaf, no sidecar
+	}
+	for _, c := range cases {
+		got := firstText(tools[c.idx])
+		if got != c.wantText {
+			t.Errorf("tool[%d] %s(%s): expansion first text = %q, want %q",
+				c.idx, tools[c.idx].Name, tools[c.idx].Args, got, c.wantText)
+		}
+	}
+	if tools[4].Subagent != nil {
+		t.Errorf("inline skill tool[4] has %d subagent events, want none", len(tools[4].Subagent))
+	}
+}
+
 func TestUserPrompt(t *testing.T) {
 	tests := []struct {
 		name   string
