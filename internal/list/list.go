@@ -225,9 +225,94 @@ func RenderJSON(w io.Writer, sums []model.Summary) error {
 	return err
 }
 
+// forkGlyph prefixes a fork's title, indenting it under its family's original.
+const (
+	forkGlyph  = "└─ "
+	forkGlyphW = 3 // display columns of forkGlyph
+)
+
+// frow is one display row: a session and whether it is a fork shown indented
+// under its family's original.
+type frow struct {
+	s    model.Summary
+	fork bool
+}
+
+// arrange turns the selected summaries (most-recent first, as Select returns)
+// into display rows in top-to-bottom print order. Sessions that share a RootUUID
+// are one fork family — a fork copies its parent's history, root entry included.
+// A family prints as a contiguous block: its original (the earliest-born file)
+// first, then each fork indented beneath in birth order. Families are ordered by
+// their most-recently-active member, oldest first, so the newest prints last
+// (bottom), matching the ungrouped layout.
+func arrange(sums []model.Summary) []frow {
+	groups := map[string][]model.Summary{}
+	var order []string // family keys in first-seen (most-recent-first) order
+	for i, s := range sums {
+		key := s.RootUUID
+		if key == "" {
+			key = "\x00" + strconv.Itoa(i) // no root id: a family of one that cannot collide
+		}
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], s)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return familyActivity(groups[order[i]]).Before(familyActivity(groups[order[j]]))
+	})
+	var rows []frow
+	for _, key := range order {
+		fam := groups[key]
+		sort.SliceStable(fam, func(i, j int) bool { return fam[i].Born.Before(fam[j].Born) })
+		parent := fam[0] // earliest-born file: the original the forks descend from
+		for i, s := range fam {
+			// A fork (i > 0) inherits its parent's title until Claude Code
+			// regenerates one. While it still matches, title it by the first prompt
+			// unique to the fork so the rows are distinguishable. s is a copy, so
+			// this shapes only the text table, not the stored summary.
+			if i > 0 && s.Title == parent.Title {
+				if d := firstDivergentPrompt(parent, s); d != "" {
+					s.Title = d
+				}
+			}
+			rows = append(rows, frow{s: s, fork: i > 0})
+		}
+	}
+	return rows
+}
+
+// firstDivergentPrompt returns the fork's first prompt beyond the prefix it
+// shares with its parent — the first turn unique to the fork. Prompt lists
+// already exclude /clear (see parse.Summarize), so a leading /clear is skipped
+// for free. Empty when the fork has added no new prompt yet.
+func firstDivergentPrompt(parent, fork model.Summary) string {
+	i := 0
+	for i < len(parent.Prompts) && i < len(fork.Prompts) && parent.Prompts[i] == fork.Prompts[i] {
+		i++
+	}
+	if i < len(fork.Prompts) {
+		return fork.Prompts[i]
+	}
+	return ""
+}
+
+// familyActivity is a fork family's position key: the most-recent activity among
+// its members, so an active fork keeps the whole family near the bottom.
+func familyActivity(fam []model.Summary) time.Time {
+	var newest time.Time
+	for _, s := range fam {
+		if a := activity(s); a.After(newest) {
+			newest = a
+		}
+	}
+	return newest
+}
+
 // Render writes one row per session: start time, turn count, title, and full id.
 // The id is last and the title padded to a fixed column so ids align and a row
-// can be selected and its id passed back to `agentry <id>`.
+// can be selected and its id passed back to `agentry <id>`. Forks are grouped
+// under their family's original and their titles indented (see arrange).
 func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	if !opts.Color {
 		lipgloss.SetColorProfile(termenv.Ascii) // strips ANSI from styles
@@ -257,9 +342,10 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	// channel is on; the channels share one block.
 	block := opts.Prompts || opts.Tools
 	var b strings.Builder
-	for i := len(sums) - 1; i >= 0; i-- {
-		s := sums[i]
-		if block && i < len(sums)-1 {
+	rows := arrange(sums)
+	for idx, r := range rows {
+		s := r.s
+		if block && idx > 0 {
 			b.WriteByte('\n') // blank line separates session blocks
 		}
 		when := "????-??-?? ??:??"
@@ -268,7 +354,12 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		} else if t := activity(s); !t.IsZero() {
 			when = t.Local().Format("2006-01-02 15:04")
 		}
+		// A fork's title is indented under its family's original; the marker eats
+		// into the title column so the when/turns/id columns stay aligned.
 		title := truncate(oneLine(s.Title), titleW)
+		if r.fork {
+			title = forkGlyph + truncate(oneLine(s.Title), titleW-forkGlyphW)
+		}
 		fmt.Fprintf(&b, "%s  %s  %s  %s  %s\n",
 			meta.Render(when),
 			meta.Render(fmt.Sprintf("%*s", durW, fmtDur(s.Start, s.End))),

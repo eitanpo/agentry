@@ -154,6 +154,108 @@ func TestRenderNewestLast(t *testing.T) {
 	}
 }
 
+func TestArrangeGroupsForks(t *testing.T) {
+	born := func(day int) time.Time { return time.Date(2026, 6, 20+day, 0, 0, 0, 0, time.UTC) }
+	act := func(hour int) time.Time { return time.Date(2026, 6, 27, hour, 0, 0, 0, time.UTC) }
+	// Input arrives most-recent first (as Select returns). Family "R" is an
+	// original (born day 0) plus a fork (born day 1, most recent); "solo" stands
+	// alone (older, no root id).
+	sums := []model.Summary{
+		{ID: "fork", RootUUID: "R", Born: born(1), End: act(18)},
+		{ID: "orig", RootUUID: "R", Born: born(0), End: act(12)},
+		{ID: "solo", Born: born(0), End: act(9)},
+	}
+	rows := arrange(sums)
+	// Top-to-bottom: solo (family anchor 09:00, oldest) then family R (anchor
+	// 18:00): original first, fork indented beneath it.
+	want := []struct {
+		id   string
+		fork bool
+	}{{"solo", false}, {"orig", false}, {"fork", true}}
+	if len(rows) != len(want) {
+		t.Fatalf("got %d rows, want %d: %+v", len(rows), len(want), rows)
+	}
+	for i, w := range want {
+		if rows[i].s.ID != w.id || rows[i].fork != w.fork {
+			t.Errorf("row %d = {%q fork=%v}, want {%q fork=%v}", i, rows[i].s.ID, rows[i].fork, w.id, w.fork)
+		}
+	}
+}
+
+func TestForkInheritedTitleShownByDivergentPrompt(t *testing.T) {
+	day := func(d int) time.Time { return time.Date(2026, 6, 20+d, 0, 0, 0, 0, time.UTC) }
+	// Fork shares the parent's title (ai-title not regenerated) and its prompt
+	// prefix, plus one new prompt.
+	parent := model.Summary{ID: "orig", RootUUID: "R", Born: day(0), Title: "shared title",
+		Prompts: []string{"set up the parser", "fix the bug"}}
+	fork := model.Summary{ID: "fork", RootUUID: "R", Born: day(1), Title: "shared title",
+		Prompts: []string{"set up the parser", "fix the bug", "try a different approach"}}
+	rows := arrange([]model.Summary{fork, parent}) // most-recent first
+
+	titleOf := func(id string) string {
+		for _, r := range rows {
+			if r.s.ID == id {
+				return r.s.Title
+			}
+		}
+		t.Fatalf("no row for %q", id)
+		return ""
+	}
+	if got := titleOf("fork"); got != "try a different approach" {
+		t.Errorf("fork title = %q, want its first divergent prompt", got)
+	}
+	if got := titleOf("orig"); got != "shared title" {
+		t.Errorf("original title = %q, want it untouched", got)
+	}
+
+	// A regenerated (differing) title is left alone; a fork with no new prompt
+	// keeps the shared title.
+	fork2 := fork
+	fork2.Title = "its own summary"
+	rows = arrange([]model.Summary{fork2, parent})
+	if got := titleOf2(rows, "fork"); got != "its own summary" {
+		t.Errorf("regenerated fork title = %q, want it kept", got)
+	}
+	noNew := model.Summary{ID: "fork", RootUUID: "R", Born: day(1), Title: "shared title",
+		Prompts: []string{"set up the parser", "fix the bug"}}
+	rows = arrange([]model.Summary{noNew, parent})
+	if got := titleOf2(rows, "fork"); got != "shared title" {
+		t.Errorf("fork with no new prompt = %q, want the shared title", got)
+	}
+}
+
+func titleOf2(rows []frow, id string) string {
+	for _, r := range rows {
+		if r.s.ID == id {
+			return r.s.Title
+		}
+	}
+	return ""
+}
+
+func TestRenderForkIndent(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "forkid", Title: "the fork", RootUUID: "R", Born: time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 6, 27, 18, 0, 0, 0, time.UTC)},
+		{ID: "origid", Title: "the original", RootUUID: "R", Born: time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)},
+	}
+	var b strings.Builder
+	if err := Render(&b, sums, Options{Width: 100, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	// The fork's title is indented with the marker; the original's is not.
+	if !strings.Contains(out, forkGlyph+"the fork") {
+		t.Errorf("fork title not indented with %q: %q", forkGlyph, out)
+	}
+	if strings.Contains(out, forkGlyph+"the original") {
+		t.Errorf("original should not be indented: %q", out)
+	}
+	// Original prints above its fork.
+	if strings.Index(out, "the original") > strings.Index(out, "the fork") {
+		t.Errorf("want original above fork:\n%s", out)
+	}
+}
+
 func TestRenderIncludePrompts(t *testing.T) {
 	sums := []model.Summary{
 		{ID: "s1", Title: "do a thing", Prompts: []string{"first ask", "second ask"}},

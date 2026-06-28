@@ -46,7 +46,7 @@ agentry list --used researcher            # skill, agent, or command matching "r
 agentry list --used-skill expert --format json | jq   # machine-readable, for piping
 ```
 
-Sessions print oldest-to-newest, so the most recent is at the bottom, next to your prompt. Each row shows the start time, duration, turn count, a title (the manual `custom-title` from renaming the session if set, else Claude Code's own `ai-title` summary, falling back to the first prompt, skipping a leading `/clear`), and the full id — copy an id and pass it to `agentry <id>` to render that session.
+Sessions print oldest-to-newest, so the most recent is at the bottom, next to your prompt. Each row shows the start time, duration, turn count, a title (the manual `custom-title` from renaming the session if set, else Claude Code's own `ai-title` summary, falling back to the first prompt, skipping a leading `/clear`), and the full id — copy an id and pass it to `agentry <id>` to render that session. A forked session (Claude Code's `--fork-session` / `/branch`) is grouped under the original it was forked from and its title indented with `└─`; while it still carries the original's inherited title it is shown by its first new prompt instead, so the two are distinguishable.
 
 ### Options
 

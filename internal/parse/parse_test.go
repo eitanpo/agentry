@@ -150,6 +150,23 @@ func TestSummarizeSkipsLeadingClear(t *testing.T) {
 	}
 }
 
+func TestSummarizeRootUUID(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "rooted.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// RootUUID is the first entry's uuid — the conversation root that a fork
+	// copies verbatim, so it keys the fork family.
+	if s.RootUUID != "root-aaa" {
+		t.Errorf("RootUUID = %q, want %q", s.RootUUID, "root-aaa")
+	}
+	// Born is read from the file (birthtime on macOS, else mtime); it must be set
+	// so a fork family can be ordered. The testdata file exists, so it is non-zero.
+	if s.Born.IsZero() {
+		t.Error("Born is zero, want the file's creation/modification time")
+	}
+}
+
 func TestIsClearCmd(t *testing.T) {
 	clear := []string{"//clear", "/clear", "  //clear  ", "clear",
 		"/clear improve the parser", "//clear do the thing"}

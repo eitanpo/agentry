@@ -95,7 +95,38 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		NumTurns: len(turns),
 		Tools:    toolStats(entries),
 		Commands: bashCommands(entries),
+		RootUUID: rootUUID(entries),
+		Born:     fileBorn(jsonlPath),
 	}, nil
+}
+
+// rootUUID is the uuid of the first entry that carries one — the conversation
+// root. A fork copies its parent's chain verbatim, root entry included, so
+// sessions sharing a root uuid are one fork family. /clear starts an empty
+// session, so its root uuid is fresh and it does not join the parent's family.
+func rootUUID(entries []entry) string {
+	for _, e := range entries {
+		if e.uuid != "" {
+			return e.uuid
+		}
+	}
+	return ""
+}
+
+// fileBorn is the session file's creation time, used to order a fork family
+// (earliest = original). A fork is a new file written at fork time, so its
+// birthtime exceeds the original's — a signal the fork cannot forge, unlike the
+// in-content timestamps it copies. Off macOS, where creation time is not
+// portably readable, it falls back to the modification time.
+func fileBorn(path string) time.Time {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	if bt, ok := fileBirthtime(fi); ok {
+		return bt
+	}
+	return fi.ModTime()
 }
 
 // bashCommands returns the session's distinct top-level Bash commands in
@@ -254,6 +285,7 @@ func isClearCmd(prompt string) bool {
 type entry struct {
 	typ        string
 	t          time.Time
+	uuid       string
 	model      string
 	usage      model.Usage
 	title      string  // set on ai-title (aiTitle) and custom-title (customTitle) entries
@@ -281,6 +313,7 @@ type block struct {
 type rawEntry struct {
 	Type          string          `json:"type"`
 	Timestamp     string          `json:"timestamp"`
+	UUID          string          `json:"uuid"` // entry id; the first one is the conversation root (fork-family key)
 	Message       json.RawMessage `json:"message"`
 	AiTitle       string          `json:"aiTitle"`       // ai-title entries: Claude Code's own session summary
 	CustomTitle   string          `json:"customTitle"`   // custom-title entries: the name set by renaming the session
@@ -331,7 +364,7 @@ func loadEntries(path string) ([]entry, error) {
 		if json.Unmarshal([]byte(line), &re) != nil {
 			continue // skip malformed lines, as the reference does
 		}
-		e := entry{typ: re.Type, title: re.AiTitle + re.CustomTitle}
+		e := entry{typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle}
 		if ts, err := time.Parse(time.RFC3339, re.Timestamp); err == nil {
 			e.t = ts
 		}

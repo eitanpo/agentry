@@ -1,0 +1,2 @@
+{"type":"user","uuid":"root-aaa","timestamp":"2026-06-27T10:00:00Z","message":{"role":"user","content":"hello"}}
+{"type":"assistant","uuid":"bbb-222","timestamp":"2026-06-27T10:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}

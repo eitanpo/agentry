@@ -65,7 +65,10 @@ session listing (`agentry list`) uses the latest `aiTitle` as the session's titl
 session by renaming it in Claude Code. It overrides `aiTitle` in the listing (see the
 title ladder in PRODUCT.md §`agentry list`), and once one is written Claude Code stops
 appending fresh `ai-title` entries, so the latest `aiTitle` is frozen at its pre-rename
-value. The latest non-empty `customTitle` wins.
+value. The latest non-empty `customTitle` wins. A second, non-obvious origin: running
+`/clear NAME` appends a `custom-title` (value `NAME`) to the **previous** session's log —
+the label is for the conversation being left, not the new one (see the `/clear` note
+under [User entries](#user-entries-typed-vs-injected)).
 
 ### message
 
@@ -102,7 +105,11 @@ code that reconstructs the prompt must normalize — strip any leading slashes a
 exactly one — rather than blindly prefixing `/` (which doubles built-ins to `//clear`).
 Trailing text typed on the same line as a command lands in `<command-args>`, so
 `/clear improve the parser` records as name `/clear`, args `improve the parser` — not a
-separate prompt. Note: a command can also appear as **plain string content** (no
+separate prompt. For `/clear NAME` specifically, that arg is the `/resume` label for the
+prior conversation: Claude Code starts a new session, records the `/clear` command as one
+of its first turns, and writes `NAME` back as a `custom-title` on the previous session
+(see [Entry types](#entry-types)). So the args describe the session being left — which is
+why the title ladder skips a `/clear` turn rather than titling the new session with it. Note: a command can also appear as **plain string content** (no
 `<command-name>` wrapper, e.g. a literal `/commit push`), which renders verbatim with its
 single slash. Array-of-`text` user content is also injected (e.g. skill bodies), not a
 typed prompt.
@@ -131,3 +138,46 @@ A `tool_use` that spawns a child session writes a sidecar; stitching maps the ca
   skill-name detection must read only `agent-*.jsonl`, not the main log.
 - Subagents nest recursively; a sidecar may itself contain `Agent`/`Skill` calls. Guard
   against reference cycles — see [implementation-gotchas.md](implementation-gotchas.md).
+
+## Session continuation and forking
+
+A session can be a continuation of an earlier one. The split that matters is whether the
+continuation **appends to the same file** or **opens a new file**:
+
+- **Same file (same `sessionId`, lines appended):** `--continue`/`-c`,
+  `--resume`/`-r`/`/resume`, `--from-pr`, and compaction (`/compact` and the automatic
+  compaction when context fills, both marked by a `system` entry with
+  `subtype: compact_boundary`). No new file appears; the prior content is the head of the
+  same log.
+- **New file (new `sessionId`):** `/clear` and `--fork-session`/`/branch`. These differ
+  in whether prior history is carried into the new file:
+  - **`/clear`** starts the new session with **empty** context — no prior lines are
+    copied, so the new file shares no `uuid`s with the old one. The only cross-file link
+    is the `custom-title` that `/clear NAME` writes back onto the **previous** file (see
+    [Entry types](#entry-types)).
+  - **`--fork-session` / `/branch`** copies the parent's linear message chain verbatim
+    into `<new-uuid>.jsonl` (observed 2026-06-27 via `--fork-session`). Each copied line
+    keeps its original `uuid` and `parentUuid`; new turns append after, chaining onto the
+    last copied line. Every copied line's `sessionId` is **rewritten** to the new id, and
+    meta lines (`ai-title`, `mode`) are regenerated fresh rather than copied.
+
+A fork carries **no explicit back-reference** — there is no `forkedFrom` or
+`parentSessionId` field, and by any single content field a fork looks like an independent
+session (its own `sessionId`, its own freshly generated `aiTitle`). Two signals together
+recover the relationship (observed 2026-06-27):
+
+- **Family** — the fork copies the parent's chain verbatim, so both share the **root
+  `uuid`** (the first entry's `uuid`, the conversation root). Sessions with the same root
+  `uuid` are one fork family. This is the cheap key — one `uuid` per file. `/clear` does
+  **not** copy history, so it gets a fresh root `uuid` and never joins a family.
+- **Direction** — content cannot tell parent from fork: the copied prefix is identical,
+  **including the first entry's `timestamp`**, so `Start` matches across the family. The
+  distinguishing signal is **outside** the content — the **file's creation time**
+  (`st_birthtime` on macOS). A fork is a new file written at fork time, so the
+  earliest-born file in a family is the original. Birthtime survives the original being
+  continued (append bumps mtime, not birthtime), which the uuid-subset test (parent's
+  `uuid` set ⊆ fork's) does not. Off macOS, creation time isn't portably readable, so
+  consumers fall back to mtime.
+
+Treat fork files as distinct sessions with duplicated history, not as one continued log.
+`internal/list` uses both signals to group a family and indent its forks.

@@ -32,6 +32,14 @@ type Summary struct {
 	NumTurns int        `json:"numTurns"`
 	Tools    []ToolStat `json:"tools,omitempty"`    // top-level tool calls aggregated by identity (for --include tools)
 	Commands []string   `json:"commands,omitempty"` // distinct top-level Bash commands (for --used-command / --used)
+	// RootUUID is the uuid of the session's first content entry — the
+	// conversation root. A fork copies its parent's chain verbatim, so a fork and
+	// its parent share a RootUUID; the listing groups them into one fork family.
+	RootUUID string `json:"rootUuid,omitempty"`
+	// Born is the session file's creation time, used to order a fork family
+	// (earliest = original). Filesystem metadata, not session content, so it is
+	// not serialized. Zero when unreadable; off macOS it falls back to mtime.
+	Born time.Time `json:"-"`
 }
 
 // ToolStat counts the top-level tool calls in a session that share a tool name
