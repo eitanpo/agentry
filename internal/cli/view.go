@@ -17,9 +17,10 @@ var channelNames = []string{"thinking", "tools", "tool-results", "subagents", "m
 // `agentry --help`.
 func newViewCmd(noColor *bool) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "view [session-id]",
-		Short: "render a session (explicit form of the bare command)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "view [session-id]",
+		Short:             "render a session (explicit form of the bare command)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeSessionIDs,
 		Example: "  agentry view <uuid>\n" +
 			"  agentry view --level full <uuid>\n" +
 			"  agentry view --tools --no-thinking <uuid>",
@@ -44,6 +45,10 @@ func addRenderFlags(cmd *cobra.Command) {
 	// of the render-flag help group (isRenderFlag) — like --no-color, it lists
 	// under plain Flags. It lives here so both render commands (root, view) get it.
 	cmd.Flags().String("format", "", "output format: json (full session model) or text (default)")
+
+	// Complete the enum flags to their allowed values instead of filenames.
+	_ = cmd.RegisterFlagCompletionFunc("level", fixedComp(levelNames))
+	_ = cmd.RegisterFlagCompletionFunc("format", fixedComp(formatNames))
 }
 
 // isRenderFlag reports whether a flag name belongs to the render group

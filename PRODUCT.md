@@ -94,6 +94,17 @@ Data on stdout, diagnostics on stderr. `NO_COLOR` (any non-empty value) or a non
 
 Flags and operands may appear in any order (`agentry list --since today` and `agentry list` with flags before or after operands both parse). A mistyped verb, flag name, or enum value (e.g. `--include prompt` for `prompts`) errors to stderr, names the offending token, and suggests the nearest valid name by edit distance when one is close enough — it never auto-runs the guess and never dumps full help.
 
+## Shell completion
+
+`agentry completion <bash|zsh|fish|powershell>` prints a completion script for that shell — the standard generator, so the setup is the one users already know (`source <(agentry completion zsh)`, or drop the script in the shell's completion directory). Beyond the verbs and flag names every completion script offers, agentry completes the two arguments worth completing:
+
+- **enum flag values** — `--format` (`json`, `text`) and `--level` (`minimal`, `standard`, `detailed`, `full`) complete to their allowed values, not to filenames.
+- **session ids** — the render path's positional argument completes to the current project's session ids, each annotated with its title (the same list `agentry list` shows), so the full UUID is a Tab, not a paste. Completion is scoped to the working directory's project, like every other session lookup; it never falls back to filename completion.
+
+Completion is computed live on each Tab (a session id reflects the sessions present at that moment), so a new session is completable as soon as it exists.
+
+Homebrew installs the scripts automatically — the cask links a bundled script into the shell's completion directory (see Distribution), so a `brew`-installed agentry tab-completes with no extra step. The `go install` and release-tarball paths have no install hook, so those users run `agentry completion <shell>` themselves; the tarball carries the pre-generated scripts for convenience.
+
 ## Scope
 
 **MVP:** resolve a session from the current directory (no-arg → most recent by modification time; full-UUID arg → that session); list sessions with recency and time-frame selectors (`agentry list`); styled terminal output with auto color detection; verbosity levels and channel overrides.
@@ -116,3 +127,5 @@ Claude Code's on-disk log format evolves across versions. `agentry` tracks the c
 ## Distribution
 
 Built as a single static binary by GoReleaser. macOS installs from a personal Homebrew tap, distributed as a cask (GoReleaser deprecated formulae for pre-built binaries): `brew install eitanpo/tap/agentry`. Homebrew casks are macOS-only; on Linux install with `go install` or download a release binary. homebrew-core is a later target.
+
+The release archive bundles pre-generated completion scripts (`completions/agentry.{bash,zsh,fish}`), and the cask links them into the shell's completion directory on install — so Homebrew users get completion (see Shell completion) with no extra step. The scripts are generated from source at build time rather than by the cask running the binary, because the binaries are unsigned and executing one at install time would fight the quarantine attribute the cask's post-install hook strips.

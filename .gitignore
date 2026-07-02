@@ -1,6 +1,7 @@
 # build output
 /agentry
 /dist/
+/completions/
 
 # go test artifacts
 *.test

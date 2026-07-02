@@ -278,3 +278,57 @@ func TestBareCommandResolves(t *testing.T) {
 		t.Errorf("bare command: exit = %d, want %d (exNoInput in a project-less dir)", code, exNoInput)
 	}
 }
+
+// TestCompleteFlagValues pins that the enum flags complete to their allowed
+// values (not filenames) via Cobra's __complete callback, on both the render
+// path and list. The trailing ":4" is ShellCompDirectiveNoFileComp.
+func TestCompleteFlagValues(t *testing.T) {
+	cases := []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"__complete", "--format", ""}, []string{"json", "text"}},
+		{[]string{"__complete", "--level", ""}, []string{"minimal", "standard", "detailed", "full"}},
+		{[]string{"__complete", "list", "--format", ""}, []string{"json", "text"}},
+	}
+	for _, c := range cases {
+		_, out, _ := exec(c.args...)
+		for _, w := range c.want {
+			if !strings.Contains(out, w) {
+				t.Errorf("%v: output missing %q\n%s", c.args, w, out)
+			}
+		}
+		if !strings.Contains(out, ":4") {
+			t.Errorf("%v: missing NoFileComp directive (:4)\n%s", c.args, out)
+		}
+	}
+}
+
+// TestCompleteSessionIDsNoProject confirms the session-id completer degrades to
+// "no suggestions" (never a crash or a file-completion fallback) when the cwd
+// maps to no project.
+func TestCompleteSessionIDsNoProject(t *testing.T) {
+	t.Chdir(t.TempDir())
+	got, dir := completeSessionIDs(nil, nil, "")
+	if len(got) != 0 {
+		t.Errorf("want no suggestions in a project-less dir, got %v", got)
+	}
+	if dir != cobra.ShellCompDirectiveNoFileComp {
+		t.Errorf("directive = %d, want NoFileComp", dir)
+	}
+}
+
+func TestCompTitle(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain title", "plain title"},
+		{"has\ttab\nand newline", "has tab and newline"},
+		{"  padded  ", "padded"},
+		{"", "(untitled)"},
+		{strings.Repeat("x", 60), strings.Repeat("x", 47) + "..."},
+	}
+	for _, c := range cases {
+		if got := compTitle(c.in); got != c.want {
+			t.Errorf("compTitle(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

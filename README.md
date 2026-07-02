@@ -4,8 +4,6 @@
 
 See [PRODUCT.md](PRODUCT.md) for scope and design rationale.
 
-> Status: in development. Not yet released.
-
 ## Install
 
 macOS (Homebrew cask):
@@ -16,7 +14,17 @@ brew install eitanpo/tap/agentry
 
 Linux: `go install github.com/eitanpo/agentry@latest`, or download a binary from the [releases](https://github.com/eitanpo/agentry/releases).
 
-Available once the first release is tagged.
+### Shell completion
+
+The Homebrew cask installs tab-completion automatically — nothing to do. For a `go install` or a downloaded binary, generate and load the script for your shell:
+
+```
+source <(agentry completion zsh)     # add to ~/.zshrc
+source <(agentry completion bash)    # add to ~/.bashrc
+agentry completion fish | source     # or: > ~/.config/fish/completions/agentry.fish
+```
+
+Completion covers the verbs and flags, the enum values of `--format`/`--level`, and — the useful one — the current project's **session ids**, each shown with its title, so you tab a UUID instead of pasting it.
 
 ## Usage
 

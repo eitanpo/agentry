@@ -39,6 +39,15 @@ var (
 	formatNames  = []string{"json", "text"}
 )
 
+// fixedComp is a shell-completion handler for an enum flag: it offers a static
+// candidate set and suppresses file completion, so `--format <Tab>` proposes
+// json|text rather than filenames.
+func fixedComp(candidates []string) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+	return func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return candidates, cobra.ShellCompDirectiveNoFileComp
+	}
+}
+
 // parseFormat validates the --format flag — shared by the render path and
 // list — returning the normalized value ("" and "text" both mean the text
 // form) or a usage error that names the offending value and suggests the

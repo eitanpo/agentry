@@ -39,6 +39,7 @@ func newListCmd(noColor *bool) *cobra.Command {
 	cmd.Flags().String("used-command", "", "only sessions that ran a Bash command matching this text")
 	cmd.Flags().String("used", "", "only sessions that used this as a skill, agent, or command")
 	cmd.Flags().String("format", "", "output format: json (default: text table)")
+	_ = cmd.RegisterFlagCompletionFunc("format", fixedComp(formatNames))
 	return cmd
 }
 

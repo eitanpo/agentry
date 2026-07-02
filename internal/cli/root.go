@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -22,8 +23,9 @@ func newRootCmd(version string) *cobra.Command {
 		Long: "agentry " + version + " — render a Claude Code session log to the terminal\n\n" +
 			"With no argument it renders the current project's most recent session;\n" +
 			"with a full session id it renders that one. Use `agentry list` to find a session.",
-		Args:          cobra.MaximumNArgs(1),
-		Version:       version,
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeSessionIDs,
+		Version:           version,
 		SilenceErrors: true, // Execute prints in agentry's voice
 		SilenceUsage:  true, // a usage error must not dump full help
 		Example: "  agentry                      render the most recent session\n" +
@@ -104,6 +106,48 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 		return &exitError{code: 1, err: err}
 	}
 	return nil
+}
+
+// completeSessionIDs is the shell-completion handler for the render path's
+// positional session id. It lists the current project's sessions and offers
+// each id annotated with its title (as `agentry list` would show it). Cobra's
+// hidden __complete callback runs it on every Tab, so it reflects the sessions
+// present at that moment; NoFileComp keeps an id from decaying into filename
+// completion. Errors resolve to "no suggestions", never a crash mid-Tab.
+func completeSessionIDs(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 { // the render path takes at most one id
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	paths, err := locate.Sessions(cwd)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var out []string
+	for _, p := range paths {
+		s, err := parse.Summarize(p)
+		if err != nil || !strings.HasPrefix(s.ID, toComplete) {
+			continue
+		}
+		out = append(out, s.ID+"\t"+compTitle(s.Title))
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// compTitle flattens a session title to a single short line fit for a
+// completion description — a tab or newline would corrupt the shell's menu.
+func compTitle(title string) string {
+	title = strings.TrimSpace(strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(title))
+	if r := []rune(title); len(r) > 50 {
+		title = string(r[:47]) + "..."
+	}
+	if title == "" {
+		return "(untitled)"
+	}
+	return title
 }
 
 // looksLikeID reports whether tok has the shape of a session id — hex digits

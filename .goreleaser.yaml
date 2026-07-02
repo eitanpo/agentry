@@ -7,6 +7,15 @@ project_name: agentry
 before:
   hooks:
     - go mod tidy
+    # Pre-generate shell completions from source (no built binary needed) so the
+    # archive can carry them and the cask can link them at install time — see
+    # PRODUCT.md "Shell completion" / "Distribution". Generating here rather than
+    # via the cask running the binary avoids executing the unsigned binary at
+    # install time (the quarantine hazard the post-install hook strips).
+    - mkdir -p completions
+    - sh -c 'go run . completion bash > completions/agentry.bash'
+    - sh -c 'go run . completion zsh > completions/agentry.zsh'
+    - sh -c 'go run . completion fish > completions/agentry.fish'
 
 builds:
   - env:
@@ -25,6 +34,13 @@ archives:
   - formats:
       - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Setting files replaces GoReleaser's default doc globs, so name them back
+    # alongside the generated completion scripts (binaries are included
+    # automatically, independent of this list).
+    files:
+      - README.md
+      - LICENSE
+      - completions/*
 
 checksum:
   name_template: checksums.txt
@@ -41,6 +57,13 @@ homebrew_casks:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/eitanpo/agentry"
     description: "Render a Claude Code session log into a styled terminal view"
+    # Link the completion scripts bundled in the archive into the shell
+    # completion dirs on install, so `brew`-installed agentry tab-completes with
+    # no extra step. Paths are relative to the extracted archive.
+    completions:
+      bash: completions/agentry.bash
+      zsh: completions/agentry.zsh
+      fish: completions/agentry.fish
     hooks:
       post:
         install: |
