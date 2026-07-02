@@ -23,9 +23,10 @@ Available once the first release is tagged.
 Run `agentry` from the directory you ran Claude Code in:
 
 ```
-agentry                # the most recent session (by time) in this directory's project
-agentry <uuid>         # a specific session, by full id
-agentry view <uuid>    # same as above; view is the explicit render verb
+agentry                     # the most recent session (by time) in this directory's project
+agentry <uuid>              # a specific session, by full id
+agentry view <uuid>         # same as above; view is the explicit render verb
+agentry --format json | jq  # the full session model as JSON, for piping
 ```
 
 `agentry` finds the session by mapping the current directory to its Claude project folder under `~/.claude/projects/`. The first token is a verb (`view`, `list`) when it names one, otherwise a session id — they can't collide, since ids are hex and verbs are words. Flags may go before or after operands, and a mistyped verb, flag, or value is met with a "did you mean" suggestion rather than full help.
@@ -60,13 +61,13 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--used-tool NAME` | `list` | — | Only sessions where that tool fired, by tool-use name (case-insensitive, exact). The "which mechanism" axis. |
 | `--used-skill`, `--used-agent`, `--used-command` | `list` | — | Identity axis: a Skill's skill, an Agent's subagent type, a Bash command's text (case-insensitive substring). |
 | `--used TOKEN` | `list` | — | Catch-all over the identity axis: skill name, agent type, or command. Not tool names — use `--used-tool` for those. |
-| `--format json\|text` | `list` | `text` | `json` emits the selected sessions as a JSON array (full model per session) for piping; ignores `--include` and color. |
+| `--format json\|text` | render, `list` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color); on `list` it's a JSON array of per-session summaries (ignoring `--include` and color). |
 | `--no-color` | global | — | Disable color (also honors the `NO_COLOR` env var). |
 | `--help`, `--version` | global | — | Per-verb `--help` lists only that mode's flags. |
 
 "render" flags apply to the bare command and `view`; "`list`" flags apply to `agentry list`; "global" flags work anywhere.
 
-JSON output, markdown-file export, content search, and an interactive browser are planned — see the roadmap in [PRODUCT.md](PRODUCT.md).
+Markdown-file export, content search, and an interactive browser are planned — see the roadmap in [PRODUCT.md](PRODUCT.md).
 
 ## Development
 

@@ -1,12 +1,80 @@
 package render
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/eitanpo/agentry/internal/model"
 )
+
+// TestSessionJSON pins the --format json shape: the full model, event kinds as
+// strings not ordinals, nested subagent streams, and isError elided when false.
+func TestSessionJSON(t *testing.T) {
+	sess := &model.Session{
+		Meta: model.Meta{ID: "s1", Model: "claude-opus-4-8", Usage: model.Usage{Input: 10, Output: 20}},
+		Turns: []model.Turn{{
+			Prompt:    "do it",
+			ToolCount: 2,
+			Events: []model.Event{
+				{Kind: model.EventText, Text: "sure"},
+				{Kind: model.EventThinking, Text: "hmm"},
+				{Kind: model.EventTool, Tool: &model.Tool{
+					Name: "Bash", Args: "ls", Result: "boom", IsError: true,
+					Subagent: []model.Event{{Kind: model.EventText, Text: "child"}},
+				}},
+				{Kind: model.EventTool, Tool: &model.Tool{Name: "Read"}},
+			},
+		}},
+	}
+	var b strings.Builder
+	if err := SessionJSON(&b, sess); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(b.String()), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, b.String())
+	}
+
+	meta := got["meta"].(map[string]any)
+	if meta["id"] != "s1" || meta["model"] != "claude-opus-4-8" {
+		t.Errorf("meta wrong: %s", b.String())
+	}
+	if usage := meta["usage"].(map[string]any); usage["input"].(float64) != 10 || usage["output"].(float64) != 20 {
+		t.Errorf("usage wrong: %s", b.String())
+	}
+
+	turns := got["turns"].([]any)
+	if len(turns) != 1 {
+		t.Fatalf("want 1 turn, got %d: %s", len(turns), b.String())
+	}
+	events := turns[0].(map[string]any)["events"].([]any)
+	if len(events) != 4 {
+		t.Fatalf("want 4 events, got %d: %s", len(events), b.String())
+	}
+	// Event kinds serialize as stable strings, not iota ordinals.
+	kinds := []string{"text", "thinking", "tool", "tool"}
+	for i, want := range kinds {
+		if k := events[i].(map[string]any)["kind"]; k != want {
+			t.Errorf("event %d kind = %v, want %q", i, k, want)
+		}
+	}
+	// The erroring tool carries its result, isError=true, and a nested stream.
+	tool := events[2].(map[string]any)["tool"].(map[string]any)
+	if tool["name"] != "Bash" || tool["isError"] != true || tool["result"] != "boom" {
+		t.Errorf("tool wrong: %s", b.String())
+	}
+	sub := tool["subagent"].([]any)
+	if len(sub) != 1 || sub[0].(map[string]any)["kind"] != "text" {
+		t.Errorf("subagent stream wrong: %s", b.String())
+	}
+	// A non-erroring tool omits isError entirely (false is elided).
+	okTool := events[3].(map[string]any)["tool"].(map[string]any)
+	if _, present := okTool["isError"]; present {
+		t.Errorf("isError should be omitted when false: %s", b.String())
+	}
+}
 
 func minimalSession() *model.Session {
 	return &model.Session{

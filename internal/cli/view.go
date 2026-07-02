@@ -40,6 +40,10 @@ func addRenderFlags(cmd *cobra.Command) {
 		cmd.Flags().Bool(ch, false, "show "+ch)
 		cmd.Flags().Bool("no-"+ch, false, "hide "+ch)
 	}
+	// --format is an output-form switch, not a verbosity knob, so it is left out
+	// of the render-flag help group (isRenderFlag) — like --no-color, it lists
+	// under plain Flags. It lives here so both render commands (root, view) get it.
+	cmd.Flags().String("format", "", "output format: json (full session model) or text (default)")
 }
 
 // isRenderFlag reports whether a flag name belongs to the render group

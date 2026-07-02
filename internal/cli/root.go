@@ -61,6 +61,10 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 	if err != nil {
 		return err
 	}
+	format, err := parseFormat(cmd)
+	if err != nil {
+		return err
+	}
 
 	var id string
 	if len(args) == 1 {
@@ -84,6 +88,13 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 	sess, err := parse.Load(path)
 	if err != nil {
 		return noInputErr(err)
+	}
+
+	if format == "json" {
+		if err := render.SessionJSON(os.Stdout, sess); err != nil {
+			return &exitError{code: 1, err: err}
+		}
+		return nil
 	}
 
 	color, width := terminal(*noColor)

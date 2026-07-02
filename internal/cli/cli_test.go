@@ -100,6 +100,7 @@ func TestUsageErrorsSuggest(t *testing.T) {
 		{"mistyped level value", []string{"--level", "detaild"}, `did you mean "detailed"`},
 		{"mistyped used flag", []string{"list", "--user-tool", "x"}, "did you mean --used-tool"},
 		{"mistyped format value", []string{"list", "--format", "jsn"}, `did you mean "json"`},
+		{"mistyped format value on render", []string{"--format", "jsn"}, `did you mean "json"`},
 		{"list rejects positional", []string{"list", "foo"}, `unknown command "foo"`},
 	}
 	for _, c := range cases {

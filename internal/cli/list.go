@@ -72,14 +72,9 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 
 	// Validate --format before touching the filesystem, so a bad value errors
 	// (with a suggestion) the same way a bad --include channel does.
-	format, _ := cmd.Flags().GetString("format")
-	switch format {
-	case "", "text", "json":
-	default:
-		if g := nearest(format, formatNames); g != "" {
-			return usageErr("--format: unknown format %q — did you mean %q?", format, g)
-		}
-		return usageErr("--format: unknown format %q (want: json, text)", format)
+	format, err := parseFormat(cmd)
+	if err != nil {
+		return err
 	}
 
 	now := time.Now()

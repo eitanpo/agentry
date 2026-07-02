@@ -39,6 +39,22 @@ var (
 	formatNames  = []string{"json", "text"}
 )
 
+// parseFormat validates the --format flag — shared by the render path and
+// list — returning the normalized value ("" and "text" both mean the text
+// form) or a usage error that names the offending value and suggests the
+// nearest valid format.
+func parseFormat(cmd *cobra.Command) (string, error) {
+	format, _ := cmd.Flags().GetString("format")
+	switch format {
+	case "", "text", "json":
+		return format, nil
+	}
+	if g := nearest(format, formatNames); g != "" {
+		return "", usageErr("--format: unknown format %q — did you mean %q?", format, g)
+	}
+	return "", usageErr("--format: unknown format %q (want: json, text)", format)
+}
+
 // exitError carries the sysexits code a failure should exit with. RunE returns
 // these so Execute can both print the message in agentry's voice and exit with
 // the right code, rather than Cobra's default of dumping usage and exiting 1.

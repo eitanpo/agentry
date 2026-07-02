@@ -5,6 +5,7 @@
 package render
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"regexp"
@@ -62,6 +63,19 @@ type renderer struct {
 	dim     lipgloss.Style
 	border  lipgloss.Style
 	userBox lipgloss.Style
+}
+
+// SessionJSON writes the full session model to w as indented JSON — the render
+// path's machine-readable form (`--format json`), for agent consumption and
+// piping into jq. It emits the complete model regardless of verbosity or color,
+// which shape only the styled text view.
+func SessionJSON(w io.Writer, s *model.Session) error {
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
 }
 
 // Session writes the styled session to w.

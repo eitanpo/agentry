@@ -1,24 +1,27 @@
 // Package model is the canonical in-memory representation of a Claude Code
-// session. The parser produces it, the renderer consumes it, and the roadmap
-// --format json will serialize it. It carries no presentation concerns.
+// session. The parser produces it, the renderer consumes it, and `--format
+// json` serializes it. It carries no presentation concerns.
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Session is a fully parsed session log.
 type Session struct {
-	Meta  Meta
-	Turns []Turn
+	Meta  Meta   `json:"meta"`
+	Turns []Turn `json:"turns"`
 }
 
 // Meta is session-level metadata aggregated across all turns and subagents.
 type Meta struct {
-	ID           string
-	Model        string
-	Start        time.Time
-	End          time.Time
-	Usage        Usage
-	NumSubagents int
+	ID           string    `json:"id"`
+	Model        string    `json:"model,omitempty"`
+	Start        time.Time `json:"start"`
+	End          time.Time `json:"end"`
+	Usage        Usage     `json:"usage"`
+	NumSubagents int       `json:"numSubagents"`
 }
 
 // Summary is a lightweight session descriptor for listing: enough to identify
@@ -56,10 +59,10 @@ type ToolStat struct {
 
 // Usage is a token tally. Cache fields mirror the Anthropic usage object.
 type Usage struct {
-	Input       int
-	Output      int
-	CacheRead   int
-	CacheCreate int
+	Input       int `json:"input"`
+	Output      int `json:"output"`
+	CacheRead   int `json:"cacheRead"`
+	CacheCreate int `json:"cacheCreate"`
 }
 
 // Add accumulates another tally into this one.
@@ -72,13 +75,13 @@ func (u *Usage) Add(o Usage) {
 
 // Turn is one user prompt and the assistant activity that followed it.
 type Turn struct {
-	Prompt     string
-	Start      time.Time
-	End        time.Time
-	Events     []Event
-	Usage      Usage // tokens spent in this turn, including its subagents
-	ToolCount  int   // top-level tool calls in this turn
-	ErrorCount int   // top-level tool calls that errored
+	Prompt     string    `json:"prompt"`
+	Start      time.Time `json:"start"`
+	End        time.Time `json:"end"`
+	Events     []Event   `json:"events,omitempty"`
+	Usage      Usage     `json:"usage"`      // tokens spent in this turn, including its subagents
+	ToolCount  int       `json:"toolCount"`  // top-level tool calls in this turn
+	ErrorCount int       `json:"errorCount"` // top-level tool calls that errored
 }
 
 // EventKind discriminates the Event union.
@@ -90,20 +93,36 @@ const (
 	EventTool                      // a tool call
 )
 
+// MarshalJSON renders the kind as a stable string ("text", "thinking",
+// "tool") rather than its ordinal, so --format json is self-describing and
+// insensitive to the iota order.
+func (k EventKind) MarshalJSON() ([]byte, error) {
+	s := "unknown"
+	switch k {
+	case EventText:
+		s = "text"
+	case EventThinking:
+		s = "thinking"
+	case EventTool:
+		s = "tool"
+	}
+	return json.Marshal(s)
+}
+
 // Event is one ordered item in an assistant's output stream.
 type Event struct {
-	Kind EventKind
-	Text string // body for EventText and EventThinking
-	Tool *Tool  // set for EventTool
+	Kind EventKind `json:"kind"`
+	Text string    `json:"text,omitempty"` // body for EventText and EventThinking
+	Tool *Tool     `json:"tool,omitempty"` // set for EventTool
 }
 
 // Tool is a single tool call and its result.
 type Tool struct {
-	Name     string
-	Args     string // short single-line summary of the call's input
-	Result   string
-	IsError  bool
-	Start    time.Time
-	End      time.Time
-	Subagent []Event // nested event stream when this call spawned a subagent
+	Name     string    `json:"name"`
+	Args     string    `json:"args,omitempty"` // short single-line summary of the call's input
+	Result   string    `json:"result,omitempty"`
+	IsError  bool      `json:"isError,omitempty"`
+	Start    time.Time `json:"start"`
+	End      time.Time `json:"end"`
+	Subagent []Event   `json:"subagent,omitempty"` // nested event stream when this call spawned a subagent
 }
