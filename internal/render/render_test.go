@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/eitanpo/agentry/internal/model"
 )
 
@@ -184,8 +185,8 @@ func TestWrapPlain(t *testing.T) {
 	})
 }
 
-func TestStripMarkdownLinks(t *testing.T) {
-	src, links := stripMarkdownLinks(
+func TestExtractLinks(t *testing.T) {
+	src, links := extractLinks(
 		"Top: [Researcher task](obsidian://open?vault=research&file=06-Tasks%2FR.md) — see [Diffy](obsidian://open?vault=research&file=02-Wiki%2FDiffy.md).")
 	wantSrc := "Top: Researcher task — see Diffy."
 	if src != wantSrc {
@@ -197,14 +198,115 @@ func TestStripMarkdownLinks(t *testing.T) {
 	if links[0].url != "obsidian://open?vault=research&file=06-Tasks%2FR.md" {
 		t.Errorf("links[0].url = %q", links[0].url)
 	}
-	if got := mustStrip(t, "no links here"); got != "no links here" {
+	if got := mustExtract(t, "no links here"); got != "no links here" {
 		t.Errorf("plain text altered: %q", got)
 	}
 }
 
-func mustStrip(t *testing.T, s string) string {
+func TestExtractLinksBareURL(t *testing.T) {
+	t.Run("bare url stays in source, becomes its own link", func(t *testing.T) {
+		src, links := extractLinks("Visit https://example.com for more.")
+		if src != "Visit https://example.com for more." {
+			t.Errorf("bare URL altered in source: %q", src)
+		}
+		if len(links) != 1 || links[0].text != "https://example.com" || links[0].url != "https://example.com" {
+			t.Fatalf("links = %+v", links)
+		}
+	})
+	t.Run("trailing sentence punctuation excluded from href", func(t *testing.T) {
+		_, links := extractLinks("See https://example.com.")
+		if len(links) != 1 || links[0].url != "https://example.com" {
+			t.Fatalf("links = %+v", links)
+		}
+	})
+	t.Run("url inside a markdown link is not double-matched", func(t *testing.T) {
+		_, links := extractLinks("A [labeled](https://example.com/x) link.")
+		if len(links) != 1 || links[0].text != "labeled" || links[0].url != "https://example.com/x" {
+			t.Fatalf("links = %+v", links)
+		}
+	})
+	t.Run("markdown link and bare url kept in source order", func(t *testing.T) {
+		_, links := extractLinks("bare https://a.com then [txt](https://b.com)")
+		if len(links) != 2 || links[0].url != "https://a.com" || links[1].url != "https://b.com" {
+			t.Fatalf("links = %+v", links)
+		}
+	})
+	t.Run("bare obsidian open URI collapses to a [[wikilink]] label", func(t *testing.T) {
+		uri := "obsidian://open?vault=research&file=02-Wiki%2FDiffy.md"
+		src, links := extractLinks("see " + uri + " here")
+		if src != "see [[Diffy]] here" {
+			t.Errorf("src = %q, want %q", src, "see [[Diffy]] here")
+		}
+		if len(links) != 1 || links[0].text != "[[Diffy]]" || links[0].url != uri {
+			t.Fatalf("links = %+v", links)
+		}
+	})
+	t.Run("obsidian label keeps a heading anchor", func(t *testing.T) {
+		_, links := extractLinks("obsidian://open?vault=v&file=Note%23Heading")
+		if len(links) != 1 || links[0].text != "[[Note#Heading]]" {
+			t.Fatalf("links = %+v", links)
+		}
+	})
+	t.Run("trailing punctuation stays in prose after the label", func(t *testing.T) {
+		src, links := extractLinks("see obsidian://open?vault=v&file=Note.md.")
+		if src != "see [[Note]]." {
+			t.Errorf("src = %q, want %q", src, "see [[Note]].")
+		}
+		if links[0].url != "obsidian://open?vault=v&file=Note.md" {
+			t.Errorf("href = %q", links[0].url)
+		}
+	})
+	t.Run("obsidian URI without a file stays a raw bare link", func(t *testing.T) {
+		uri := "obsidian://search?query=diffy"
+		src, links := extractLinks("run " + uri + " now")
+		if src != "run "+uri+" now" {
+			t.Errorf("src altered: %q", src)
+		}
+		if len(links) != 1 || links[0].text != uri || links[0].url != uri {
+			t.Fatalf("links = %+v", links)
+		}
+	})
+	t.Run("any scheme:// is autolinked as a raw bare link", func(t *testing.T) {
+		for _, uri := range []string{"ftp://host/file", "vscode://file/tmp/x.go:12", "myapp+beta://do/it"} {
+			_, links := extractLinks("go " + uri + " now")
+			if len(links) != 1 || links[0].text != uri || links[0].url != uri {
+				t.Errorf("%q: links = %+v", uri, links)
+			}
+		}
+	})
+	t.Run("scheme without // is not autolinked", func(t *testing.T) {
+		if got := mustExtract(t, "write mailto:a@b.com or tel:123 now"); got != "write mailto:a@b.com or tel:123 now" {
+			t.Errorf("altered: %q", got)
+		}
+	})
+	t.Run("balanced parens kept, wrapping paren dropped", func(t *testing.T) {
+		wiki := "https://en.wikipedia.org/wiki/Ruby_(programming_language)"
+		_, links := extractLinks("see (" + wiki + ") ok")
+		if len(links) != 1 || links[0].url != wiki {
+			t.Fatalf("balanced-paren URL truncated: links = %+v", links)
+		}
+	})
+	t.Run("trailing paren and period peeled off the href", func(t *testing.T) {
+		_, links := extractLinks("see https://x.com/foo).")
+		if len(links) != 1 || links[0].url != "https://x.com/foo" {
+			t.Fatalf("links = %+v", links)
+		}
+	})
+	t.Run("obsidian note name with markdown chars is escaped in source", func(t *testing.T) {
+		uri := "obsidian://open?vault=v&file=My%20%2ANote%2A.md" // file = "My *Note*.md"
+		src, links := extractLinks("see " + uri + " x")
+		if len(links) != 1 || links[0].text != "[[My *Note*]]" || links[0].url != uri {
+			t.Fatalf("links = %+v", links)
+		}
+		if !strings.Contains(src, `[[My \*Note\*]]`) {
+			t.Errorf("note name not escaped in source: %q", src)
+		}
+	})
+}
+
+func mustExtract(t *testing.T, s string) string {
 	t.Helper()
-	out, links := stripMarkdownLinks(s)
+	out, links := extractLinks(s)
 	if len(links) != 0 {
 		t.Fatalf("expected no links, got %+v", links)
 	}
@@ -265,6 +367,74 @@ func TestLinkifyMarkdown(t *testing.T) {
 			t.Errorf("visible text = %q, want %q", got, "A and B")
 		}
 	})
+
+	t.Run("bare url: visible text is the url, href matches", func(t *testing.T) {
+		// glamour colors a bare URL but emits no OSC 8; a bare-URL spec has
+		// text == url, so linkify wraps the URL text as its own hyperlink.
+		url := "https://example.com"
+		out := []string{"Visit \x1b[38;5;30;4m" + url + "\x1b[0m for more."}
+		r.linkifyMarkdown(out, []mdLinkSpec{{text: url, url: url}})
+		if !strings.Contains(out[0], osc+url+"\x1b\\") || !strings.Contains(out[0], "\x1b]8;;\x1b\\") {
+			t.Errorf("missing OSC 8 hyperlink, got %q", out[0])
+		}
+		if got := visible(out[0]); got != "Visit "+url+" for more." {
+			t.Errorf("visible text = %q", got)
+		}
+	})
+}
+
+// TestMarkdownBareURLEndToEnd drives the full color path — extractLinks, glamour,
+// then linkifyMarkdown — proving a bare URL in prose emerges as an OSC 8 link
+// with a clean href (trailing period excluded), while a URL glamour word-wrapped
+// across lines degrades to plain (no OSC 8).
+func TestMarkdownBareURLEndToEnd(t *testing.T) {
+	r := &renderer{opts: Options{Color: true}, gcache: map[int]*glamour.TermRenderer{}}
+	r.initStyles()
+
+	joined := strings.Join(r.markdown("See https://example.com. now", 80), "\n")
+	href := "\x1b]8;;https://example.com\x1b\\"
+	if !strings.Contains(joined, href) {
+		t.Errorf("bare URL not linkified with clean href; got %q", joined)
+	}
+	if strings.Contains(joined, "\x1b]8;;https://example.com.\x1b\\") {
+		t.Errorf("trailing period leaked into href; got %q", joined)
+	}
+
+	// A bare obsidian open URI renders as a [[wikilink]] label (visible text)
+	// hyperlinked to the full URI (href), not the raw URI string.
+	obs := "obsidian://open?vault=v&file=02-Wiki%2FDiffy.md"
+	obsOut := strings.Join(r.markdown("Open "+obs+" now", 80), "\n")
+	if !strings.Contains(obsOut, "\x1b]8;;"+obs+"\x1b\\") {
+		t.Errorf("obsidian href missing; got %q", obsOut)
+	}
+	if vis, _ := stripANSI(stripOSC(obsOut)); !strings.Contains(vis, "[[Diffy]]") || strings.Contains(vis, "obsidian://") {
+		t.Errorf("visible text should be [[Diffy]], not the raw URI; got %q", vis)
+	}
+
+	// A URL containing balanced parens keeps them in the href; the wrapping
+	// paren is dropped.
+	wiki := "https://en.wikipedia.org/wiki/Ruby_(programming_language)"
+	wikiOut := strings.Join(r.markdown("see ("+wiki+") ok", 200), "\n")
+	if !strings.Contains(wikiOut, "\x1b]8;;"+wiki+"\x1b\\") {
+		t.Errorf("balanced-paren URL href truncated; got %q", wikiOut)
+	}
+
+	// A note name with markdown-active chars still renders its [[label]]
+	// verbatim and stays clickable (the name is escaped before glamour).
+	star := "obsidian://open?vault=v&file=My%20%2ANote%2A.md"
+	starOut := strings.Join(r.markdown("Ref "+star+" x", 80), "\n")
+	if !strings.Contains(starOut, "\x1b]8;;"+star+"\x1b\\") {
+		t.Errorf("obsidian href missing for starred note; got %q", starOut)
+	}
+	if vis, _ := stripANSI(stripOSC(starOut)); !strings.Contains(vis, "[[My *Note*]]") {
+		t.Errorf("visible label should be [[My *Note*]]; got %q", vis)
+	}
+
+	long := "https://example.com/very/long/path/that/keeps/going/way/past/the/edge/of/the/wrap/width/for/sure"
+	wrapped := strings.Join(r.markdown("Long: "+long, 40), "\n")
+	if strings.Contains(wrapped, "\x1b]8;;") {
+		t.Errorf("wrapped URL should stay plain, but got an OSC 8 link: %q", wrapped)
+	}
 }
 
 func TestTruncateAndOneLine(t *testing.T) {

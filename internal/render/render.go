@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -324,7 +326,7 @@ func (r *renderer) markdown(text string, width int) []string {
 	// source untouched — glamour emits its default "text url" form.
 	src, links := text, []mdLinkSpec(nil)
 	if r.opts.Color {
-		src, links = stripMarkdownLinks(text)
+		src, links = extractLinks(text)
 	}
 
 	var lines []string
@@ -344,25 +346,106 @@ func (r *renderer) markdown(text string, width int) []string {
 	return lines
 }
 
-// mdLink matches a markdown inline link [text](url) with no nested brackets,
-// parens, or newline.
-var mdLink = regexp.MustCompile(`\[([^\]\n]+)\]\(([^)\n]+)\)`)
+// linkPattern matches either a markdown inline link [text](url) (no nested
+// brackets, parens, or newline) or a bare scheme://… URL of any scheme (the
+// RFC 3986 scheme grammar: a leading letter, then letters/digits/+/-/.). A
+// scheme without "//" (mailto:, tel:) is deliberately excluded — too easy to
+// false-match ordinary "word:" prose. Alternation is leftmost-first, so at a
+// '[' the markdown form wins and a URL inside its (url) is consumed there, never
+// re-matched as bare. The bare branch runs to the next whitespace; trimBareURL
+// then peels trailing sentence punctuation and unbalanced ')' back off, so a URL
+// wrapped in "(see https://x)" and a URL that itself contains balanced parens
+// (a Wikipedia article, say) both resolve correctly.
+var linkPattern = regexp.MustCompile(`\[([^\]\n]+)\]\(([^)\n]+)\)|[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+`)
+
+// asciiPunct is the CommonMark set of backslash-escapable ASCII punctuation.
+const asciiPunct = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
 
 // mdLinkSpec is one link's visible text and its href, in source order.
 type mdLinkSpec struct{ text, url string }
 
-// stripMarkdownLinks reduces each [text](url) to its text, returning the
-// rewritten source and the links in source order. glamour renders inline links
-// as "text url" with the raw URL shown and no OSC 8, so we keep the URL out of
-// glamour entirely and re-attach it as a hyperlink afterward.
-func stripMarkdownLinks(text string) (string, []mdLinkSpec) {
+// extractLinks rewrites text for glamour and records its links in source order.
+// A markdown link [text](url) is reduced to its text — glamour renders inline
+// links as "text url" with the raw URL shown and no OSC 8, so we keep the URL
+// out of glamour and re-attach it afterward (see linkifyMarkdown). A bare URL is
+// left in place — glamour renders it as text (coloring http/https via its own
+// autolinker, leaving obsidian:// plain) but never emits OSC 8 — with its text
+// and href both the URL, trailing punctuation trimmed off the href. A bare
+// obsidian://open?…&file=X URI is the exception: its source is replaced by a
+// [[X]] wikilink label (see obsidianNote) that links to the full URI, so a note
+// reference shows [[Note]] instead of the raw URI string.
+func extractLinks(text string) (string, []mdLinkSpec) {
 	var links []mdLinkSpec
-	src := mdLink.ReplaceAllStringFunc(text, func(m string) string {
-		sm := mdLink.FindStringSubmatch(m)
-		links = append(links, mdLinkSpec{sm[1], sm[2]})
-		return sm[1]
+	src := linkPattern.ReplaceAllStringFunc(text, func(m string) string {
+		if strings.HasPrefix(m, "[") {
+			sm := linkPattern.FindStringSubmatch(m)
+			links = append(links, mdLinkSpec{sm[1], sm[2]})
+			return sm[1]
+		}
+		href := trimBareURL(m)
+		trailer := m[len(href):] // punctuation trimmed off the href stays in prose
+		if note, ok := obsidianNote(href); ok {
+			links = append(links, mdLinkSpec{"[[" + note + "]]", href})
+			// glamour parses whatever we feed it, so a note name containing *, `,
+			// [] etc. would be mangled and no longer match the recorded label —
+			// escape the name so glamour renders it verbatim (brackets survive
+			// on their own; see linkifyMarkdown for the post-render match).
+			return "[[" + escapeMarkdown(note) + "]]" + trailer
+		}
+		links = append(links, mdLinkSpec{href, href})
+		return m // leave the bare URL in source; glamour renders it verbatim
 	})
 	return src, links
+}
+
+// trimBareURL peels off the run of the greedy bare-URL match that isn't really
+// part of the link: trailing sentence punctuation, and a trailing ')' that has
+// no matching '(' inside the URL (so "(see https://x)" drops the wrapping paren
+// while "…/Foo_(bar)" keeps its balanced one). It loops because the two kinds
+// interleave, e.g. "…/foo)." → "…/foo".
+func trimBareURL(u string) string {
+	for {
+		if t := strings.TrimRight(u, ".,;:!?"); t != u {
+			u = t
+			continue
+		}
+		if strings.HasSuffix(u, ")") && strings.Count(u, ")") > strings.Count(u, "(") {
+			u = u[:len(u)-1]
+			continue
+		}
+		return u
+	}
+}
+
+// escapeMarkdown backslash-escapes ASCII punctuation so glamour renders the
+// string as literal text rather than interpreting *, _, `, [] etc. as markup.
+func escapeMarkdown(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x80 && strings.IndexByte(asciiPunct, byte(r)) >= 0 {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// obsidianNote extracts the wikilink note name from an obsidian://open?…&file=<path>
+// URI — the file's base name with folders and any trailing .md dropped, a
+// #heading or #^block anchor kept. It reports false for any other obsidian URI
+// (no file, or an action other than open), leaving it to render as a plain bare
+// URL.
+func obsidianNote(uri string) (string, bool) {
+	u, err := url.Parse(uri)
+	if err != nil || u.Scheme != "obsidian" || u.Host != "open" {
+		return "", false
+	}
+	file := u.Query().Get("file")
+	if file == "" {
+		return "", false
+	}
+	return strings.TrimSuffix(path.Base(file), ".md"), true
 }
 
 // linkifyMarkdown wraps each link's visible text in glamour's rendered lines in

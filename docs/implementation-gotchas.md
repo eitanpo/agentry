@@ -56,8 +56,23 @@ mangled.** glamour v1.0.0's `LinkElement` prints the link text then the raw URL 
 OSC 8 hyperlink into the markdown *source* before glamour fails too: glamour's reflow
 word-wrap is CSI-aware but treats OSC sequences as ordinary text, so it counts the URL
 bytes as width and wraps *inside* the escape, leaking the URL. The working approach
-(`stripMarkdownLinks` + `linkifyMarkdown`): strip `[text](url)` to just `text` before
+(`extractLinks` + `linkifyMarkdown`): strip `[text](url)` to just `text` before
 glamour so it renders clean prose, then wrap the rendered text in OSC 8 afterward.
+
+**glamour auto-links and colors bare `http(s)://` URLs, but not other schemes.** goldmark's
+linkify recognizes `http`/`https` in prose and glamour paints them in its link color (still
+no OSC 8) — so a bare `https://…` reaches `linkifyMarkdown` already styled, while a bare
+`obsidian://…` (or any non-http scheme) arrives as plain text. Either way our own linkify
+matches the URL substring and re-wraps it, so the difference is only cosmetic — but don't
+assume a bare URL is plain when you match it.
+
+**Anything you feed glamour is parsed as markdown — including text you reconstruct.** When
+a rendered label isn't verbatim source but something we build (the `[[note]]` wikilink from
+an `obsidian://open?file=…` URI), a name containing `*`, `` ` ``, `[]`, `_` etc. is
+interpreted as markup: glamour drops the `*`, and the post-render substring match for the
+recorded label then fails, so the link silently doesn't attach. Escape reconstructed text
+with `escapeMarkdown` before it goes into the glamour source. (The surrounding `[[ ]]`
+survive unescaped — a `[…]` with no matching reference definition renders literally.)
 
 **glamour interleaves SGR codes through inline text — even between adjacent chars.** Text
 comes back fragmented as `Re`·`\x1b[0m\x1b[1m`·`searcher`·…, so a regex/substring run on
