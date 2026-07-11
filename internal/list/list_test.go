@@ -129,6 +129,16 @@ func TestRenderPlain(t *testing.T) {
 			t.Errorf("output missing %q: %q", want, out)
 		}
 	}
+	// The when column is the last-activity time (End), not the start. Format via
+	// the same .Local() the renderer uses so the assertion is timezone-independent.
+	wantWhen := sums[0].End.Local().Format("2006-01-02 15:04")
+	startWhen := sums[0].Start.Local().Format("2006-01-02 15:04")
+	if !strings.Contains(out, wantWhen) {
+		t.Errorf("when column should show End time %q: %q", wantWhen, out)
+	}
+	if wantWhen != startWhen && strings.Contains(out, startWhen) {
+		t.Errorf("when column should not show Start time %q: %q", startWhen, out)
+	}
 	if strings.Contains(out, "line only") {
 		t.Errorf("title should be truncated at newline: %q", out)
 	}

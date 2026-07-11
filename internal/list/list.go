@@ -309,7 +309,7 @@ func familyActivity(fam []model.Summary) time.Time {
 	return newest
 }
 
-// Render writes one row per session: start time, turn count, title, and full id.
+// Render writes one row per session: last-activity time, turn count, title, and full id.
 // The id is last and the title padded to a fixed column so ids align and a row
 // can be selected and its id passed back to `agentry <id>`. Forks are grouped
 // under their family's original and their titles indented (see arrange).
@@ -348,10 +348,11 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		if block && idx > 0 {
 			b.WriteByte('\n') // blank line separates session blocks
 		}
+		// The when column shows the session's last activity (its most recent turn's
+		// end), the same time it is ordered by; activity falls back to Start when no
+		// later timestamp is known.
 		when := "????-??-?? ??:??"
-		if t := s.Start; !t.IsZero() {
-			when = t.Local().Format("2006-01-02 15:04")
-		} else if t := activity(s); !t.IsZero() {
+		if t := activity(s); !t.IsZero() {
 			when = t.Local().Format("2006-01-02 15:04")
 		}
 		// A fork's title is indented under its family's original; the marker eats
