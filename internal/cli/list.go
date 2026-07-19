@@ -29,6 +29,16 @@ func newListCmd(noColor *bool) *cobra.Command {
 			return runList(cmd, noColor)
 		},
 	}
+	addListFlags(cmd)
+	addFormatFlag(cmd)
+	return cmd
+}
+
+// addListFlags installs the listing selectors and detail toggles. They live on
+// both the `list` verb and the root, because bare `agentry` defaults to listing;
+// a flag is read from whichever command was invoked. --format is added
+// separately (addFormatFlag) since it is shared with the render path.
+func addListFlags(cmd *cobra.Command) {
 	cmd.Flags().Int("limit", 10, "cap to N most-recent sessions (0 = no cap)")
 	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
 	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
@@ -38,9 +48,6 @@ func newListCmd(noColor *bool) *cobra.Command {
 	cmd.Flags().String("used-agent", "", "only sessions that spawned this subagent type")
 	cmd.Flags().String("used-command", "", "only sessions that ran a Bash command matching this text")
 	cmd.Flags().String("used", "", "only sessions that used this as a skill, agent, or command")
-	cmd.Flags().String("format", "", "output format: json (default: text table)")
-	_ = cmd.RegisterFlagCompletionFunc("format", fixedComp(formatNames))
-	return cmd
 }
 
 // usedFlags are the --used* filter flags; any of them, like a time filter,

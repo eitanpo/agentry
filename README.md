@@ -31,18 +31,20 @@ Completion covers the verbs and flags, the enum values of `--format`/`--level`, 
 Run `agentry` from the directory you ran Claude Code in:
 
 ```
-agentry                     # the most recent session (by time) in this directory's project
-agentry <uuid>              # a specific session, by full id
-agentry view <uuid>         # same as above; view is the explicit render verb
-agentry --format json | jq  # the full session model as JSON, for piping
+agentry                     # list this project's sessions (see below)
+agentry <uuid>              # render a specific session, by full id
+agentry view                # render the most recent session (no id needed)
+agentry <uuid> --format json | jq  # the full session model as JSON, for piping
 ```
 
-`agentry` finds the session by mapping the current directory to its Claude project folder under `~/.claude/projects/`. The first token is a verb (`view`, `list`) when it names one, otherwise a session id — they can't collide, since ids are hex and verbs are words. Flags may go before or after operands, and a mistyped verb, flag, or value is met with a "did you mean" suggestion rather than full help.
+With no id, `agentry` lists this project's sessions (below); with a full-UUID id it renders that one, mapping the current directory to its Claude project folder under `~/.claude/projects/`. The first token is a verb (`view`, `list`) when it names one, otherwise a session id — they can't collide, since ids are hex and verbs are words. Flags may go before or after operands, and a mistyped verb, flag, or value is met with a "did you mean" suggestion rather than full help.
 
-To find a session, list them:
+To find a session, list them — bare `agentry` does this, and `agentry list` is its explicit form:
 
 ```
-agentry list                              # the 10 most recent sessions in this project
+agentry                                   # the 10 most recent sessions (bare command == list)
+agentry --since today                     # list flags work on the bare command too
+agentry list                              # the explicit form of the bare listing
 agentry list --limit 25                   # the 25 most recent
 agentry list --since today                # everything from today
 agentry list --since 7d                   # the last 7 days
@@ -73,7 +75,7 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--no-color` | global | — | Disable color (also honors the `NO_COLOR` env var). |
 | `--help`, `--version` | global | — | Per-verb `--help` lists only that mode's flags. |
 
-"render" flags apply to the bare command and `view`; "`list`" flags apply to `agentry list`; "global" flags work anywhere.
+Bare `agentry` is the listing, so the "`list`" flags apply to it as well as to `agentry list`; the "render" flags apply to `agentry <uuid>` and `view`; "global" flags work anywhere.
 
 Markdown-file export, content search, and an interactive browser are planned — see the roadmap in [PRODUCT.md](PRODUCT.md).
 

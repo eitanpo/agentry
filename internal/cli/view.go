@@ -29,25 +29,32 @@ func newViewCmd(noColor *bool) *cobra.Command {
 		},
 	}
 	addRenderFlags(cmd)
+	addFormatFlag(cmd)
 	return cmd
 }
 
 // addRenderFlags installs the verbosity preset and per-channel overrides. They
 // live on both root and view because both render; a flag is read from whichever
-// command was invoked.
+// command was invoked. --format is added separately (addFormatFlag) because it
+// is shared with list, and the root carries both flag sets — adding it here too
+// would double-register it there.
 func addRenderFlags(cmd *cobra.Command) {
 	cmd.Flags().String("level", "minimal", "verbosity: minimal|standard|detailed|full")
 	for _, ch := range channelNames {
 		cmd.Flags().Bool(ch, false, "show "+ch)
 		cmd.Flags().Bool("no-"+ch, false, "hide "+ch)
 	}
-	// --format is an output-form switch, not a verbosity knob, so it is left out
-	// of the render-flag help group (isRenderFlag) — like --no-color, it lists
-	// under plain Flags. It lives here so both render commands (root, view) get it.
-	cmd.Flags().String("format", "", "output format: json (full session model) or text (default)")
-
-	// Complete the enum flags to their allowed values instead of filenames.
+	// Complete the enum flag to its allowed values instead of filenames.
 	_ = cmd.RegisterFlagCompletionFunc("level", fixedComp(levelNames))
+}
+
+// addFormatFlag installs --format, shared by the render path and list. It is an
+// output-form switch, not a verbosity knob, so it is left out of the render-flag
+// help group (isRenderFlag) — like --no-color, it lists under plain Flags. Every
+// command that emits output registers it once (the root, which carries both the
+// render and list flag sets, must not double-register it).
+func addFormatFlag(cmd *cobra.Command) {
+	cmd.Flags().String("format", "", "output format: json or text (default)")
 	_ = cmd.RegisterFlagCompletionFunc("format", fixedComp(formatNames))
 }
 

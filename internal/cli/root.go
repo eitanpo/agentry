@@ -11,30 +11,37 @@ import (
 	"github.com/eitanpo/agentry/internal/render"
 )
 
-// newRootCmd assembles the command tree. The root both renders (bare agentry /
-// agentry <id>) and parents the verbs. noColor is shared by reference into the
-// verbs so the persistent flag has one backing value.
+// newRootCmd assembles the command tree. The bare root lists (no argument) or
+// renders (a full session id); it also parents the verbs. Because it does both,
+// it carries both flag sets — the list selectors and the render toggles. noColor
+// is shared by reference into the verbs so the persistent flag has one backing
+// value.
 func newRootCmd(version string) *cobra.Command {
 	var noColor bool
 
 	root := &cobra.Command{
 		Use:   "agentry [session-id]",
-		Short: "render a Claude Code session log to the terminal",
+		Short: "render Claude Code session logs (bare command lists them)",
 		Long: "agentry " + version + " — render a Claude Code session log to the terminal\n\n" +
-			"With no argument it renders the current project's most recent session;\n" +
-			"with a full session id it renders that one. Use `agentry list` to find a session.",
+			"With no argument it lists the current project's sessions; pass a full\n" +
+			"session id to render one, or `agentry view` to render the most recent.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeSessionIDs,
 		Version:           version,
-		SilenceErrors: true, // Execute prints in agentry's voice
-		SilenceUsage:  true, // a usage error must not dump full help
-		Example: "  agentry                      render the most recent session\n" +
+		SilenceErrors:     true, // Execute prints in agentry's voice
+		SilenceUsage:      true, // a usage error must not dump full help
+		Example: "  agentry                      list this project's sessions\n" +
+			"  agentry --since today        list sessions active today\n" +
 			"  agentry <uuid>               render a specific session\n" +
-			"  agentry --level full         render the most recent in full detail\n" +
-			"  agentry view --tools <uuid>  render one session, showing tool calls\n" +
-			"  agentry list                 list sessions to find an id\n" +
+			"  agentry view                 render the most recent session\n" +
+			"  agentry view --level full    render the most recent in full detail\n" +
 			"  agentry list --since 7d      list sessions from the last 7 days",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// No id lists; a full id renders. renderSession handles the
+			// verb-vs-id did-you-mean for a non-id first token.
+			if len(args) == 0 {
+				return runList(cmd, &noColor)
+			}
 			return renderSession(cmd, args, &noColor, true)
 		},
 	}
@@ -45,6 +52,8 @@ func newRootCmd(version string) *cobra.Command {
 	root.SetVersionTemplate("agentry {{.Version}}\n")
 	root.SetFlagErrorFunc(flagErrorFunc)
 	addRenderFlags(root)
+	addListFlags(root)
+	addFormatFlag(root)
 
 	cobra.AddTemplateFunc("renderFlagUsages", renderFlagUsages)
 	cobra.AddTemplateFunc("otherLocalFlagUsages", otherLocalFlagUsages)

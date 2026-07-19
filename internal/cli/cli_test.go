@@ -2,11 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/eitanpo/agentry/internal/locate"
 	"github.com/eitanpo/agentry/internal/render"
 )
 
@@ -97,7 +101,7 @@ func TestUsageErrorsSuggest(t *testing.T) {
 		{"mistyped verb", []string{"lst"}, `did you mean "list"`},
 		{"mistyped flag value", []string{"list", "--include", "prompt"}, `did you mean "prompts"`},
 		{"mistyped flag name", []string{"--thnking"}, "did you mean --thinking"},
-		{"mistyped level value", []string{"--level", "detaild"}, `did you mean "detailed"`},
+		{"mistyped level value", []string{"view", "--level", "detaild"}, `did you mean "detailed"`},
 		{"mistyped used flag", []string{"list", "--user-tool", "x"}, "did you mean --used-tool"},
 		{"mistyped format value", []string{"list", "--format", "jsn"}, `did you mean "json"`},
 		{"mistyped format value on render", []string{"--format", "jsn"}, `did you mean "json"`},
@@ -153,7 +157,7 @@ func TestRootHelpGroupsRenderFlagsAndShowsExamples(t *testing.T) {
 		"--level",                           // ...containing the render flags
 		"Examples:",                         // examples are present
 		"agentry list",                      // a concrete list example line
-		"agentry view --tools",              // a concrete view example line
+		"agentry view --level full",         // a concrete view (render) example line
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("root help missing %q\n--- help ---\n%s", want, out)
@@ -269,13 +273,119 @@ func TestFlagOperandOrdering(t *testing.T) {
 	}
 }
 
-// TestBareCommandResolves confirms the zero-argument path reaches session
-// resolution rather than erroring on argument handling.
+// TestBareCommandResolves confirms the zero-argument path reaches the project
+// listing rather than erroring on argument handling — a project-less dir bottoms
+// out at exNoInput (no sessions to list), not a usage error.
 func TestBareCommandResolves(t *testing.T) {
 	t.Chdir(t.TempDir())
 	code, _, _ := exec()
 	if code != exNoInput {
 		t.Errorf("bare command: exit = %d, want %d (exNoInput in a project-less dir)", code, exNoInput)
+	}
+}
+
+// captureStdout redirects os.Stdout for the duration of fn and returns what was
+// written. The render/list paths write to os.Stdout directly (not the cobra
+// command's out buffer that exec() captures), so a behavioral output assertion
+// has to intercept the real stream.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	w.Close()
+	os.Stdout = orig
+	return <-done
+}
+
+// fixtureProject points locate at a temp projects root and drops the sample
+// session into the project folder for a fresh working directory, returning the
+// session id (the file stem). Encoding is derived from the resolved cwd the code
+// will actually see (os.Getwd after Chdir), so it matches ProjectDir's mapping
+// even where TempDir hands back a symlinked path (macOS /var → /private/var).
+func fixtureProject(t *testing.T) (id string) {
+	t.Helper()
+	id = "ba6b3ded-475b-4c3a-96fe-99698a557d14"
+	srcAbs, err := filepath.Abs("../parse/testdata/sample.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(srcAbs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	orig := locate.ProjectsRoot
+	locate.ProjectsRoot = root
+	t.Cleanup(func() { locate.ProjectsRoot = orig })
+
+	name := "-" + strings.ReplaceAll(strings.TrimPrefix(cwd, "/"), "/", "-")
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// TestBareCommandLists pins the front-door behavior: bare `agentry` produces the
+// exact same output as `agentry list` (Option A — the bare command IS the
+// listing), and a distinct output from rendering a session by id. If bare
+// agentry regressed to rendering the most recent session, the first assertion
+// would fail (list table vs rendered turns).
+func TestBareCommandLists(t *testing.T) {
+	id := fixtureProject(t)
+
+	bare := captureStdout(t, func() { exec() })
+	listed := captureStdout(t, func() { exec("list") })
+	rendered := captureStdout(t, func() { exec(id) })
+
+	if bare != listed {
+		t.Errorf("bare `agentry` output must equal `agentry list`\n--- bare ---\n%s\n--- list ---\n%s", bare, listed)
+	}
+	if !strings.Contains(bare, id) {
+		t.Errorf("bare listing should name the session id %q\n%s", id, bare)
+	}
+	if bare == rendered {
+		t.Errorf("bare `agentry` (list) must differ from rendering the session by id")
+	}
+}
+
+// TestBareListFlagsApply pins Option A's second half: the list selectors work on
+// the bare command, not only on `agentry list`. --limit 0 vs a filtered --since
+// take different paths, but the simplest observable is that a list flag parses on
+// the root at all — a bad --since value is a usage error there, just as on `list`.
+func TestBareListFlagsApply(t *testing.T) {
+	fixtureProject(t)
+
+	// A list flag is accepted on the bare command: `agentry --since today`
+	// lists (exit 0) rather than erroring as an unknown flag. Captured so the
+	// list output does not leak into the test log.
+	var code int
+	captureStdout(t, func() { code, _, _ = exec("--since", "today") })
+	if code != 0 {
+		t.Errorf("`agentry --since today`: exit = %d, want 0", code)
+	}
+	// And it flows through the same parser: a bogus WHEN is a usage error on the
+	// bare command exactly as on `list`.
+	if code, _, _ := exec("--since", "notaday"); code != exUsage {
+		t.Errorf("`agentry --since notaday`: exit = %d, want %d (exUsage)", code, exUsage)
 	}
 }
 
