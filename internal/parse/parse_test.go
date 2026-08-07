@@ -131,6 +131,44 @@ func TestSummarizePrefersCustomTitle(t *testing.T) {
 	}
 }
 
+// A session named with --name or /rename carries an agent-name and, when that is
+// the only naming that happened, no custom-title. Reading only custom-title falls
+// through to the ai-title and shows a name the user never chose.
+func TestSummarizePrefersAgentNameOverAITitle(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "agent-name.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Title != "cloudsmith" {
+		t.Errorf("Title = %q, want the agent-name", s.Title)
+	}
+}
+
+// custom-title and agent-name are both names the user chose, so neither wins by
+// kind — the later entry wins. Both orderings are asserted because a ladder that
+// simply ranks one type above the other passes exactly one of them.
+func TestSummarizeManualTitleLastWins(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+		want    string
+	}{
+		{"agent-name then custom-title", "manual-title-order.jsonl", "renamed later"},
+		{"custom-title then agent-name", "manual-title-order-reversed.jsonl", "named later"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := Summarize(filepath.Join("testdata", tt.fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.Title != tt.want {
+				t.Errorf("Title = %q, want %q — the last manual title in the file", s.Title, tt.want)
+			}
+		})
+	}
+}
+
 func TestSummarizeSkipsLeadingClear(t *testing.T) {
 	s, err := Summarize(filepath.Join("testdata", "clear-start.jsonl"))
 	if err != nil {

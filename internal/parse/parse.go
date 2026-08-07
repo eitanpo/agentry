@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -90,7 +91,7 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		ID:       stem,
 		Start:    start,
 		End:      end,
-		Title:    sessionTitle(lastTitleOf(entries, "custom-title"), lastTitleOf(entries, "ai-title"), turns),
+		Title:    sessionTitle(lastTitleOf(entries, manualTitleTypes...), lastTitleOf(entries, "ai-title"), turns),
 		Prompts:  prompts,
 		NumTurns: len(turns),
 		Tools:    toolStats(entries),
@@ -234,22 +235,30 @@ func isAssignment(tok string) bool {
 // lastTitleOf returns the most recent non-empty title carried on entries of the
 // given type. ai-title and custom-title both regenerate/rewrite as the session
 // evolves, so the last one wins.
-func lastTitleOf(entries []entry, typ string) string {
+func lastTitleOf(entries []entry, typ ...string) string {
 	title := ""
 	for _, e := range entries {
-		if e.typ == typ && strings.TrimSpace(e.title) != "" {
-			title = e.title
+		if !slices.Contains(typ, e.typ) || strings.TrimSpace(e.title) == "" {
+			continue
 		}
+		title = e.title
 	}
 	return title
 }
 
-// sessionTitle picks a listing title by a fallback ladder: the manual
-// custom-title (set by renaming the session) if present, else Claude Code's
-// ai-title, else the first turn's prompt skipping a leading /clear (which resets
-// context and describes nothing), else the first prompt.
-func sessionTitle(customTitle, aiTitle string, turns []rawTurn) string {
-	if t := strings.TrimSpace(customTitle); t != "" {
+// manualTitleTypes are the two entries that record a name the user chose: a
+// custom-title from renaming the session, an agent-name from --name or /rename.
+// Neither outranks the other by kind, so lastTitleOf takes whichever the log
+// records last — these entries carry no timestamp, so file order is the only
+// ordering there is.
+var manualTitleTypes = []string{"custom-title", "agent-name"}
+
+// sessionTitle picks a listing title by a fallback ladder: a manual title the
+// user chose (see manualTitleTypes) if present, else Claude Code's ai-title,
+// else the first turn's prompt skipping a leading /clear (which resets context
+// and describes nothing), else the first prompt.
+func sessionTitle(manualTitle, aiTitle string, turns []rawTurn) string {
+	if t := strings.TrimSpace(manualTitle); t != "" {
 		return t
 	}
 	if t := strings.TrimSpace(aiTitle); t != "" {
@@ -288,7 +297,7 @@ type entry struct {
 	uuid       string
 	model      string
 	usage      model.Usage
-	title      string  // set on ai-title (aiTitle) and custom-title (customTitle) entries
+	title      string  // set on ai-title (aiTitle), custom-title (customTitle) and agent-name (agentName) entries
 	contentStr string  // set when message.content is a JSON string
 	hasStr     bool    // distinguishes "" content from absent/array content
 	blocks     []block // set when message.content is a JSON array
@@ -320,6 +329,7 @@ type rawEntry struct {
 	Message       json.RawMessage `json:"message"`
 	AiTitle       string          `json:"aiTitle"`       // ai-title entries: Claude Code's own session summary
 	CustomTitle   string          `json:"customTitle"`   // custom-title entries: the name set by renaming the session
+	AgentName     string          `json:"agentName"`     // agent-name entries: the name set by --name or /rename
 	ToolUseResult json.RawMessage `json:"toolUseResult"` // structured tool-result mirror; carries agentId for spawn children
 	// IsCompactSummary flags the compaction-boundary user entry. Absent in logs
 	// written before Claude Code added it, hence the text fallback in userPrompt.
@@ -371,7 +381,9 @@ func loadEntries(path string) ([]entry, error) {
 			continue // skip malformed lines, as the reference does
 		}
 		e := entry{
-			typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle,
+			// Only one of the three title fields is ever set on a given entry —
+			// each belongs to a different entry type — so concatenating picks it.
+			typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle + re.AgentName,
 			isCompactSummary: re.IsCompactSummary,
 		}
 		if ts, err := time.Parse(time.RFC3339, re.Timestamp); err == nil {
