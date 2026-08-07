@@ -205,6 +205,20 @@ func TestSummarizeRootUUID(t *testing.T) {
 	}
 }
 
+// TestSummarizeCwd pins the field a cross-project listing is read by: without
+// it every row names a session and not where it ran. The fixture opens with a
+// meta entry that carries no cwd, so taking the first entry's value
+// unconditionally would report none.
+func TestSummarizeCwd(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "cwd.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Cwd != "/Users/me/Projects/me/agentry" {
+		t.Errorf("Cwd = %q, want %q", s.Cwd, "/Users/me/Projects/me/agentry")
+	}
+}
+
 func TestIsClearCmd(t *testing.T) {
 	clear := []string{"//clear", "/clear", "  //clear  ", "clear",
 		"/clear improve the parser", "//clear do the thing"}

@@ -106,3 +106,29 @@ parent chain, so it applies to every verb, and the `*cobra.Command` it receives 
 whose flags failed — the correct candidate pool). Flag *values* (`--include prompt`,
 `--level detaild`) are validated by agentry itself, so those suggestions live at each enum
 site, not in the flag-error hook.
+
+## Project-folder lookup
+
+**A wrong project-folder name fails as "no project", never as a mismatch.** The lookup stats
+one derived path, so an encoder bug and a genuinely absent project are the same observable.
+`locate.ProjectDirName` replaced only `/` with `-` for months while Claude Code replaces every
+non-alphanumeric character, and the symptom was `agentry` reporting no project in directories
+that held sessions — every path with a dot component, so every worktree Claude Code creates
+under `<repo>/.claude/worktrees/`. A negative result from a name-derivation function is not
+evidence of absence; check the derived name against a folder that exists before believing it.
+
+**Never reverse the folder name; read `cwd` from the log.** The encoding is lossy — `-a-b-c`
+could be `/a/b/c` or `/a/b-c` — but every entry records the working directory outright, which
+also survives the directory being deleted or renamed. On the development machine 37 of 63
+project folders had no surviving directory, so anything that walks the filesystem to enumerate
+projects finds fewer than half of them.
+
+**Subtree matching compares path components, not string prefixes.** `strings.HasPrefix` accepts
+`/a/bc` as living under `/a/b`, which silently sweeps a sibling repository into a `--project`
+listing. Compare against `root + separator`, and keep a same-prefix sibling in the fixture — the
+naive version passes every test that lacks one.
+
+**A test that builds a fixture path with its own copy of an encoding rule pins the copy.** The
+project-folder name was open-coded in the CLI test helpers; when the real encoder was corrected
+the helpers kept producing the old name and the tests failed for the wrong reason. `ProjectDirName`
+is exported so fixtures and lookup share one implementation.

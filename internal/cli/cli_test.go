@@ -302,7 +302,7 @@ func sessionlessProject(t *testing.T, makeDir bool) {
 	locate.ProjectsRoot = root
 	t.Cleanup(func() { locate.ProjectsRoot = orig })
 	if makeDir {
-		name := "-" + strings.ReplaceAll(strings.TrimPrefix(cwd, "/"), "/", "-")
+		name := locate.ProjectDirName(cwd)
 		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -396,7 +396,7 @@ func fixtureProject(t *testing.T) (id string) {
 	locate.ProjectsRoot = root
 	t.Cleanup(func() { locate.ProjectsRoot = orig })
 
-	name := "-" + strings.ReplaceAll(strings.TrimPrefix(cwd, "/"), "/", "-")
+	name := locate.ProjectDirName(cwd)
 	dir := filepath.Join(root, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -405,6 +405,115 @@ func fixtureProject(t *testing.T) (id string) {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// crossProjectFixture builds three projects under one temp root — a repo, a
+// worktree nested inside it, and an unrelated project elsewhere — each holding
+// one session whose entries record its cwd. It returns the repo's path. The
+// working directory is left somewhere with no project of its own, so any session
+// a listing finds came from a scope flag rather than from the cwd.
+func crossProjectFixture(t *testing.T) string {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	root := t.TempDir()
+	orig := locate.ProjectsRoot
+	locate.ProjectsRoot = root
+	t.Cleanup(func() { locate.ProjectsRoot = orig })
+
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	for _, p := range []struct{ cwd, id string }{
+		{repo, "11111111-1111-1111-1111-111111111111"},
+		{filepath.Join(repo, ".claude", "worktrees", "feature"), "22222222-2222-2222-2222-222222222222"},
+		{filepath.Join(base, "unrelated"), "33333333-3333-3333-3333-333333333333"},
+	} {
+		dir := filepath.Join(root, locate.ProjectDirName(p.cwd))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := `{"type":"user","cwd":"` + p.cwd + `","timestamp":"2026-06-03T14:00:00Z","uuid":"u-` + p.id +
+			`","message":{"role":"user","content":"hello"}}` + "\n"
+		if err := os.WriteFile(filepath.Join(dir, p.id+".jsonl"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return repo
+}
+
+// TestScopeFlags pins the two ways a listing reaches past the current directory,
+// and the one way it refuses to.
+func TestScopeFlags(t *testing.T) {
+	t.Run("--project sweeps the repo and its nested worktree", func(t *testing.T) {
+		// The worktree is a separate project because Claude Code slugs its own
+		// path; naming the repo has to reach it, or auditing a repo silently
+		// omits every session run in a worktree of it.
+		repo := crossProjectFixture(t)
+		out := captureStdout(t, func() { exec("list", "--project", repo, "--limit", "0", "--format", "json") })
+		var got []map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+		}
+		if len(got) != 2 {
+			t.Fatalf("got %d sessions, want 2 (the repo and its worktree): %s", len(got), out)
+		}
+		if !strings.Contains(out, "worktrees/feature") {
+			t.Errorf("the nested worktree's session is missing: %s", out)
+		}
+		if strings.Contains(out, "unrelated") {
+			t.Errorf("a project outside the named path was swept in: %s", out)
+		}
+	})
+
+	t.Run("--all-projects spans every project", func(t *testing.T) {
+		crossProjectFixture(t)
+		out := captureStdout(t, func() { exec("list", "--all-projects", "--limit", "0", "--format", "json") })
+		var got []map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+		}
+		if len(got) != 3 {
+			t.Errorf("got %d sessions, want 3: %s", len(got), out)
+		}
+	})
+
+	t.Run("each session carries its own cwd", func(t *testing.T) {
+		// This field is the whole reason a cross-project listing is readable:
+		// without it every row names a session and not where it ran.
+		crossProjectFixture(t)
+		out := captureStdout(t, func() { exec("list", "--all-projects", "--limit", "0", "--format", "json") })
+		var got []struct {
+			Cwd string `json:"cwd"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range got {
+			if s.Cwd == "" {
+				t.Errorf("a session reported no cwd: %s", out)
+			}
+		}
+	})
+
+	t.Run("the two scope flags are mutually exclusive", func(t *testing.T) {
+		// Silently preferring one would make the other look broken rather than
+		// rejected, and the caller would never learn which scope it got.
+		repo := crossProjectFixture(t)
+		code, _, errOut := exec("list", "--all-projects", "--project", repo)
+		if code != exUsage {
+			t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+		}
+		if !strings.Contains(errOut, "mutually exclusive") {
+			t.Errorf("error should say the flags conflict, got %q", errOut)
+		}
+	})
+
+	t.Run("--project naming a path with no project is exNoInput", func(t *testing.T) {
+		crossProjectFixture(t)
+		code, _, _ := exec("list", "--project", t.TempDir())
+		if code != exNoInput {
+			t.Errorf("exit = %d, want %d (exNoInput)", code, exNoInput)
+		}
+	})
 }
 
 // TestBareCommandLists pins the front-door behavior: bare `agentry` produces the

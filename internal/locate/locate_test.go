@@ -17,12 +17,184 @@ func TestProjectDirName(t *testing.T) {
 		{"/a", "-a"},
 		{"/", "-"},
 		{"/x/y/z", "-x-y-z"},
+		// Every non-alphanumeric character is replaced, not only "/". A dot
+		// component doubles the separator, which is what a slash-only encoder got
+		// wrong — and it got it wrong for every worktree Claude Code creates,
+		// since those live under <repo>/.claude/worktrees/.
+		{"/Users/me/.central/worktrees/pr-1", "-Users-me--central-worktrees-pr-1"},
+		{"/repo/.claude/worktrees/w", "-repo--claude-worktrees-w"},
+		{"/tmp/a_b/c", "-tmp-a-b-c"},
+		{"/x/a.b_c-d/y", "-x-a-b-c-d-y"},
 	}
 	for _, tt := range tests {
-		if got := projectDirName(tt.path); got != tt.want {
-			t.Errorf("projectDirName(%q) = %q, want %q", tt.path, got, tt.want)
+		if got := ProjectDirName(tt.path); got != tt.want {
+			t.Errorf("ProjectDirName(%q) = %q, want %q", tt.path, got, tt.want)
 		}
 	}
+}
+
+// TestDotComponentDirResolves pins the bug the encoding fix closed: a working
+// directory with a dot component has a project folder like any other, and
+// agentry used to report "no Claude project for this directory" for all of them.
+func TestDotComponentDirResolves(t *testing.T) {
+	root := t.TempDir()
+	old := ProjectsRoot
+	ProjectsRoot = root
+	t.Cleanup(func() { ProjectsRoot = old })
+
+	const cwd = "/repo/.claude/worktrees/feature"
+	if err := os.MkdirAll(filepath.Join(root, ProjectDirName(cwd)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProjectDir(cwd); err != nil {
+		t.Fatalf("ProjectDir(%q) = %v, want the folder to resolve", cwd, err)
+	}
+}
+
+// writeSession creates a project folder for cwd holding one session whose
+// entries carry that cwd — the shape ProjectCwd and SessionsUnder read.
+func writeSession(t *testing.T, root, cwd, id string) string {
+	t.Helper()
+	dir := filepath.Join(root, ProjectDirName(cwd))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, id+".jsonl")
+	body := `{"type":"ai-title","aiTitle":"meta line with no cwd"}` + "\n" +
+		`{"type":"user","cwd":"` + cwd + `"}` + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestProjectCwd(t *testing.T) {
+	root := t.TempDir()
+	old := ProjectsRoot
+	ProjectsRoot = root
+	t.Cleanup(func() { ProjectsRoot = old })
+
+	t.Run("reads the path the log recorded", func(t *testing.T) {
+		// The folder name alone cannot answer this: "-a-b-c" could encode /a/b/c
+		// or /a/b-c. The recorded cwd is the only non-ambiguous source.
+		const cwd = "/x/a-b/c"
+		writeSession(t, root, cwd, "s1")
+		got, err := ProjectCwd(filepath.Join(root, ProjectDirName(cwd)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != cwd {
+			t.Errorf("ProjectCwd = %q, want %q", got, cwd)
+		}
+	})
+
+	t.Run("skips leading entries that carry no cwd", func(t *testing.T) {
+		// Meta entries (ai-title, agent-name, …) omit the field, so reading only
+		// the first line would report no path for a session that has one.
+		const cwd = "/x/meta-first"
+		writeSession(t, root, cwd, "s2")
+		got, _ := ProjectCwd(filepath.Join(root, ProjectDirName(cwd)))
+		if got != cwd {
+			t.Errorf("ProjectCwd = %q, want %q", got, cwd)
+		}
+	})
+
+	t.Run("no cwd anywhere yields empty, not an error", func(t *testing.T) {
+		dir := filepath.Join(root, "-no-cwd")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ProjectCwd(dir)
+		if err != nil || got != "" {
+			t.Errorf("ProjectCwd = %q, %v; want \"\", nil", got, err)
+		}
+	})
+
+	t.Run("a malformed line does not stop the scan", func(t *testing.T) {
+		dir := filepath.Join(root, "-malformed")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "{not json\n" + `{"type":"user","cwd":"/x/after-bad-line"}` + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := ProjectCwd(dir)
+		if got != "/x/after-bad-line" {
+			t.Errorf("ProjectCwd = %q, want the cwd after the malformed line", got)
+		}
+	})
+}
+
+func TestSessionsUnderAndAll(t *testing.T) {
+	root := t.TempDir()
+	old := ProjectsRoot
+	ProjectsRoot = root
+	t.Cleanup(func() { ProjectsRoot = old })
+
+	writeSession(t, root, "/w/repo", "main")
+	writeSession(t, root, "/w/repo/.claude/worktrees/feature", "wt")
+	// /w/repo-tools is a sibling whose path begins with the same characters as
+	// /w/repo. A string-prefix test would sweep it in; a component test must not.
+	writeSession(t, root, "/w/repo-tools", "sibling")
+	writeSession(t, root, "/elsewhere/other", "other")
+
+	t.Run("a repo sweeps its nested worktrees", func(t *testing.T) {
+		got, err := SessionsUnder("/w/repo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("got %d sessions, want 2 (the repo and its worktree): %v", len(got), got)
+		}
+	})
+
+	t.Run("a same-prefix sibling is not under the repo", func(t *testing.T) {
+		got, _ := SessionsUnder("/w/repo")
+		for _, p := range got {
+			if filepath.Base(p) == "sibling.jsonl" {
+				t.Errorf("/w/repo-tools swept into /w/repo: %v", got)
+			}
+		}
+	})
+
+	t.Run("a parent directory sweeps every repo beneath it", func(t *testing.T) {
+		got, err := SessionsUnder("/w")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 3 {
+			t.Errorf("got %d sessions, want 3 under /w: %v", len(got), got)
+		}
+	})
+
+	t.Run("no project under the path is ErrNoProject", func(t *testing.T) {
+		if _, err := SessionsUnder("/nothing/here"); !errors.Is(err, ErrNoProject) {
+			t.Errorf("got %v, want ErrNoProject", err)
+		}
+	})
+
+	t.Run("SessionsAll spans every project", func(t *testing.T) {
+		got, err := SessionsAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 4 {
+			t.Errorf("got %d sessions, want 4: %v", len(got), got)
+		}
+	})
+
+	t.Run("SessionsAll on an empty root is ErrNoSession", func(t *testing.T) {
+		empty := t.TempDir()
+		ProjectsRoot = empty
+		t.Cleanup(func() { ProjectsRoot = root })
+		if _, err := SessionsAll(); !errors.Is(err, ErrNoSession) {
+			t.Errorf("got %v, want ErrNoSession", err)
+		}
+	})
 }
 
 func TestSession(t *testing.T) {

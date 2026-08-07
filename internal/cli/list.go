@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"time"
@@ -48,6 +49,31 @@ func addListFlags(cmd *cobra.Command) {
 	cmd.Flags().String("used-agent", "", "only sessions that spawned this subagent type")
 	cmd.Flags().String("used-command", "", "only sessions that ran a Bash command matching this text")
 	cmd.Flags().String("used", "", "only sessions that used this as a skill, agent, or command")
+	cmd.Flags().Bool("all-projects", false, "list every project's sessions, not just this directory's")
+	cmd.Flags().String("project", "", "list PATH's sessions instead of this directory's, including anything nested under it")
+}
+
+// sessionPaths resolves which sessions the listing covers: this directory's by
+// default, one named subtree's under --project, or every project's under
+// --all-projects. The two scope flags are mutually exclusive — silently
+// preferring one would make the other look broken rather than rejected.
+func sessionPaths(cmd *cobra.Command) ([]string, error) {
+	allProjects, _ := cmd.Flags().GetBool("all-projects")
+	project, _ := cmd.Flags().GetString("project")
+	if allProjects && project != "" {
+		return nil, usageErr("--all-projects and --project are mutually exclusive: --all-projects covers every project, so naming one narrows nothing")
+	}
+	switch {
+	case allProjects:
+		return locate.SessionsAll()
+	case project != "":
+		return locate.SessionsUnder(project)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	return locate.Sessions(cwd)
 }
 
 // usedFlags are the --used* filter flags; any of them, like a time filter,
@@ -120,18 +146,21 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		Any:     get("used"),
 	}
 
-	cwd, err := os.Getwd()
+	paths, err := sessionPaths(cmd)
 	if err != nil {
-		return noInputErr(err)
-	}
-	paths, err := locate.Sessions(cwd)
-	if err != nil {
-		// Under --format json the output contract is an array, and these two
-		// failures — no project for the directory, or a project holding no
-		// sessions — are the only paths that would leave stdout empty instead.
-		// Emitting [] keeps one shape for every outcome so a caller sweeping
-		// directories can pipe into jq without guarding. The error still goes to
-		// stderr with its exit code: an empty array is not a claim of success.
+		// A usage error is the caller's mistake, not an empty result: it must not
+		// be dressed up as a well-formed empty listing.
+		var ue *exitError
+		if errors.As(err, &ue) && ue.code == exUsage {
+			return err
+		}
+		// Under --format json the output contract is an array, and these
+		// failures — no project for the directory or --project path, or no
+		// project holding a session — are the only ones that would leave stdout
+		// empty instead. Emitting [] keeps one shape for every outcome so a
+		// caller sweeping directories can pipe into jq without guarding. The
+		// error still goes to stderr with its exit code: an empty array is not a
+		// claim of success.
 		if format == "json" {
 			_ = list.RenderJSON(os.Stdout, nil)
 		}

@@ -147,6 +147,142 @@ func TestRenderPlain(t *testing.T) {
 	}
 }
 
+func TestProjectLabels(t *testing.T) {
+	tests := []struct {
+		name string
+		cwds []string
+		want map[string]string
+	}{
+		{
+			// One project is the whole history of the listing before this change:
+			// nil means the column is not drawn at all, so no existing output moves.
+			name: "a single project draws no column",
+			cwds: []string{"/Users/me/Projects/me/agentry", "/Users/me/Projects/me/agentry"},
+			want: nil,
+		},
+		{
+			name: "distinct basenames need only the last component",
+			cwds: []string{"/Users/me/Projects/me/agentry", "/Users/me/Projects/me/dotfiles"},
+			want: map[string]string{
+				"/Users/me/Projects/me/agentry":  "agentry",
+				"/Users/me/Projects/me/dotfiles": "dotfiles",
+			},
+		},
+		{
+			// The case a bare basename gets wrong: a repo tree groups colliding
+			// names under owners, so both rows would read "agentry".
+			name: "a colliding basename grows until it is unique",
+			cwds: []string{"/p/me/agentry", "/p/wix/agentry", "/p/me/dotfiles"},
+			want: map[string]string{
+				"/p/me/agentry":  "me/agentry",
+				"/p/wix/agentry": "wix/agentry",
+				"/p/me/dotfiles": "dotfiles",
+			},
+		},
+		{
+			name: "a worktree under its repo keeps its own name",
+			cwds: []string{"/p/repo", "/p/repo/.claude/worktrees/feature"},
+			want: map[string]string{
+				"/p/repo":                           "repo",
+				"/p/repo/.claude/worktrees/feature": "feature",
+			},
+		},
+		{
+			// One path is a full suffix of the other, so no suffix of the shorter
+			// is ever unique; it must fall back to the whole path rather than
+			// silently duplicating its sibling's label.
+			name: "a path that is a suffix of another keeps its full path",
+			cwds: []string{"/a/b", "/x/a/b"},
+			want: map[string]string{
+				"/a/b":   "/a/b",
+				"/x/a/b": "x/a/b",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sums []model.Summary
+			for i, c := range tt.cwds {
+				sums = append(sums, model.Summary{ID: string(rune('a' + i)), Cwd: c})
+			}
+			got := projectLabels(sums)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("label for %q = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+// TestRenderProjectColumn pins when the column appears and that it does not
+// eat the title: a listing confined to one project must render exactly as it did
+// before cross-project listing existed.
+func TestRenderProjectColumn(t *testing.T) {
+	mk := func(id, cwd, title string) model.Summary {
+		return model.Summary{
+			ID: id, Cwd: cwd, Title: title,
+			Start: time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC),
+			End:   time.Date(2026, 6, 3, 14, 5, 0, 0, time.UTC),
+		}
+	}
+	t.Run("one project shows no project column", func(t *testing.T) {
+		var b strings.Builder
+		sums := []model.Summary{mk("a", "/p/me/agentry", "alpha"), mk("b", "/p/me/agentry", "beta")}
+		if err := Render(&b, sums, Options{Width: 120, Color: false}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.String(), "agentry") {
+			t.Errorf("single-project listing must not draw the project column: %q", b.String())
+		}
+	})
+
+	t.Run("two projects label every row", func(t *testing.T) {
+		var b strings.Builder
+		sums := []model.Summary{mk("a", "/p/me/agentry", "alpha"), mk("b", "/p/me/dotfiles", "beta")}
+		if err := Render(&b, sums, Options{Width: 120, Color: false}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		for _, want := range []string{"agentry", "dotfiles", "alpha", "beta"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q: %q", want, out)
+			}
+		}
+	})
+
+	t.Run("a long project name leaves the title readable", func(t *testing.T) {
+		// The failure this guards: at 100 columns a 21-character project name
+		// drove the title to its 10-column floor, truncating away the one field
+		// the row is actually scanned by.
+		var b strings.Builder
+		sums := []model.Summary{
+			mk("a", "/p/wix/artifactory-migration", "a distinctly long session title"),
+			mk("b", "/p/wix/other", "beta"),
+		}
+		if err := Render(&b, sums, Options{Width: 100, Color: false}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), "a distinctly") {
+			t.Errorf("title squeezed out by the project column: %q", b.String())
+		}
+	})
+}
+
+func TestTruncateLeft(t *testing.T) {
+	// The label is a path suffix, so the tail distinguishes it — dropping the
+	// head keeps the informative end, which right-truncation would discard.
+	if got := truncateLeft("artifactory-migration", 9); got != "…migration" && got != "…igration" {
+		t.Errorf("truncateLeft = %q, want the tail kept", got)
+	}
+	if got := truncateLeft("short", 9); got != "short" {
+		t.Errorf("truncateLeft should not alter a value that fits, got %q", got)
+	}
+}
+
 func TestRenderNewestLast(t *testing.T) {
 	// Input arrives most-recent first (as Select returns it); output must print
 	// it oldest-to-newest, so the newest row is last.

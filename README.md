@@ -55,7 +55,18 @@ agentry list --used-command exa           # only sessions that ran a Bash comman
 agentry list --used-skill expert          # only sessions that invoked the expert skill
 agentry list --used researcher            # skill, agent, or command matching "researcher"
 agentry list --used-skill expert --format json | jq   # machine-readable, for piping
+agentry list --all-projects                # every project, not just this directory
+agentry list --project ~/Projects/me/app   # that repo and every worktree nested in it
+agentry list --project ~/Projects/me       # every repo under that directory
 ```
+
+`--project PATH` lists PATH's sessions **and everything nested under it**. That matters because
+Claude Code gives every git worktree its own project folder, so a repo's sessions are split
+across them and `agentry list` in the main checkout shows none of the worktree ones — naming the
+repo sweeps them back in. Both scope flags also reach projects whose directory you have since
+deleted or renamed, which walking directories yourself cannot. When a listing spans more than one
+project, each row gains a project column before the title; `--format json` carries the full path
+as `cwd` on every session.
 
 Sessions print oldest-to-newest, so the most recent is at the bottom, next to your prompt. Each row shows the last-activity time (when the session's most recent turn ended — the same recency the list is ordered by), duration, turn count, a title (a name you chose if set — from renaming the session, or from `--name` / `/rename`, whichever the log records last — else Claude Code's own `ai-title` summary, falling back to the first prompt, skipping a leading `/clear`), and the full id — copy an id and pass it to `agentry <id>` to render that session. A forked session (Claude Code's `--fork-session` / `/branch`) is grouped under the original it was forked from and its title indented with `└─`; while it still carries the original's inherited title it is shown by its first new prompt instead, so the two are distinguishable.
 
@@ -71,7 +82,9 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--used-tool NAME` | `list` | — | Only sessions where that tool fired, by tool-use name (case-insensitive, exact). The "which mechanism" axis. |
 | `--used-skill`, `--used-agent`, `--used-command` | `list` | — | Identity axis: a Skill's skill, an Agent's subagent type, a Bash command's text (case-insensitive substring). |
 | `--used TOKEN` | `list` | — | Catch-all over the identity axis: skill name, agent type, or command. Not tool names — use `--used-tool` for those. |
-| `--format json\|text` | render, `list` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color); on `list` it's a JSON array of per-session summaries (ignoring `--include` and color), and stdout is always a valid array — a directory with no project, or a project with no sessions, prints `[]` while still reporting the error on stderr and exiting non-zero, so you can pipe into `jq` without a guard. |
+| `--all-projects` | `list` | — | Every project under `~/.claude/projects/`, not just this directory's. Mutually exclusive with `--project`. |
+| `--project PATH` | `list` | — | PATH's sessions instead of this directory's, including every project nested under PATH — which is how naming a repo picks up its git worktrees. |
+| `--format json\|text` | render, `list` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color); on `list` it's a JSON array of per-session summaries, each carrying its `cwd` (ignoring `--include` and color), and stdout is always a valid array — a directory with no project, or a project with no sessions, prints `[]` while still reporting the error on stderr and exiting non-zero, so you can pipe into `jq` without a guard. |
 | `--no-color` | global | — | Disable color (also honors the `NO_COLOR` env var). |
 | `--help`, `--version` | global | — | Per-verb `--help` lists only that mode's flags. |
 

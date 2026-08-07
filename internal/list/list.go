@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -324,9 +325,41 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	if width <= 0 {
 		width = fallbackWidth
 	}
-	// columns: when(16) dur(7,right) turns(4,right) title(rest) id(36), 2-space gaps
-	const whenW, durW, turnsW, idW = 16, 7, 4, 36
-	titleW := width - (whenW + durW + turnsW + idW + 4*2)
+	// columns: when(16) dur(7,right) turns(4,right) [project] title(rest) id(36), 2-space gaps
+	const whenW, durW, turnsW, idW, projMaxW = 16, 7, 4, 36, 24
+	// The project column exists only when the listing spans more than one, so a
+	// single-project listing — every listing before --all-projects/--project —
+	// keeps its exact previous layout.
+	labels := projectLabels(sums)
+	projW := 0
+	for _, l := range labels {
+		if n := utf8.RuneCountInString(l); n > projW {
+			projW = n
+		}
+	}
+	gaps := 4
+	if projW > 0 {
+		gaps = 5
+	}
+	// The project column is capped twice: absolutely, and at a third of what the
+	// two variable columns have to share. Without the second cap a long project
+	// name starves the title — at 100 columns a 21-character repo name leaves the
+	// title at its 10-column floor, which is the column the row is actually read
+	// by. The label is a path suffix, so it truncates from the left: the tail is
+	// what tells two projects apart.
+	if projW > 0 {
+		avail := width - (whenW + durW + turnsW + idW + gaps*2)
+		if cap := avail / 3; projW > cap {
+			projW = cap
+		}
+		if projW > projMaxW {
+			projW = projMaxW
+		}
+		if projW < 8 {
+			projW = 8
+		}
+	}
+	titleW := width - (whenW + durW + turnsW + idW + projW + gaps*2)
 	if titleW < 10 {
 		titleW = 10
 	}
@@ -361,10 +394,15 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		if r.fork {
 			title = forkGlyph + truncate(oneLine(s.Title), titleW-forkGlyphW)
 		}
-		fmt.Fprintf(&b, "%s  %s  %s  %s  %s\n",
+		proj := ""
+		if projW > 0 {
+			proj = dim.Render(pad(truncateLeft(labels[s.Cwd], projW), projW)) + "  "
+		}
+		fmt.Fprintf(&b, "%s  %s  %s  %s%s  %s\n",
 			meta.Render(when),
 			meta.Render(fmt.Sprintf("%*s", durW, fmtDur(s.Start, s.End))),
 			dim.Render(fmt.Sprintf("%*dt", turnsW-1, s.NumTurns)),
+			proj,
 			pad(title, titleW),
 			meta.Render(s.ID))
 		rail := railIndent + dim.Render(railGlyph) + " "
@@ -436,6 +474,65 @@ func toolLines(stats []model.ToolStat) []string {
 	return lines
 }
 
+// projectLabels maps each distinct session cwd to the shortest suffix of path
+// components that tells it apart from the others present. One project listed
+// shows as its own directory name; two repos sharing a basename grow a
+// component each until they differ, so `me/agentry` and `wix-private/agentry`
+// both appear rather than two identical `agentry` rows.
+//
+// The alternative reads worse in both directions: a bare basename collides
+// exactly where a repo tree groups colliding names under owners, and a full path
+// does not fit — at 80 columns the title column is already at its floor. Returns
+// nil when fewer than two projects are present, which is the signal not to draw
+// the column at all.
+func projectLabels(sums []model.Summary) map[string]string {
+	paths := map[string]bool{}
+	for _, s := range sums {
+		if s.Cwd != "" {
+			paths[s.Cwd] = true
+		}
+	}
+	if len(paths) < 2 {
+		return nil
+	}
+	labels := map[string]string{}
+	for p := range paths {
+		parts := strings.Split(strings.Trim(p, string(filepath.Separator)), string(filepath.Separator))
+		// Grow the suffix until no other path yields the same one. A path that is
+		// a suffix of another (/a/b vs /x/a/b) exhausts its components first and
+		// keeps the whole thing, which is already unique.
+		label := p
+		for n := 1; n <= len(parts); n++ {
+			cand := strings.Join(parts[len(parts)-n:], "/")
+			if uniqueSuffix(paths, p, cand) {
+				label = cand
+				break
+			}
+		}
+		labels[p] = label
+	}
+	return labels
+}
+
+// uniqueSuffix reports whether cand identifies self alone among paths — no other
+// path ends in the same components.
+func uniqueSuffix(paths map[string]bool, self, cand string) bool {
+	for p := range paths {
+		if p == self {
+			continue
+		}
+		parts := strings.Split(strings.Trim(p, string(filepath.Separator)), string(filepath.Separator))
+		n := strings.Count(cand, "/") + 1
+		if n > len(parts) {
+			continue
+		}
+		if strings.Join(parts[len(parts)-n:], "/") == cand {
+			return false
+		}
+	}
+	return true
+}
+
 // pad right-fills s with spaces to width display columns (rune count). s is
 // assumed already truncated to <= width.
 func pad(s string, width int) string {
@@ -478,4 +575,15 @@ func truncate(s string, limit int) string {
 		return s
 	}
 	return string(r[:limit-1]) + "…"
+}
+
+// truncateLeft drops leading runes instead of trailing ones, for values whose
+// tail carries the meaning — a path suffix, where the last component is what
+// distinguishes one project from another.
+func truncateLeft(s string, limit int) string {
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return "…" + string(r[len(r)-(limit-1):])
 }

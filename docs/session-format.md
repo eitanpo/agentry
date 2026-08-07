@@ -16,8 +16,22 @@ below that a change would depend on — the counts and version ranges quoted her
 
 - Root: `~/.claude/projects/`.
 - One folder per project (working directory). The folder name is the project's
-  absolute path with the leading `/` stripped, every `/` replaced by `-`, and a `-`
-  prefixed. E.g. `/Users/me/Projects/dotfiles` → `-Users-me-Projects-dotfiles`.
+  absolute path with **every non-alphanumeric character replaced by `-`** — the leading `/`
+  included, which is why the name starts with one. E.g. `/Users/me/Projects/dotfiles` →
+  `-Users-me-Projects-dotfiles`. It is not only `/` that is replaced: `.` and `_` go too, so
+  `/Users/me/.central/worktrees/pr-1` → `-Users-me--central-worktrees-pr-1` (note the doubled
+  `-`) and `…/tvkkp3y92z1f212zv4k_9nvh0000gn/…` → `…-tvkkp3y92z1f212zv4k-9nvh0000gn-…`. Measured
+  over the 63 local project folders on 2026-08-07: replacing only `/` reproduces 32 of them,
+  adding `.` reproduces 60, replacing every non-alphanumeric reproduces all 63. Earlier
+  revisions of this file said only `/` was replaced; that was wrong, and it made agentry unable
+  to find the project for any path with a dot-component — every worktree Claude Code creates for
+  itself, since those live under `<repo>/.claude/worktrees/`. No local path carries a non-ASCII
+  character, so whether those are replaced is **unverified**.
+- **The folder name cannot be reversed, but the path is recorded anyway.** `-a-b-c` could have
+  come from `/a/b/c` or `/a/b-c`, so the encoding is lossy. Do not reverse it — read the `cwd`
+  field off any entry in any session in the folder. That yielded a path for 63 of 63 local
+  folders, including all 37 whose directory no longer exists on disk, so it is both complete and
+  the only method that survives a project directory being deleted or renamed.
 - One file per session: `<project>/<session-uuid>.jsonl`. The session id is a full UUID.
 - Subagent sidecars: `<project>/<session-uuid>/subagents/agent-<id>.jsonl`, each with an
   `agent-<id>.meta.json` sibling. A sidecar is itself session-shaped JSONL. Sidecars

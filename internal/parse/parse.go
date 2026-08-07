@@ -97,8 +97,21 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		Tools:    toolStats(entries),
 		Commands: bashCommands(entries),
 		RootUUID: rootUUID(entries),
+		Cwd:      sessionCwd(entries),
 		Born:     fileBorn(jsonlPath),
 	}, nil
+}
+
+// sessionCwd is the working directory the session ran in — the first non-empty
+// cwd any entry carries. Meta entries (ai-title, agent-name, …) omit the field,
+// so taking the first entry's value unconditionally would report none.
+func sessionCwd(entries []entry) string {
+	for _, e := range entries {
+		if e.cwd != "" {
+			return e.cwd
+		}
+	}
+	return ""
 }
 
 // rootUUID is the uuid of the first entry that carries one — the conversation
@@ -308,6 +321,9 @@ type entry struct {
 	// isCompactSummary marks the user entry Claude Code writes at a compaction
 	// boundary, whose content is the summary rather than anything typed.
 	isCompactSummary bool
+	// cwd is the working directory the session ran in. Meta entries omit it, so
+	// the session's value is the first non-empty one.
+	cwd string
 }
 
 type block struct {
@@ -330,6 +346,7 @@ type rawEntry struct {
 	AiTitle       string          `json:"aiTitle"`       // ai-title entries: Claude Code's own session summary
 	CustomTitle   string          `json:"customTitle"`   // custom-title entries: the name set by renaming the session
 	AgentName     string          `json:"agentName"`     // agent-name entries: the name set by --name or /rename
+	Cwd           string          `json:"cwd"`           // working directory the session ran in
 	ToolUseResult json.RawMessage `json:"toolUseResult"` // structured tool-result mirror; carries agentId for spawn children
 	// IsCompactSummary flags the compaction-boundary user entry. Absent in logs
 	// written before Claude Code added it, hence the text fallback in userPrompt.
@@ -384,7 +401,7 @@ func loadEntries(path string) ([]entry, error) {
 			// Only one of the three title fields is ever set on a given entry —
 			// each belongs to a different entry type — so concatenating picks it.
 			typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle + re.AgentName,
-			isCompactSummary: re.IsCompactSummary,
+			isCompactSummary: re.IsCompactSummary, cwd: re.Cwd,
 		}
 		if ts, err := time.Parse(time.RFC3339, re.Timestamp); err == nil {
 			e.t = ts

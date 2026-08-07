@@ -39,6 +39,10 @@ type Summary struct {
 	// conversation root. A fork copies its parent's chain verbatim, so a fork and
 	// its parent share a RootUUID; the listing groups them into one fork family.
 	RootUUID string `json:"rootUuid,omitempty"`
+	// Cwd is the working directory the session ran in, read from the log rather
+	// than derived from the project folder's name, which is lossy. It is what
+	// distinguishes rows once a listing spans more than one project.
+	Cwd string `json:"cwd,omitempty"`
 	// Born is the session file's creation time, used to order a fork family
 	// (earliest = original). Filesystem metadata, not session content, so it is
 	// not serialized. Zero when unreadable; off macOS it falls back to mtime.
