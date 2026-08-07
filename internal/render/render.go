@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/muesli/termenv"
 )
@@ -139,6 +140,11 @@ func (r *renderer) header(s *model.Session) string {
 		title += " · " + d
 	}
 	title += " · " + m.Model
+	// Where the session ran, spelled out rather than abbreviated to the "+" the
+	// listing column uses — the header has a line to itself.
+	if t := entrypoint.Trail(m.Entrypoint, m.Entrypoints); t != "" {
+		title += " · " + t
+	}
 
 	tools, errs := 0, 0
 	for _, t := range s.Turns {

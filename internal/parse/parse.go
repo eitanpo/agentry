@@ -41,12 +41,15 @@ func Load(jsonlPath string) (*model.Session, error) {
 	projectDir := filepath.Dir(jsonlPath)
 	stem := strings.TrimSuffix(filepath.Base(jsonlPath), filepath.Ext(jsonlPath))
 	subs := loadSubagents(filepath.Join(projectDir, stem, "subagents"))
+	eps := entrypoints(entries)
 
 	sess := &model.Session{
 		Meta: model.Meta{
 			ID:           stem,
 			Model:        extractModel(entries),
 			NumSubagents: len(subs),
+			Entrypoint:   lastOf(eps),
+			Entrypoints:  manyOrNone(eps),
 		},
 	}
 	sess.Meta.Start, sess.Meta.End = timeRange(entries)
@@ -81,6 +84,7 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 	stem := strings.TrimSuffix(filepath.Base(jsonlPath), filepath.Ext(jsonlPath))
 	start, end := timeRange(entries)
 	turns := splitTurns(entries)
+	eps := entrypoints(entries)
 	var prompts []string
 	for _, tn := range turns {
 		if !isClearCmd(tn.prompt) {
@@ -99,7 +103,45 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		RootUUID: rootUUID(entries),
 		Cwd:      sessionCwd(entries),
 		Born:     fileBorn(jsonlPath),
+		// The last value is the session's, matching the last-activity time the
+		// listing orders by. The full list is kept only when it diverges, so a
+		// single-entrypoint session serializes one field rather than two.
+		Entrypoint:  lastOf(eps),
+		Entrypoints: manyOrNone(eps),
 	}, nil
+}
+
+// entrypoints returns every distinct entrypoint the session carries, in
+// first-seen order. Meta entries omit the field, so an absent value is skipped
+// rather than recorded as a change. A session resumed in another client carries
+// two — observed as contiguous blocks, never interleaved.
+func entrypoints(entries []entry) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if e.entrypoint == "" || seen[e.entrypoint] {
+			continue
+		}
+		seen[e.entrypoint] = true
+		out = append(out, e.entrypoint)
+	}
+	return out
+}
+
+func lastOf(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	return s[len(s)-1]
+}
+
+// manyOrNone returns s only when it holds more than one value, so the common
+// single-entrypoint case does not repeat what Entrypoint already says.
+func manyOrNone(s []string) []string {
+	if len(s) < 2 {
+		return nil
+	}
+	return s
 }
 
 // sessionCwd is the working directory the session ran in — the first non-empty
@@ -324,6 +366,9 @@ type entry struct {
 	// cwd is the working directory the session ran in. Meta entries omit it, so
 	// the session's value is the first non-empty one.
 	cwd string
+	// entrypoint is where the session was run. Meta entries omit it, and a
+	// session resumed elsewhere carries two values in contiguous blocks.
+	entrypoint string
 }
 
 type block struct {
@@ -347,6 +392,7 @@ type rawEntry struct {
 	CustomTitle   string          `json:"customTitle"`   // custom-title entries: the name set by renaming the session
 	AgentName     string          `json:"agentName"`     // agent-name entries: the name set by --name or /rename
 	Cwd           string          `json:"cwd"`           // working directory the session ran in
+	Entrypoint    string          `json:"entrypoint"`    // where the session was run: cli, claude-desktop, sdk-cli
 	ToolUseResult json.RawMessage `json:"toolUseResult"` // structured tool-result mirror; carries agentId for spawn children
 	// IsCompactSummary flags the compaction-boundary user entry. Absent in logs
 	// written before Claude Code added it, hence the text fallback in userPrompt.
@@ -401,7 +447,7 @@ func loadEntries(path string) ([]entry, error) {
 			// Only one of the three title fields is ever set on a given entry —
 			// each belongs to a different entry type — so concatenating picks it.
 			typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle + re.AgentName,
-			isCompactSummary: re.IsCompactSummary, cwd: re.Cwd,
+			isCompactSummary: re.IsCompactSummary, cwd: re.Cwd, entrypoint: re.Entrypoint,
 		}
 		if ts, err := time.Parse(time.RFC3339, re.Timestamp); err == nil {
 			e.t = ts

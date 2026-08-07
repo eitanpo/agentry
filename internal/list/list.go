@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/muesli/termenv"
 )
@@ -68,6 +69,40 @@ func Select(sums []model.Summary, since, until time.Time, limit int) []model.Sum
 	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
+	}
+	return out
+}
+
+// Tag renders a session's entrypoint as the column value: the 3-character name
+// from the entrypoint package, plus a "+" when the session started under a
+// different one and was resumed. The header form spells that transition out
+// (entrypoint.Trail); a four-wide column cannot.
+func Tag(s model.Summary) string {
+	tag := entrypoint.Tag(s.Entrypoint)
+	if len(s.Entrypoints) > 1 {
+		tag += "+"
+	}
+	return tag
+}
+
+// FilterByFrom keeps the sessions matching the --from selector. The empty
+// selector is the default: everything except non-interactive runs.
+//
+// Excluding those by default is a deliberate change to what a bare listing
+// returns. They are the bulk of what a machine using hooks accumulates and
+// almost none of what anyone reads back — 89 of 251 sessions on the development
+// machine, the most recent of them one-turn runs of a few seconds. An
+// unrecognized entrypoint is kept, since a new value is more likely to be a new
+// way of working than a new kind of noise.
+func FilterByFrom(sums []model.Summary, from string) []model.Summary {
+	if from == entrypoint.All {
+		return sums
+	}
+	out := make([]model.Summary, 0, len(sums))
+	for _, s := range sums {
+		if entrypoint.Matches(from, s.Entrypoint) {
+			out = append(out, s)
+		}
 	}
 	return out
 }
@@ -325,8 +360,16 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	if width <= 0 {
 		width = fallbackWidth
 	}
-	// columns: when(16) dur(7,right) turns(4,right) [project] title(rest) id(36), 2-space gaps
+	// columns: when(16) dur(7,right) turns(4,right) [from] [project] title(rest) id(36), 2-space gaps
 	const whenW, durW, turnsW, idW, projMaxW = 16, 7, 4, 36, 24
+	// The entrypoint tag follows the project column's rule: drawn only when the
+	// listing spans more than one, so a listing of one kind is unchanged. Width
+	// is 4 to fit the "+" a resumed session takes.
+	tags := varyingTags(sums)
+	fromW := 0
+	if tags != nil {
+		fromW = 4
+	}
 	// The project column exists only when the listing spans more than one, so a
 	// single-project listing — every listing before --all-projects/--project —
 	// keeps its exact previous layout.
@@ -339,7 +382,10 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	}
 	gaps := 4
 	if projW > 0 {
-		gaps = 5
+		gaps++
+	}
+	if fromW > 0 {
+		gaps++
 	}
 	// The project column is capped twice: absolutely, and at a third of what the
 	// two variable columns have to share. Without the second cap a long project
@@ -348,7 +394,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	// by. The label is a path suffix, so it truncates from the left: the tail is
 	// what tells two projects apart.
 	if projW > 0 {
-		avail := width - (whenW + durW + turnsW + idW + gaps*2)
+		avail := width - (whenW + durW + turnsW + idW + fromW + gaps*2)
 		if cap := avail / 3; projW > cap {
 			projW = cap
 		}
@@ -359,7 +405,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			projW = 8
 		}
 	}
-	titleW := width - (whenW + durW + turnsW + idW + projW + gaps*2)
+	titleW := width - (whenW + durW + turnsW + idW + fromW + projW + gaps*2)
 	if titleW < 10 {
 		titleW = 10
 	}
@@ -394,14 +440,19 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		if r.fork {
 			title = forkGlyph + truncate(oneLine(s.Title), titleW-forkGlyphW)
 		}
+		from := ""
+		if fromW > 0 {
+			from = dim.Render(pad(tags[s.ID], fromW)) + "  "
+		}
 		proj := ""
 		if projW > 0 {
 			proj = dim.Render(pad(truncateLeft(labels[s.Cwd], projW), projW)) + "  "
 		}
-		fmt.Fprintf(&b, "%s  %s  %s  %s%s  %s\n",
+		fmt.Fprintf(&b, "%s  %s  %s  %s%s%s  %s\n",
 			meta.Render(when),
 			meta.Render(fmt.Sprintf("%*s", durW, fmtDur(s.Start, s.End))),
 			dim.Render(fmt.Sprintf("%*dt", turnsW-1, s.NumTurns)),
+			from,
 			proj,
 			pad(title, titleW),
 			meta.Render(s.ID))
@@ -472,6 +523,26 @@ func toolLines(stats []model.ToolStat) []string {
 	emit("Bash", bash, false)
 	emit("Other", other, true)
 	return lines
+}
+
+// varyingTags maps session id to its entrypoint tag, but only when the listing
+// spans more than one — the same rule the project column uses, so a listing of a
+// single kind keeps the layout it had before entrypoints were shown. nil is the
+// signal not to draw the column. A resumed session's "+" does not by itself
+// count as variation: what varies is where sessions ran, and one row reading
+// "cli+" among plain "cli" rows says that on its own.
+func varyingTags(sums []model.Summary) map[string]string {
+	tags := make(map[string]string, len(sums))
+	kinds := map[string]bool{}
+	for _, s := range sums {
+		t := Tag(s)
+		tags[s.ID] = t
+		kinds[strings.TrimSuffix(t, "+")] = true
+	}
+	if len(kinds) < 2 {
+		return nil
+	}
+	return tags
 }
 
 // projectLabels maps each distinct session cwd to the shortest suffix of path

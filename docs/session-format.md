@@ -70,6 +70,21 @@ since the initial observation, with their meaning:
   `~/.claude/projects/` tree, so nothing but this field separates a desktop session from a
   terminal one. It ships its own bundled Claude Code build, which lags the CLI's, so a
   desktop session's `version` can be older than anything the terminal wrote that week.
+  **`sdk-cli` is a misnomer — it means non-interactive, not "used the Agent SDK".** Verified
+  2026-08-07 by running `claude -p 'reply with the single word: pong'` in an empty directory:
+  every entry of the resulting session carried `entrypoint: "sdk-cli"`, with no SDK involved.
+  Anything headless lands here — a shell script, a hook, a CI step, another agent shelling
+  out. Do not read it as evidence that SDK code exists.
+  Per session rather than per entry, over the 251 local main sessions: `cli` 108, `sdk-cli`
+  89, `claude-desktop` 52, and 2 carrying two values.
+- **A session can carry two entrypoints**, when it is started in one client and resumed from
+  another. Both local cases are one contiguous block of each value, never interleaved
+  (`claude-desktop`×710 then `cli`×1267; `sdk-cli`×7 then `cli`×7). The second is an exact
+  tie, so a majority rule has no answer — order is the only usable signal.
+- **`promptSource` does not identify the entrypoint.** Both `claude-desktop` (363 prompts)
+  and `sdk-cli` (130) carry `promptSource: "sdk"`, so `sdk` there means "not typed at a
+  terminal" and covers both non-terminal clients. Only `cli` sessions ever show `typed`
+  (1,344), `system` (433), `suggestion_accepted` (125), or `queued` (3).
 - `userType` — `external` for human-driven sessions.
 - `promptSource` (`user` entries) — how the prompt arrived: `typed`, `sdk`, `system`,
   `queued`, or `suggestion_accepted`. Earlier revisions of this file said the field was

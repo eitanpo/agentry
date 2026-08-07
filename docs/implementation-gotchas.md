@@ -132,3 +132,13 @@ naive version passes every test that lacks one.
 project-folder name was open-coded in the CLI test helpers; when the real encoder was corrected
 the helpers kept producing the old name and the tests failed for the wrong reason. `ProjectDirName`
 is exported so fixtures and lookup share one implementation.
+
+## Output streams in tests
+
+**Payload goes to `os.Stdout`; diagnostics go to the command's streams.** `render.Session*` and
+`list.Render*` write to `os.Stdout` directly, while errors and notes use `cmd.ErrOrStderr()` /
+`root.ErrOrStderr()`, which the test harness redirects into a buffer. So a test reads rendered
+output through `captureStdout` and reads messages through `exec`'s returned strings — mixing
+them up yields an empty string rather than a failure that names the cause. The same split bites
+production code: a diagnostic written to `os.Stderr` directly bypasses wherever the caller routed
+diagnostics, which is why the listing's hidden-sessions note uses `cmd.ErrOrStderr()`.

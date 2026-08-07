@@ -92,6 +92,25 @@ func Session(cwd, id string) (string, error) {
 	return mostRecent(dir)
 }
 
+// SessionsByRecency returns cwd's sessions newest-first by modification time —
+// the order Session's no-id case walks. Exported so the caller can apply its own
+// "which session counts" rule (skipping non-interactive runs) without this
+// package having to know what an entrypoint is.
+func SessionsByRecency(cwd string) ([]string, error) {
+	paths, err := Sessions(cwd)
+	if err != nil {
+		return nil, err
+	}
+	mod := make(map[string]int64, len(paths))
+	for _, p := range paths {
+		if info, err := os.Stat(p); err == nil {
+			mod[p] = info.ModTime().UnixNano()
+		}
+	}
+	sort.SliceStable(paths, func(i, j int) bool { return mod[paths[i]] > mod[paths[j]] })
+	return paths, nil
+}
+
 // Sessions returns the paths of every session JSONL in cwd's project, in no
 // particular order. ErrNoProject if the directory maps to no project,
 // ErrNoSession if the project holds no sessions.

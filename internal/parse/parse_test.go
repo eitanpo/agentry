@@ -219,6 +219,55 @@ func TestSummarizeCwd(t *testing.T) {
 	}
 }
 
+// TestSummarizeEntrypoint pins how a session resumed in another client is
+// resolved: last value wins (matching the last-activity time the listing orders
+// by), and every distinct value is kept in first-seen order so the JSON does not
+// lose what the text table compresses to a "+".
+func TestSummarizeEntrypoint(t *testing.T) {
+	t.Run("resumed session keeps both, resolves to the last", func(t *testing.T) {
+		s, err := Summarize(filepath.Join("testdata", "entrypoint-resumed.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Entrypoint != "cli" {
+			t.Errorf("Entrypoint = %q, want %q (the last value)", s.Entrypoint, "cli")
+		}
+		want := []string{"claude-desktop", "cli"}
+		if len(s.Entrypoints) != 2 || s.Entrypoints[0] != want[0] || s.Entrypoints[1] != want[1] {
+			t.Errorf("Entrypoints = %v, want %v (first-seen order)", s.Entrypoints, want)
+		}
+	})
+
+	t.Run("single-entrypoint session lists none", func(t *testing.T) {
+		// Entrypoints exists to record divergence; repeating a single value would
+		// put a redundant array on every session in the JSON. Asserting Entrypoint
+		// too is what keeps this honest — a fixture carrying no entrypoint at all
+		// would satisfy the nil check for the wrong reason.
+		s, err := Summarize(filepath.Join("testdata", "entrypoint-single.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Entrypoint != "cli" {
+			t.Fatalf("Entrypoint = %q, want %q — the fixture must actually carry one", s.Entrypoint, "cli")
+		}
+		if s.Entrypoints != nil {
+			t.Errorf("Entrypoints = %v, want nil for a session with one value", s.Entrypoints)
+		}
+	})
+
+	t.Run("a session with no entrypoint at all is not an error", func(t *testing.T) {
+		// Logs written before Claude Code added the field carry none, and the
+		// format doc requires older sessions keep rendering.
+		s, err := Summarize(filepath.Join("testdata", "cwd.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Entrypoint != "" || s.Entrypoints != nil {
+			t.Errorf("Entrypoint = %q, Entrypoints = %v; want both empty", s.Entrypoint, s.Entrypoints)
+		}
+	})
+}
+
 func TestIsClearCmd(t *testing.T) {
 	clear := []string{"//clear", "/clear", "  //clear  ", "clear",
 		"/clear improve the parser", "//clear do the thing"}

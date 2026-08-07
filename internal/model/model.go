@@ -22,6 +22,11 @@ type Meta struct {
 	End          time.Time `json:"end"`
 	Usage        Usage     `json:"usage"`
 	NumSubagents int       `json:"numSubagents"`
+	// Entrypoint and Entrypoints mirror the Summary fields of the same names,
+	// resolved identically, so the render path and the listing never disagree
+	// about where one session ran.
+	Entrypoint  string   `json:"entrypoint,omitempty"`
+	Entrypoints []string `json:"entrypoints,omitempty"`
 }
 
 // Summary is a lightweight session descriptor for listing: enough to identify
@@ -43,6 +48,14 @@ type Summary struct {
 	// than derived from the project folder's name, which is lossy. It is what
 	// distinguishes rows once a listing spans more than one project.
 	Cwd string `json:"cwd,omitempty"`
+	// Entrypoint is where the session was run, as the log's own value ("cli",
+	// "claude-desktop", "sdk-cli"). A session resumed elsewhere carries more than
+	// one; this is the last, matching the last-activity time the row is ordered by.
+	Entrypoint string `json:"entrypoint,omitempty"`
+	// Entrypoints is every distinct value in first-seen order, set only when the
+	// session carries more than one. The text table compresses that to a "+"
+	// suffix, so this is where the divergence survives intact.
+	Entrypoints []string `json:"entrypoints,omitempty"`
 	// Born is the session file's creation time, used to order a fork family
 	// (earliest = original). Filesystem metadata, not session content, so it is
 	// not serialized. Zero when unreadable; off macOS it falls back to mtime.

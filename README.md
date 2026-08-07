@@ -37,7 +37,7 @@ agentry view                # render the most recent session (no id needed)
 agentry <uuid> --format json | jq  # the full session model as JSON, for piping
 ```
 
-With no id, `agentry` lists this project's sessions (below); with a full-UUID id it renders that one, mapping the current directory to its Claude project folder under `~/.claude/projects/`. The first token is a verb (`view`, `list`) when it names one, otherwise a session id — they can't collide, since ids are hex and verbs are words. Flags may go before or after operands, and a mistyped verb, flag, or value is met with a "did you mean" suggestion rather than full help.
+With no id, `agentry` lists this project's sessions (below); with a full-UUID id it renders that one, mapping the current directory to its Claude project folder under `~/.claude/projects/`. `agentry view` with no id picks the most recent session you actually worked in, skipping headless runs — an id you name is always rendered as asked. The first token is a verb (`view`, `list`) when it names one, otherwise a session id — they can't collide, since ids are hex and verbs are words. Flags may go before or after operands, and a mistyped verb, flag, or value is met with a "did you mean" suggestion rather than full help.
 
 To find a session, list them — bare `agentry` does this, and `agentry list` is its explicit form:
 
@@ -58,7 +58,16 @@ agentry list --used-skill expert --format json | jq   # machine-readable, for pi
 agentry list --all-projects                # every project, not just this directory
 agentry list --project ~/Projects/me/app   # that repo and every worktree nested in it
 agentry list --project ~/Projects/me       # every repo under that directory
+agentry list --from app                    # only sessions started in the desktop app
+agentry list --from all                    # include headless runs, hidden by default
 ```
+
+**Headless sessions are hidden unless you ask for them.** Anything non-interactive — a `claude -p`
+from a script, a hook, a CI step — writes a session log like any other, and on a machine that uses
+hooks these outnumber the ones you typed. They are excluded by default so a listing shows work you
+did; `--from sdk` shows only those, `--from all` shows everything. When a listing spans more than
+one kind, each row gains a 3-letter tag: `cli` (terminal), `app` (desktop), `sdk` (headless), and
+`cli+` for a session that started in one and was resumed in another.
 
 `--project PATH` lists PATH's sessions **and everything nested under it**. That matters because
 Claude Code gives every git worktree its own project folder, so a repo's sessions are split
@@ -84,6 +93,7 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--used TOKEN` | `list` | — | Catch-all over the identity axis: skill name, agent type, or command. Not tool names — use `--used-tool` for those. |
 | `--all-projects` | `list` | — | Every project under `~/.claude/projects/`, not just this directory's. Mutually exclusive with `--project`. |
 | `--project PATH` | `list` | — | PATH's sessions instead of this directory's, including every project nested under PATH — which is how naming a repo picks up its git worktrees. |
+| `--from cli\|app\|sdk\|all` | `list` | `cli`+`app` | Where the session was run. `sdk` is anything non-interactive (`claude -p`, a hook, CI) and is **hidden by default**; `all` restores it. |
 | `--format json\|text` | render, `list` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color); on `list` it's a JSON array of per-session summaries, each carrying its `cwd` (ignoring `--include` and color), and stdout is always a valid array — a directory with no project, or a project with no sessions, prints `[]` while still reporting the error on stderr and exiting non-zero, so you can pipe into `jq` without a guard. |
 | `--no-color` | global | — | Disable color (also honors the `NO_COLOR` env var). |
 | `--help`, `--version` | global | — | Per-verb `--help` lists only that mode's flags. |

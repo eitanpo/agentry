@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/locate"
 	"github.com/eitanpo/agentry/internal/parse"
 	"github.com/eitanpo/agentry/internal/render"
@@ -92,7 +94,14 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 	if err != nil {
 		return noInputErr(err)
 	}
-	path, err := locate.Session(cwd, id)
+	var path string
+	if id != "" {
+		// A named id is an explicit request and is never second-guessed, whatever
+		// kind of session it turns out to be.
+		path, err = locate.Session(cwd, id)
+	} else {
+		path, err = mostRecentWorked(cmd, cwd)
+	}
 	if err != nil {
 		return noInputErr(err)
 	}
@@ -123,6 +132,33 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 // hidden __complete callback runs it on every Tab, so it reflects the sessions
 // present at that moment; NoFileComp keeps an id from decaying into filename
 // completion. Errors resolve to "no suggestions", never a crash mid-Tab.
+// mostRecentWorked resolves `view` with no id: the newest session that was not
+// a non-interactive run. On a machine using hooks the newest session is usually
+// a few-second headless run, so "show me my last session" would otherwise render
+// a hook — the same reason the listing hides them.
+//
+// When every session is headless it renders the newest one anyway and says so.
+// Refusing would be wrong: sessions plainly exist, and unlike a listing there is
+// no empty result to return.
+func mostRecentWorked(cmd *cobra.Command, cwd string) (string, error) {
+	paths, err := locate.SessionsByRecency(cwd)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range paths {
+		s, err := parse.Summarize(p)
+		if err != nil {
+			continue // unparseable: same skip the listing makes
+		}
+		if !entrypoint.IsHeadless(s.Entrypoint) {
+			return p, nil
+		}
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"agentry: every session here is a headless run; showing the most recent one\n")
+	return paths[0], nil
+}
+
 func completeSessionIDs(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) != 0 { // the render path takes at most one id
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -139,6 +175,12 @@ func completeSessionIDs(_ *cobra.Command, args []string, toComplete string) ([]s
 	for _, p := range paths {
 		s, err := parse.Summarize(p)
 		if err != nil || !strings.HasPrefix(s.ID, toComplete) {
+			continue
+		}
+		// Offer the ids a listing would show. Without this, tabbing a UUID in a
+		// project that uses hooks surfaces headless runs ahead of the work being
+		// looked for — and completion has no room to explain why they are there.
+		if entrypoint.IsHeadless(s.Entrypoint) {
 			continue
 		}
 		out = append(out, s.ID+"\t"+compTitle(s.Title))

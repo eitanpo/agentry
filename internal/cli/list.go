@@ -2,12 +2,15 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/list"
 	"github.com/eitanpo/agentry/internal/locate"
 	"github.com/eitanpo/agentry/internal/model"
@@ -49,6 +52,9 @@ func addListFlags(cmd *cobra.Command) {
 	cmd.Flags().String("used-agent", "", "only sessions that spawned this subagent type")
 	cmd.Flags().String("used-command", "", "only sessions that ran a Bash command matching this text")
 	cmd.Flags().String("used", "", "only sessions that used this as a skill, agent, or command")
+	cmd.Flags().String("from", "", "where the session ran: cli, app, sdk, all (default: everything but sdk)")
+	// Complete the enum flag to its allowed values instead of filenames.
+	_ = cmd.RegisterFlagCompletionFunc("from", fixedComp(entrypoint.Names))
 	cmd.Flags().Bool("all-projects", false, "list every project's sessions, not just this directory's")
 	cmd.Flags().String("project", "", "list PATH's sessions instead of this directory's, including anything nested under it")
 }
@@ -109,6 +115,13 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	format, err := parseFormat(cmd)
 	if err != nil {
 		return err
+	}
+	from, _ := cmd.Flags().GetString("from")
+	if from != "" && !slices.Contains(entrypoint.Names, from) {
+		if g := nearest(from, entrypoint.Names); g != "" {
+			return usageErr("--from: unknown source %q — did you mean %q?", from, g)
+		}
+		return usageErr("--from: unknown source %q (want: %s)", from, strings.Join(entrypoint.Names, ", "))
 	}
 
 	now := time.Now()
@@ -176,7 +189,19 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		sums = append(sums, s)
 	}
 
-	selected := list.Select(list.FilterByTools(sums, filters), sinceT, untilT, limit)
+	// The entrypoint filter runs before the rest so --limit counts sessions the
+	// caller will actually see: capping first and filtering after would return
+	// fewer than N rows and give no hint why.
+	visible := list.FilterByFrom(sums, from)
+	selected := list.Select(list.FilterByTools(visible, filters), sinceT, untilT, limit)
+	// A default that empties the listing must say so. Hidden non-interactive
+	// sessions are the one exclusion the caller did not ask for, so without this
+	// an empty result is indistinguishable from a project holding nothing.
+	// Written to the command's error stream, not os.Stderr directly, so it goes
+	// wherever the caller routed diagnostics — the same stream errors use.
+	if from == "" && len(visible) == 0 && len(sums) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "agentry: %d headless session(s) hidden — pass --from all to include them\n", len(sums))
+	}
 	if format == "json" {
 		if err := list.RenderJSON(os.Stdout, selected); err != nil {
 			return &exitError{code: 1, err: err}

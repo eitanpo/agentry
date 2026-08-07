@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -514,6 +516,194 @@ func TestScopeFlags(t *testing.T) {
 			t.Errorf("exit = %d, want %d (exNoInput)", code, exNoInput)
 		}
 	})
+}
+
+// entrypointFixture builds one project holding a session per named entrypoint,
+// ids being "s<index>". An empty string writes a session with no entrypoint field.
+func entrypointFixture(t *testing.T, eps ...string) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	orig := locate.ProjectsRoot
+	locate.ProjectsRoot = root
+	t.Cleanup(func() { locate.ProjectsRoot = orig })
+
+	dir := filepath.Join(root, locate.ProjectDirName(cwd))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i, ep := range eps {
+		id := fmt.Sprintf("0000000%d-0000-0000-0000-000000000000", i)
+		field := ""
+		if ep != "" {
+			field = `"entrypoint":"` + ep + `",`
+		}
+		body := `{"type":"user",` + field + `"cwd":"` + cwd + `","timestamp":"2026-06-03T14:0` +
+			strconv.Itoa(i) + `:00Z","uuid":"u` + strconv.Itoa(i) +
+			`","message":{"role":"user","content":"hello"}}` + "\n"
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestFromFlag pins the entrypoint selector and the default it overrides.
+func TestFromFlag(t *testing.T) {
+	count := func(t *testing.T, args ...string) int {
+		t.Helper()
+		out := captureStdout(t, func() { exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...) })
+		var got []map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+		}
+		return len(got)
+	}
+
+	t.Run("headless sessions are hidden by default", func(t *testing.T) {
+		// The one exclusion the caller did not ask for. On a machine using hooks
+		// these outnumber typed sessions, so listing them buries real work.
+		entrypointFixture(t, "cli", "claude-desktop", "sdk-cli")
+		if n := count(t); n != 2 {
+			t.Errorf("default listing had %d sessions, want 2 (headless hidden)", n)
+		}
+	})
+
+	t.Run("--from all restores them", func(t *testing.T) {
+		entrypointFixture(t, "cli", "claude-desktop", "sdk-cli")
+		if n := count(t, "--from", "all"); n != 3 {
+			t.Errorf("--from all had %d sessions, want 3", n)
+		}
+	})
+
+	t.Run("--from sdk selects only headless", func(t *testing.T) {
+		entrypointFixture(t, "cli", "claude-desktop", "sdk-cli")
+		if n := count(t, "--from", "sdk"); n != 1 {
+			t.Errorf("--from sdk had %d sessions, want 1", n)
+		}
+	})
+
+	t.Run("an unknown value is a usage error with a suggestion", func(t *testing.T) {
+		entrypointFixture(t, "cli")
+		code, _, errOut := exec("list", "--from", "ap")
+		if code != exUsage {
+			t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+		}
+		if !strings.Contains(errOut, `"app"`) {
+			t.Errorf("error should suggest \"app\", got %q", errOut)
+		}
+	})
+
+	t.Run("a default-emptied listing says so and still exits zero", func(t *testing.T) {
+		// Without the note this is indistinguishable from a project holding
+		// nothing — a silent default is the failure the note exists to prevent.
+		entrypointFixture(t, "sdk-cli", "sdk-cli")
+		code, out, errOut := exec("list")
+		if code != 0 {
+			t.Errorf("exit = %d, want 0 — hiding by default is a filter, not a failure", code)
+		}
+		if out != "" {
+			t.Errorf("stdout should be empty, got %q", out)
+		}
+		if !strings.Contains(errOut, "hidden") || !strings.Contains(errOut, "--from all") {
+			t.Errorf("stderr should name the hidden count and the flag, got %q", errOut)
+		}
+	})
+
+	t.Run("no note when the listing is empty for another reason", func(t *testing.T) {
+		// A time filter matching nothing is the caller's own doing; blaming the
+		// entrypoint default there would send them after the wrong flag.
+		entrypointFixture(t, "cli")
+		_, _, errOut := exec("list", "--until", "2020-01-01")
+		if strings.Contains(errOut, "hidden") {
+			t.Errorf("stderr should not mention hiding, got %q", errOut)
+		}
+	})
+}
+
+// TestViewSkipsHeadless pins `view`'s no-id resolution. On a machine using hooks
+// the newest session is usually a few-second headless run, so "show me my last
+// session" would otherwise render a hook.
+func TestViewSkipsHeadless(t *testing.T) {
+	// entrypointFixture writes ids s0..sN with ascending timestamps; the render
+	// header names the model, so the fixture varies it to identify which session
+	// was chosen without depending on id formatting.
+	t.Run("picks the newest interactive session", func(t *testing.T) {
+		entrypointFixture(t, "cli", "sdk-cli")
+		out := captureStdout(t, func() { exec("view", "--format", "json") })
+		var got struct {
+			Meta struct {
+				ID         string `json:"id"`
+				Entrypoint string `json:"entrypoint"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+		}
+		if got.Meta.Entrypoint != "cli" {
+			t.Errorf("view resolved to a %q session, want the interactive one", got.Meta.Entrypoint)
+		}
+	})
+
+	t.Run("a named id is rendered whatever its kind", func(t *testing.T) {
+		// An id is an explicit request. Second-guessing it would leave headless
+		// sessions unreachable, since the listing hides them too.
+		entrypointFixture(t, "cli", "sdk-cli")
+		out := captureStdout(t, func() {
+			exec("view", "00000001-0000-0000-0000-000000000000", "--format", "json")
+		})
+		if !strings.Contains(out, `"entrypoint": "sdk-cli"`) {
+			t.Errorf("a named headless id must still render: %q", out)
+		}
+	})
+
+	t.Run("all-headless project renders anyway and says so", func(t *testing.T) {
+		// Refusing would be wrong: sessions plainly exist, and unlike a listing
+		// there is no empty result to return.
+		entrypointFixture(t, "sdk-cli", "sdk-cli")
+		// The render path writes to os.Stdout, not the command's out stream, so
+		// the payload comes from captureStdout while exec supplies code and stderr.
+		var code int
+		var errOut string
+		out := captureStdout(t, func() { code, _, errOut = exec("view", "--format", "json") })
+		if code != 0 {
+			t.Errorf("exit = %d, want 0", code)
+		}
+		if !strings.Contains(out, `"entrypoint": "sdk-cli"`) {
+			t.Errorf("want the most recent headless session rendered, got %q", out)
+		}
+		if !strings.Contains(errOut, "headless") {
+			t.Errorf("stderr should explain the fallback, got %q", errOut)
+		}
+	})
+}
+
+// TestMetaCarriesEntrypoint pins that the render path knows what the listing
+// knows. The two disagreeing about the same session is the defect this closes.
+func TestMetaCarriesEntrypoint(t *testing.T) {
+	entrypointFixture(t, "claude-desktop")
+	out := captureStdout(t, func() {
+		exec("view", "00000000-0000-0000-0000-000000000000", "--format", "json")
+	})
+	if !strings.Contains(out, `"entrypoint": "claude-desktop"`) {
+		t.Errorf("meta should carry the entrypoint: %q", out)
+	}
+}
+
+// TestCompletionSkipsHeadless pins that tabbing a UUID offers the ids a listing
+// would show. Completion has no room to explain why a hook run is in the menu.
+func TestCompletionSkipsHeadless(t *testing.T) {
+	entrypointFixture(t, "cli", "sdk-cli")
+	got, _ := completeSessionIDs(nil, nil, "")
+	if len(got) != 1 {
+		t.Fatalf("completion offered %d ids, want 1 (headless skipped): %v", len(got), got)
+	}
+	if !strings.HasPrefix(got[0], "00000000-") {
+		t.Errorf("completion offered %q, want the interactive session", got[0])
+	}
 }
 
 // TestBareCommandLists pins the front-door behavior: bare `agentry` produces the

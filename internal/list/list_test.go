@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
 )
 
@@ -145,6 +146,122 @@ func TestRenderPlain(t *testing.T) {
 	if strings.Contains(out, "\x1b") {
 		t.Errorf("color off should emit no ANSI: %q", out)
 	}
+}
+
+func TestTag(t *testing.T) {
+	tests := []struct {
+		name string
+		s    model.Summary
+		want string
+	}{
+		{"terminal", model.Summary{Entrypoint: "cli"}, "cli"},
+		{"desktop app", model.Summary{Entrypoint: "claude-desktop"}, "app"},
+		{"headless", model.Summary{Entrypoint: "sdk-cli"}, "sdk"},
+		// Claude Code adds entrypoints without notice. A blank would read as "no
+		// data" and hide the new value; "?" says a value exists and is unmapped.
+		{"unrecognized value", model.Summary{Entrypoint: "future-client"}, "?"},
+		// Logs predating the field carry none at all — that really is no data.
+		{"absent", model.Summary{}, ""},
+		{"resumed elsewhere", model.Summary{
+			Entrypoint:  "cli",
+			Entrypoints: []string{"claude-desktop", "cli"},
+		}, "cli+"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Tag(tt.s); got != tt.want {
+				t.Errorf("Tag = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterByFrom(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "a", Entrypoint: "cli"},
+		{ID: "b", Entrypoint: "claude-desktop"},
+		{ID: "c", Entrypoint: "sdk-cli"},
+		{ID: "d", Entrypoint: "future-client"},
+		{ID: "e"},
+	}
+	ids := func(got []model.Summary) string {
+		var b strings.Builder
+		for _, s := range got {
+			b.WriteString(s.ID)
+		}
+		return b.String()
+	}
+	tests := []struct {
+		name string
+		from string
+		want string
+	}{
+		// The default is the behavior change: headless runs are the bulk of what
+		// a machine using hooks accumulates and almost none of what is read back.
+		// An unrecognized entrypoint is kept — a new value is more likely a new
+		// way of working than a new kind of noise — and so is a session with none.
+		{"default hides only headless", "", "abde"},
+		{"all keeps everything", entrypoint.All, "abcde"},
+		{"cli alone", entrypoint.CLI, "a"},
+		{"app alone", entrypoint.App, "b"},
+		{"sdk alone", entrypoint.SDK, "c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ids(FilterByFrom(sums, tt.from)); got != tt.want {
+				t.Errorf("FilterByFrom(%q) kept %q, want %q", tt.from, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRenderFromColumn pins when the tag column is drawn. It follows the project
+// column's rule — only when it varies — so a listing of a single kind keeps the
+// layout it had before entrypoints were shown.
+func TestRenderFromColumn(t *testing.T) {
+	mk := func(id, ep, title string) model.Summary {
+		return model.Summary{
+			ID: id, Entrypoint: ep, Title: title,
+			Start: time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC),
+			End:   time.Date(2026, 6, 3, 14, 5, 0, 0, time.UTC),
+		}
+	}
+	render := func(t *testing.T, sums []model.Summary) string {
+		t.Helper()
+		var b strings.Builder
+		if err := Render(&b, sums, Options{Width: 120, Color: false}); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	t.Run("one kind draws no tag column", func(t *testing.T) {
+		out := render(t, []model.Summary{mk("a", "cli", "alpha"), mk("b", "cli", "beta")})
+		if strings.Contains(out, "cli") {
+			t.Errorf("single-kind listing must not draw the tag column: %q", out)
+		}
+	})
+
+	t.Run("two kinds tag every row", func(t *testing.T) {
+		out := render(t, []model.Summary{mk("a", "cli", "alpha"), mk("b", "claude-desktop", "beta")})
+		for _, want := range []string{"cli", "app", "alpha", "beta"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q: %q", want, out)
+			}
+		}
+	})
+
+	t.Run("a resumed session alone does not draw the column", func(t *testing.T) {
+		// The column exists to separate kinds. One row reading "cli+" among plain
+		// "cli" rows already says the session moved, so the suffix alone is not
+		// variation worth a column for.
+		s := mk("a", "cli", "alpha")
+		s.Entrypoints = []string{"claude-desktop", "cli"}
+		out := render(t, []model.Summary{s, mk("b", "cli", "beta")})
+		if strings.Contains(out, "cli+") {
+			t.Errorf("suffix alone should not trigger the column: %q", out)
+		}
+	})
 }
 
 func TestProjectLabels(t *testing.T) {
