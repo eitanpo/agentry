@@ -126,6 +126,15 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	}
 	paths, err := locate.Sessions(cwd)
 	if err != nil {
+		// Under --format json the output contract is an array, and these two
+		// failures — no project for the directory, or a project holding no
+		// sessions — are the only paths that would leave stdout empty instead.
+		// Emitting [] keeps one shape for every outcome so a caller sweeping
+		// directories can pipe into jq without guarding. The error still goes to
+		// stderr with its exit code: an empty array is not a claim of success.
+		if format == "json" {
+			_ = list.RenderJSON(os.Stdout, nil)
+		}
 		return noInputErr(err)
 	}
 

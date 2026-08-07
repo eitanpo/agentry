@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -281,6 +282,68 @@ func TestBareCommandResolves(t *testing.T) {
 	code, _, _ := exec()
 	if code != exNoInput {
 		t.Errorf("bare command: exit = %d, want %d (exNoInput in a project-less dir)", code, exNoInput)
+	}
+}
+
+// sessionlessProject points locate at an empty temp projects root for a fresh
+// working directory. With makeDir it also creates the project folder but leaves
+// it empty, which is the "project exists, holds no sessions" case; without it,
+// the directory maps to no project at all. The two are distinct code paths in
+// locate but must look identical to a caller reading stdout.
+func sessionlessProject(t *testing.T, makeDir bool) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	orig := locate.ProjectsRoot
+	locate.ProjectsRoot = root
+	t.Cleanup(func() { locate.ProjectsRoot = orig })
+	if makeDir {
+		name := "-" + strings.ReplaceAll(strings.TrimPrefix(cwd, "/"), "/", "-")
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestListJSONAlwaysEmitsArray pins the output contract: under --format json,
+// stdout is a well-formed array even on the two failures that yield no sessions,
+// so a caller sweeping directories can pipe into jq without a guard. The exit
+// code must stay non-zero — the empty array is not a claim of success — and the
+// text path must keep printing nothing, so the change stays scoped to json.
+func TestListJSONAlwaysEmitsArray(t *testing.T) {
+	cases := []struct {
+		name    string
+		makeDir bool
+	}{
+		{"no project for the directory", false},
+		{"project exists but holds no sessions", true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionlessProject(t, tt.makeDir)
+			var code int
+			out := captureStdout(t, func() { code, _, _ = exec("list", "--format", "json") })
+			if code != exNoInput {
+				t.Errorf("exit = %d, want %d (exNoInput) — [] on stdout must not turn the failure into a success", code, exNoInput)
+			}
+			var got []any
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatalf("stdout is not valid JSON (%v); got %q — this is the guard every sweeping script would need", err, out)
+			}
+			if len(got) != 0 {
+				t.Errorf("stdout = %q, want an empty array", out)
+			}
+
+			sessionlessProject(t, tt.makeDir)
+			textOut := captureStdout(t, func() { exec("list") })
+			if textOut != "" {
+				t.Errorf("text stdout = %q, want empty — only --format json owes a parseable shape", textOut)
+			}
+		})
 	}
 }
 
