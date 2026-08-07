@@ -319,7 +319,13 @@ func TestUserPrompt(t *testing.T) {
 		{"skill injected", entry{hasStr: true, contentStr: "Base directory for this skill: /x"}, "", false},
 		{"command", entry{hasStr: true, contentStr: "<command-name>foo</command-name><command-args>bar</command-args>"}, "/foo bar", true},
 		{"command name with slash not doubled", entry{hasStr: true, contentStr: "<command-name>/clear</command-name><command-args>fix it</command-args>"}, "/clear fix it", true},
-		{"compaction", entry{hasStr: true, contentStr: "...This session is being continued from a previous conversation..."}, "[context compacted — see session log for full summary]", true},
+		{"compaction by text, pre-flag logs", entry{hasStr: true, contentStr: "...This session is being continued from a previous conversation..."}, compactSummaryPlaceholder, true},
+		// The flag alone must be enough: this body is what an upstream rewording of
+		// the summary looks like, and the text match cannot see it.
+		{"compaction by flag, reworded body", entry{hasStr: true, isCompactSummary: true, contentStr: "Picking up where the last context left off. Summary follows."}, compactSummaryPlaceholder, true},
+		// A summary quoting an injected marker must still read as the boundary
+		// rather than being dropped as injected content.
+		{"compaction by flag, body quotes an injected marker", entry{hasStr: true, isCompactSummary: true, contentStr: "Earlier the user ran <bash-input>ls</bash-input> and then asked for a fix."}, compactSummaryPlaceholder, true},
 		{"empty", entry{hasStr: true, contentStr: "   "}, "", false},
 		{"array content not a prompt", entry{hasStr: false}, "", false},
 	}

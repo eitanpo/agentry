@@ -296,6 +296,9 @@ type entry struct {
 	// toolUseResult.agentId, set on the user entry carrying an Agent/forked-Skill
 	// tool_result. Empty when absent (older logs) or for non-spawning tools.
 	toolUseResultAgentID string
+	// isCompactSummary marks the user entry Claude Code writes at a compaction
+	// boundary, whose content is the summary rather than anything typed.
+	isCompactSummary bool
 }
 
 type block struct {
@@ -318,6 +321,9 @@ type rawEntry struct {
 	AiTitle       string          `json:"aiTitle"`       // ai-title entries: Claude Code's own session summary
 	CustomTitle   string          `json:"customTitle"`   // custom-title entries: the name set by renaming the session
 	ToolUseResult json.RawMessage `json:"toolUseResult"` // structured tool-result mirror; carries agentId for spawn children
+	// IsCompactSummary flags the compaction-boundary user entry. Absent in logs
+	// written before Claude Code added it, hence the text fallback in userPrompt.
+	IsCompactSummary bool `json:"isCompactSummary"`
 }
 
 type rawMessage struct {
@@ -364,7 +370,10 @@ func loadEntries(path string) ([]entry, error) {
 		if json.Unmarshal([]byte(line), &re) != nil {
 			continue // skip malformed lines, as the reference does
 		}
-		e := entry{typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle}
+		e := entry{
+			typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle,
+			isCompactSummary: re.IsCompactSummary,
+		}
 		if ts, err := time.Parse(time.RFC3339, re.Timestamp); err == nil {
 			e.t = ts
 		}
@@ -660,6 +669,10 @@ var (
 	cmdArgsRe = regexp.MustCompile(`<command-args>(.*?)</command-args>`)
 )
 
+// compactSummaryPlaceholder stands in for a compaction boundary's summary, which
+// is a user entry Claude Code wrote rather than a prompt anyone typed.
+const compactSummaryPlaceholder = "[context compacted — see session log for full summary]"
+
 // userPrompt returns the human-typed prompt for a user entry, or ok=false for
 // system-injected content (tool results, skill bodies, bash output).
 func userPrompt(e entry) (string, bool) {
@@ -667,13 +680,24 @@ func userPrompt(e entry) (string, bool) {
 		return "", false
 	}
 	content := e.contentStr
+	// The compaction check runs before the injected markers because the flag says
+	// what the entry *is*, while a marker only says what its text contains — and a
+	// summary of a conversation can quote one, which would drop the boundary
+	// entirely instead of standing in for it.
+	if e.isCompactSummary {
+		return compactSummaryPlaceholder, true
+	}
 	for _, m := range injectedMarkers {
 		if strings.Contains(content, m) {
 			return "", false
 		}
 	}
+	// Fallback for logs written before Claude Code added isCompactSummary. It
+	// matches Claude Code's own wording, so an upstream rewording silently stops
+	// it firing — which on a flagged entry no longer matters, and on an unflagged
+	// one would spill the whole summary into the prompt list.
 	if strings.Contains(content, "This session is being continued from a previous conversation") {
-		return "[context compacted — see session log for full summary]", true
+		return compactSummaryPlaceholder, true
 	}
 	if strings.Contains(content, "<command-name>") {
 		cmd, args := "?", ""
