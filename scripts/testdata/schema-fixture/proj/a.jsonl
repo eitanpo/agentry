@@ -1,0 +1,5 @@
+{"type":"user","version":"2.1.100","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"hi"}}
+{"type":"assistant","version":"2.1.200","timestamp":"2026-02-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"yo"},{"type":"widget"}]}}
+{"type":"ai-title","aiTitle":"a title with no version and no timestamp"}
+this line is not JSON and must be skipped, not abort the file
+{"type":"system","subtype":"brand_new","version":"2.1.200","timestamp":"2026-02-01T00:00:01Z"}

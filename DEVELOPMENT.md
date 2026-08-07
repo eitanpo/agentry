@@ -91,6 +91,40 @@ real `release --clean` regenerates the cask with the correct `version` and `v#{v
 URLs. Verify the published cask in the tap (read `Casks/agentry.rb` back from
 `eitanpo/homebrew-tap`), not the snapshot artifact.
 
+## Re-verifying the log format
+
+[docs/session-format.md](docs/session-format.md) records a format Claude Code changes without
+notice, so it goes stale silently — nothing fails, agentry just stops covering the newest
+entries. `scripts/schema-scan.sh` measures the drift: it walks every log under
+`~/.claude/projects/`, and for each schema element (top-level field, entry type, `system`
+subtype, content-block type, `entrypoint` value) reports the occurrence count, the file count,
+the Claude Code version range that wrote it, when it was last seen, and whether the doc mentions
+it. Three targets wrap it: `make schema-scan` for the full report, `make schema-scan-new`
+for only the elements the doc has never named, and `make schema-scan-test` for the
+scanner's own checks. The script also takes `--kind type` to narrow to one category, and
+`--root` / `--doc` to point at something other than the defaults.
+
+It is deliberately **not** part of `make build`: the sweep reads about 500 MB and takes
+minutes, so it belongs to touching the parser or the format doc, not to every compile. The
+cost of that choice is that nothing reminds you — run it when you change either.
+
+Three things it does that a hand-rolled `jq` sweep will not, each guarding a way the survey
+lies rather than fails:
+
+- **Skips malformed lines instead of stopping at them.** `jq` aborts a file at its first parse
+  error, which silently truncates every later line out of the survey; the scan reads raw and
+  parses per line, and reports the skipped count as a `scan malformed-lines` row.
+- **Dates the version-less entries.** Meta lines (`ai-title`, `mode`, `agent-name`, …) carry no
+  `version`, so a naive scan reports them as undated forever. Each is attributed to the highest
+  version its own file carries — one build wrote the meta line and the turns around it.
+- **Derives "documented" from the doc itself**, by collecting its backticked tokens rather than
+  from a second list that would have to be kept in lockstep with the prose and silently would
+  not be.
+
+Run it serially. An earlier parallel version wrote long lines from several `jq` processes into
+one pipe, and the interleaved writes produced plausible-looking garbage values
+(`assistantffort`) rather than an error.
+
 ## Where things are documented
 
 - Claude Code log format (files, folders, JSONL): [docs/session-format.md](docs/session-format.md)

@@ -14,12 +14,23 @@ LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 # is the install step on its own, reused by `release`.
 .DEFAULT_GOAL := build
 
-.PHONY: build install release release-dry
+.PHONY: build install release release-dry schema-scan schema-scan-new schema-scan-test
 build:
 	go build ./...
 	go install $(LDFLAGS) .
 install:
 	go install $(LDFLAGS) .
+
+# Measure how far docs/session-format.md has drifted from the logs on this machine.
+# Deliberately not wired into build: it sweeps ~500MB and takes minutes, so it is a
+# thing you run when touching the parser or the format doc, not on every compile.
+# `make schema-scan-new` narrows the report to elements the doc has never named.
+schema-scan:
+	scripts/schema-scan.sh
+schema-scan-new:
+	scripts/schema-scan.sh --new
+schema-scan-test:
+	scripts/schema-scan_test.sh
 
 # Publish a release from the current pushed tag, then refresh this machine's
 # install so it runs what was just shipped — the step that's otherwise forgotten.
