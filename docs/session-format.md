@@ -1,9 +1,16 @@
 # Claude Code session log format
 
-Reverse-engineered from real logs (observed 2026-05-27, re-verified 2026-06-19).
-**Not an official spec** —
+Reverse-engineered from real logs (observed 2026-05-27; last re-verified 2026-08-07 against
+892 logs spanning Claude Code 2.1.195 through 2.1.224). **Not an official spec** —
 Claude Code may change it without notice; re-verify against live files before relying
 on a detail here. `internal/parse` and `internal/locate` encode this format.
+
+Re-verify with `scripts/schema-scan.sh` (see [DEVELOPMENT.md](../DEVELOPMENT.md)). It reports
+every field, entry type, `system` subtype, content-block type and `entrypoint` value in the
+local logs, how often each occurs, the build range that wrote it, and whether this file
+already names it; `--new` narrows to the ones it does not. Run it before trusting anything
+below that a change would depend on — the counts and version ranges quoted here are from the
+2026-08-07 sweep and age from the day they were written.
 
 ## Location and naming
 
@@ -13,12 +20,29 @@ on a detail here. `internal/parse` and `internal/locate` encode this format.
   prefixed. E.g. `/Users/me/Projects/dotfiles` → `-Users-me-Projects-dotfiles`.
 - One file per session: `<project>/<session-uuid>.jsonl`. The session id is a full UUID.
 - Subagent sidecars: `<project>/<session-uuid>/subagents/agent-<id>.jsonl`, each with an
-  `agent-<id>.meta.json` sibling. A sidecar is itself session-shaped JSONL.
+  `agent-<id>.meta.json` sibling. A sidecar is itself session-shaped JSONL. Sidecars
+  dominate the tree — 635 of the 892 files in the 2026-08-07 sweep — so any count over
+  `*.jsonl` is counting mostly subagents unless it excludes `*/subagents/*`.
+- **A git worktree is a separate project.** Its absolute path slugs like any other, so
+  `~/.claude/projects/` holds one folder per worktree
+  (`-Users-me--central-worktrees-pr-1`) and a repo's sessions are split across them. Nothing
+  in the slug marks it as a worktree of anything.
+- **Claude Desktop sessions live here too**, in this same format, distinguished only by
+  `entrypoint: claude-desktop`. The desktop app additionally keeps
+  `~/Library/Application Support/Claude/claude-code-sessions/<workspace>/<profile>/local_<session-uuid>.json`
+  — one JSON object per session holding UI state (`title`, `titleSource`, `cwd`,
+  `permissionMode`, `completedTurns`, `isArchived`, `effort`, and a `forkedFromSessionId`
+  that the JSONL has no equivalent of). That file is **not** a transcript and is not a
+  substitute for the log: the conversation for the same id is the `.jsonl` under
+  `~/.claude/projects/`.
 
 ## Line format
 
 Each line is one JSON event. Lines can be large — tool results are stored inline with
-full content. Malformed lines occur; skip them rather than failing.
+full content. Skip a malformed line rather than failing on it: a reader that aborts at the
+first one silently drops every later line in that session, which reads as a short session
+rather than as an error. The 2026-08-07 sweep found none in 892 files, so treat this as a
+guard against a condition earlier revisions recorded, not as one you should expect to hit.
 
 Common top-level fields: `type`, `timestamp` (RFC3339), `message`, plus context such as
 `cwd`, `gitBranch`, `sessionId`, `uuid`, `parentUuid`, `version`, `isSidechain`.
@@ -27,13 +51,36 @@ The set grows over time and is additive — Claude Code adds fields without remo
 existing ones, so unknown fields are expected and the parser ignores them. Fields seen
 since the initial observation, with their meaning:
 
-- `entrypoint` — session origin (`cli`, `claude-desktop`, …).
+- `entrypoint` — where the session was started: `cli` (85,378 entries), `sdk-cli`
+  (15,817), or `claude-desktop` (14,376). The desktop app writes ordinary logs to the same
+  `~/.claude/projects/` tree, so nothing but this field separates a desktop session from a
+  terminal one. It ships its own bundled Claude Code build, which lags the CLI's, so a
+  desktop session's `version` can be older than anything the terminal wrote that week.
 - `userType` — `external` for human-driven sessions.
-- `promptSource` — set to `sdk` when a `user` prompt arrived via the SDK rather than
-  being typed; absent for typed prompts.
+- `promptSource` (`user` entries) — how the prompt arrived: `typed`, `sdk`, `system`,
+  `queued`, or `suggestion_accepted`. Earlier revisions of this file said the field was
+  absent for typed prompts and present only for SDK ones; that is wrong — `typed` is an
+  explicit value, seen 1,313 times.
+- `origin` (`user` entries) — `{"kind": …}`, one of `human` (1,777), `task-notification`
+  (450), or `coordinator` (29). Present only on prompt-bearing `user` entries, never on the
+  ones carrying a `tool_result`. **A positive signal only**: in one recent session, 13 of 16
+  string-content `user` entries carried it, so its absence does not mean a prompt was
+  injected and the marker heuristic below is still required.
 - `attributionSkill` (assistant entries) — names the **inline** skill whose execution
   produced this main-chain turn (see Subagent stitching). Absent on turns not run under
   a skill.
+- `attributionAgent` / `attributionMcpServer` / `attributionMcpTool` — the same idea for
+  the other three things a turn can be run under: a subagent type, an MCP server, an MCP
+  tool. They co-occur with `attributionSkill` rather than replacing it.
+- `toolDenialKind` — on the `user` entry carrying a **denied** call's `tool_result`. One of
+  `permission-rule` (a settings deny rule fired), `automode-blocked` (the auto-mode
+  classifier refused), `automode-unavailable`, or `user-rejected` (the human said no). This
+  is the only per-call permission signal in the log; `permission-mode` entries record the
+  mode in effect and nothing about individual calls. Logs before 2.1.198 lack the field —
+  there, a denial is a `tool_result` with `is_error` whose body starts `Permission to use`
+  or reads `The user doesn't want to proceed with this tool use`. Never apply that free-text
+  fallback to an `mcp__*` tool: a tool_result body is authored by the tool, so a hostile MCP
+  server can emit the same sentence and manufacture a denial that never happened.
 - `toolUseResult` — a top-level **structured** mirror of a tool's result, on the same
   `user` entry that carries the `tool_result` block. Shape varies by tool (e.g. `Edit`
   → `structuredPatch`/`userModified`; `Bash` → `stdout`/`stderr`; sometimes just a
@@ -42,16 +89,85 @@ since the initial observation, with their meaning:
   in-`message` `tool_result` block.
 - `sourceToolAssistantUUID` / `sourceToolUseID` — link a synthetic `user` entry back to
   the assistant turn / tool call that generated it.
-- `system` entries carry `subtype` (`stop_hook_summary`, `compact_boundary`,
-  `turn_duration`, `away_summary`, …) and sometimes `level` (`info`, `suggestion`).
+- `system` entries carry `subtype` — `stop_hook_summary` (2,125), `turn_duration` (1,868),
+  `away_summary` (624), `local_command` (76), `compact_boundary` (59), `api_error` (10),
+  `informational` (2), `model_refusal_fallback` (1) — and sometimes `level` (`info`,
+  `suggestion`). `stop_hook_summary` entries also carry `hasOutput`, `stopReason`,
+  `preventedContinuation` and `toolUseID`; `turn_duration` carries `durationMs` and
+  `messageCount`.
 - Hook metadata: `hookInfos`, `hookErrors`, `hookCount`, `hookAdditionalContext`.
+- `slug` — a human-readable session handle (`bubbly-honking-blanket`), constant across a
+  session's assistant entries. A second name for a session besides its UUID.
+- `session_id` — a snake_case duplicate of `sessionId` on assistant entries, carrying the
+  same value. Both appear on the same line; read `sessionId`.
+- `requestId` / `promptId` / `messageId` — per-API-request, per-prompt and per-message ids.
+  `promptId` groups every entry produced by one prompt, including the tool calls.
+- `effort` — the reasoning-effort setting in force (seen from 2.1.212).
+- `isMeta` — marks an entry injected by the harness rather than produced by the exchange.
+- `compactMetadata` / `isCompactSummary` / `logicalParentUuid` /
+  `isVisibleInTranscriptOnly` — compaction bookkeeping; `logicalParentUuid` re-links a chain
+  across the boundary that `parentUuid` no longer spans.
+- API-failure fields, all rare: `isApiErrorMessage`, `apiErrorStatus`, `error`,
+  `maxRetries`, `retryAttempt`, `retryInMs`, `interruptedMessageId`, and a refusal family
+  (`apiRefusalCategory`, `apiRefusalExplanation`, `refusedUserMessageUuid`,
+  `originalModel`, `fallbackModel`, `retractedMessageUuids`, `direction`, `trigger`).
+- Payload fields belonging to one entry type, listed so a survey does not report them as
+  unexplained: `snapshot` / `isSnapshotUpdate` (`file-history-snapshot`), `backup` /
+  `trackingPath` / `snapshotMessageId` (`file-history-delta`), `agentName`
+  (`agent-name`), `agentSetting` (`agent-setting`), `lastPrompt` / `leafUuid`
+  (`last-prompt`), `operation` / `content` (`queue-operation`), `relocatedCwd`
+  (`relocated`), `worktreeSession` (`worktree-state`), `prNumber` / `prUrl` /
+  `prRepository` (`pr-link`), `frameUrl` / `path` / `title` (`frame-link`),
+  `parentSessionId` / `parentLastUuid` / `contextLength` (`fork-context-ref`),
+  `aiTitle` (`ai-title`), `customTitle` (`custom-title`), `permissionMode`
+  (`permission-mode`), `mode` (`mode`).
+- Fields observed but not yet explained, each rare enough that no purpose was inferable:
+  `pendingBackgroundAgentCount`, `classifierMetaLines`, `sessionKind`, `source`, `mcpMeta`.
+  They are listed so the next sweep reports them as known-unexplained rather than as new.
 
 ### Entry types
 
-Observed: `assistant`, `user`, `system`, `ai-title`, `custom-title`, `attachment`,
-`file-history-snapshot`, `last-prompt`, `permission-mode` (and `progress`,
-`queue-operation` as transient noise). **Only `assistant` and `user` carry renderable
-content**; ignore the rest.
+Nineteen types across the 892-log sweep. **Only `assistant` and `user` carry renderable
+content**; ignore the rest — but ignore by skipping what you do not recognize, never by
+matching a closed list, because this list has grown at every re-verification.
+
+Content: `assistant` (62,114 entries), `user` (35,857).
+
+Session metadata. Each is a `sessionId` plus one or two fields of its own, and **none
+carries a `timestamp` or a `version`** — nothing in the entry dates it, so attribute it to
+the build and time of the surrounding lines.
+
+- `ai-title`, `custom-title`, `agent-name` — three separate title sources; see below.
+- `agent-setting` — the named agent definition the session runs as. Values match
+  `attributionAgent` (`central-pr-builder`, …).
+- `mode` — the session's mode. Only `normal` observed, in 5,038 entries.
+- `permission-mode` — the permission mode in effect (`auto`, …). Records the mode and never
+  a per-call outcome; for that read `toolDenialKind`.
+- `last-prompt` — `lastPrompt` plus `leafUuid`, the anchor a resume attaches to.
+
+Session events, each recording something the session did. Most carry a `timestamp`;
+`relocated`, `worktree-state` and `fork-context-ref` do not, so they cannot be ordered
+against the turns around them by their own content.
+
+- `pr-link` — a pull request it opened: `prNumber`, `prUrl`, `prRepository`.
+- `frame-link` — an artifact it published: local `path`, the `frameUrl` on claude.ai, and a
+  `title`.
+- `relocated` — its working directory moved, to `relocatedCwd`. Observed only for a move
+  into a worktree.
+- `worktree-state` — it entered a git worktree. Nested `worktreeSession` carries
+  `originalCwd`, `worktreePath`, `worktreeName`, `worktreeBranch`, `originalBranch`, and
+  `originalHeadCommit`.
+- `queue-operation` — a queued prompt moving: `operation` is `enqueue`, `dequeue`, or
+  `remove`.
+- `attachment`, `file-history-snapshot`, `file-history-delta` — attachments, whole-file
+  snapshots, and per-file deltas (`trackingPath`, `snapshotMessageId`, nested `backup`).
+  `file-history-delta` is new since 2.1.211.
+- `system` — carries `subtype`; the eight observed values are listed under Common
+  top-level fields above.
+- `fork-context-ref` — appears only inside subagent sidecars; see Subagent stitching.
+
+Named by earlier revisions of this file but **never observed** in 892 logs: `progress`.
+Either it was removed or it was never real; do not write code that expects it.
 
 The last entry's type is not an end-of-session marker — it is whatever happened last.
 There is no reliable in-file "session complete" signal.
@@ -70,6 +186,15 @@ value. The latest non-empty `customTitle` wins. A second, non-obvious origin: ru
 the label is for the conversation being left, not the new one (see the `/clear` note
 under [User entries](#user-entries-typed-vs-injected)).
 
+`agent-name` entries carry a top-level `agentName` string — the name you set with `--name`
+at launch or `/rename` in session, and the one Claude Code's statusline shows. It is a
+**third** title source, and it is not the same mechanism as `custom-title`: renaming
+usually writes both, with the same value, but a session named at launch can carry an
+`agent-name` and no `custom-title` at all. A title ladder that reads only `customTitle`
+therefore falls through to the generated `aiTitle` for that session and displays a name the
+user did not choose. Of the 12 sessions carrying an `agent-name`, 11 also carry a matching
+`custom-title`, which is why the gap stays invisible.
+
 ### message
 
 `{ role, model, content, usage, ... }`. `content` is **either** a JSON string **or** an
@@ -82,6 +207,11 @@ array of typed blocks:
   (Bash), `.skill` (Skill), and `.subagent_type` (Agent).
 - `tool_result` (inside `user` entries) — `.tool_use_id`, `.is_error`, `.content`
   (a string, or an array of `{type:"text", text}`)
+- `image` (94 occurrences), `document` (3) — pasted or attached media. Inline images are a
+  stated non-goal, so a renderer skips these rather than failing on them.
+- `fallback` (1) — not content at all but a model swap mid-turn, shaped
+  `{"type":"fallback","from":{"model":…},"to":{"model":…}}`. It occupies a content slot, so
+  a renderer that assumes every block has text must skip it by type.
 
 ### usage (assistant entries)
 
@@ -91,6 +221,20 @@ array of typed blocks:
 for token totals).
 
 ## User entries: typed vs injected
+
+One case has an authoritative flag and needs no heuristic: the summary Claude Code writes at
+a compaction boundary is a `user` entry with plain string content, no `isMeta`, and none of
+the markers below — it would read as a typed prompt — but it carries
+`isCompactSummary: true`. Read the flag rather than its opening sentence ("This session is
+being continued from a previous conversation…"), which is Claude Code's wording and can
+change; keep the sentence only as a fallback for logs written before the flag existed.
+
+Two more structured fields answer part of the general question and neither answers all of
+it, so the marker heuristic below remains the working rule. `origin.kind == "human"` positively marks a
+typed prompt, and `promptSource` distinguishes `typed` / `sdk` / `queued` /
+`suggestion_accepted` from `system`; but `origin` is absent from a minority of
+string-content `user` entries, so its absence proves nothing. Use them to confirm, not to
+decide.
 
 A `user` entry's string content is a human-typed prompt **unless** it is
 system-injected. Injected markers include `<local-command-caveat>`, `<bash-input>`,
@@ -138,6 +282,11 @@ A `tool_use` that spawns a child session writes a sidecar; stitching maps the ca
   skill-name detection must read only `agent-*.jsonl`, not the main log.
 - Subagents nest recursively; a sidecar may itself contain `Agent`/`Skill` calls. Guard
   against reference cycles — see [implementation-gotchas.md](implementation-gotchas.md).
+- A sidecar for a **context-inheriting** subagent (the `fork` agent type) opens with a
+  `fork-context-ref` entry: `agentId`, `parentSessionId`, `parentLastUuid`, `contextLength`.
+  It names the main session the child inherited from and the entry it branched at. Do not
+  read it as a session-fork record — it is about a subagent, not about `--fork-session`
+  (see Session continuation and forking).
 
 ## Session continuation and forking
 
@@ -161,10 +310,14 @@ continuation **appends to the same file** or **opens a new file**:
     last copied line. Every copied line's `sessionId` is **rewritten** to the new id, and
     meta lines (`ai-title`, `mode`) are regenerated fresh rather than copied.
 
-A fork carries **no explicit back-reference** — there is no `forkedFrom` or
-`parentSessionId` field, and by any single content field a fork looks like an independent
-session (its own `sessionId`, its own freshly generated `aiTitle`). Two signals together
-recover the relationship (observed 2026-06-27):
+A fork carries **no explicit back-reference**: no field on any entry in the forked file
+names the session it came from, and by any single content field a fork looks like an
+independent session (its own `sessionId`, its own freshly generated `aiTitle`). A
+`parentSessionId` field does exist in the format, but not here — it appears on
+`fork-context-ref` entries inside **subagent sidecars**, where it names the main session a
+context-inheriting subagent branched from (see Subagent stitching). Grepping for the field
+name finds those and not what you want. Two signals together recover the relationship
+(observed 2026-06-27, still the case on 2026-08-07):
 
 - **Family** — the fork copies the parent's chain verbatim, so both share the **root
   `uuid`** (the first entry's `uuid`, the conversation root). Sessions with the same root
