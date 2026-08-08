@@ -23,13 +23,15 @@ func newViewCmd(noColor *bool) *cobra.Command {
 		ValidArgsFunction: completeSessionIDs,
 		Example: "  agentry view <uuid>\n" +
 			"  agentry view --level full <uuid>\n" +
-			"  agentry view --tools --no-thinking <uuid>",
+			"  agentry view --tools --no-thinking <uuid>\n" +
+			"  agentry view --from sdk",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return renderSession(cmd, args, noColor, false)
 		},
 	}
 	addRenderFlags(cmd)
 	addFormatFlag(cmd)
+	addFromFlag(cmd)
 	return cmd
 }
 

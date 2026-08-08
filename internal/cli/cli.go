@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
 
+	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/render"
 )
 
@@ -62,6 +64,22 @@ func parseFormat(cmd *cobra.Command) (string, error) {
 		return "", usageErr("--format: unknown format %q — did you mean %q?", format, g)
 	}
 	return "", usageErr("--format: unknown format %q (want: json, text)", format)
+}
+
+// parseFrom validates the --from selector, shared by the listing and by the
+// render path's no-id resolution — both mean the same thing by "cli" and both
+// must reject the same typo. It returns the value unchanged (empty = the
+// default) or a usage error naming the nearest valid value, like every other
+// enum flag.
+func parseFrom(cmd *cobra.Command) (string, error) {
+	from, _ := cmd.Flags().GetString("from")
+	if from == "" || slices.Contains(entrypoint.Names, from) {
+		return from, nil
+	}
+	if g := nearest(from, entrypoint.Names); g != "" {
+		return "", usageErr("--from: unknown source %q — did you mean %q?", from, g)
+	}
+	return "", usageErr("--from: unknown source %q (want: %s)", from, strings.Join(entrypoint.Names, ", "))
 }
 
 // exitError carries the sysexits code a failure should exit with. RunE returns

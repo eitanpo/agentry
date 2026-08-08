@@ -78,6 +78,10 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 	if err != nil {
 		return err
 	}
+	from, err := parseFrom(cmd)
+	if err != nil {
+		return err
+	}
 
 	var id string
 	if len(args) == 1 {
@@ -87,6 +91,11 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 				return usageErr("unknown command %q — did you mean %q?", id, g)
 			}
 			return usageErr("unknown command %q (run \"agentry --help\")", id)
+		}
+		// --from chooses among sessions; an id has already chosen one. Accepting
+		// both and ignoring the flag would leave a caller believing it applied.
+		if cmd.Flags().Changed("from") {
+			return usageErr("--from cannot be combined with a session id: %q already names the session to render", id)
 		}
 	}
 
@@ -100,7 +109,7 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 		// kind of session it turns out to be.
 		path, err = locate.Session(cwd, id)
 	} else {
-		path, err = mostRecentWorked(cmd, cwd)
+		path, err = mostRecent(cmd, cwd, from)
 	}
 	if err != nil {
 		return noInputErr(err)
@@ -126,21 +135,18 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 	return nil
 }
 
-// completeSessionIDs is the shell-completion handler for the render path's
-// positional session id. It lists the current project's sessions and offers
-// each id annotated with its title (as `agentry list` would show it). Cobra's
-// hidden __complete callback runs it on every Tab, so it reflects the sessions
-// present at that moment; NoFileComp keeps an id from decaying into filename
-// completion. Errors resolve to "no suggestions", never a crash mid-Tab.
-// mostRecentWorked resolves `view` with no id: the newest session that was not
+// mostRecent resolves `view` with no id: the newest session matching the --from
+// selector. The empty selector is the default — the newest session that was not
 // a non-interactive run. On a machine using hooks the newest session is usually
 // a few-second headless run, so "show me my last session" would otherwise render
-// a hook — the same reason the listing hides them.
+// a hook, the same reason the listing hides them.
 //
-// When every session is headless it renders the newest one anyway and says so.
-// Refusing would be wrong: sessions plainly exist, and unlike a listing there is
-// no empty result to return.
-func mostRecentWorked(cmd *cobra.Command, cwd string) (string, error) {
+// Only the default falls back. When every session is headless it renders the
+// newest one anyway and says so, because sessions plainly exist and, unlike a
+// listing, there is no empty result to return. An explicit --from gets an error
+// instead: falling back there would render a kind the caller did not ask for and
+// present it as what they asked for.
+func mostRecent(cmd *cobra.Command, cwd, from string) (string, error) {
 	paths, err := locate.SessionsByRecency(cwd)
 	if err != nil {
 		return "", err
@@ -150,19 +156,39 @@ func mostRecentWorked(cmd *cobra.Command, cwd string) (string, error) {
 		if err != nil {
 			continue // unparseable: same skip the listing makes
 		}
-		if !entrypoint.IsHeadless(s.Entrypoint) {
+		if entrypoint.Matches(from, s.Entrypoint) {
 			return p, nil
 		}
+	}
+	if from != "" {
+		// --from all reaches here only when nothing parsed, so there is no wider
+		// selector to suggest.
+		hint := "; pass --from all for the most recent of any kind"
+		if from == entrypoint.All {
+			hint = ""
+		}
+		return "", fmt.Errorf("no session here matches --from %s (%d session(s) in this project)%s", from, len(paths), hint)
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(),
 		"agentry: every session here is a headless run; showing the most recent one\n")
 	return paths[0], nil
 }
 
-func completeSessionIDs(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+// completeSessionIDs is the shell-completion handler for the render path's
+// positional session id. It lists the current project's sessions and offers
+// each id annotated with its title (as `agentry list` would show it). Cobra's
+// hidden __complete callback runs it on every Tab, so it reflects the sessions
+// present at that moment; NoFileComp keeps an id from decaying into filename
+// completion. Errors resolve to "no suggestions", never a crash mid-Tab.
+func completeSessionIDs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) != 0 { // the render path takes at most one id
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	// Read --from off the line being completed: a flag that says "include
+	// headless runs" must not be contradicted by completion still hiding them.
+	// An unvalidated value matches nothing, which is the right answer mid-Tab —
+	// completion has no channel for an error.
+	from, _ := cmd.Flags().GetString("from")
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -177,10 +203,11 @@ func completeSessionIDs(_ *cobra.Command, args []string, toComplete string) ([]s
 		if err != nil || !strings.HasPrefix(s.ID, toComplete) {
 			continue
 		}
-		// Offer the ids a listing would show. Without this, tabbing a UUID in a
-		// project that uses hooks surfaces headless runs ahead of the work being
-		// looked for — and completion has no room to explain why they are there.
-		if entrypoint.IsHeadless(s.Entrypoint) {
+		// Offer the ids a listing under the same --from would show. Without this,
+		// tabbing a UUID in a project that uses hooks surfaces headless runs ahead
+		// of the work being looked for — and completion has no room to explain why
+		// they are there.
+		if !entrypoint.Matches(from, s.Entrypoint) {
 			continue
 		}
 		out = append(out, s.ID+"\t"+compTitle(s.Title))

@@ -681,6 +681,87 @@ func TestViewSkipsHeadless(t *testing.T) {
 	})
 }
 
+// TestViewFrom pins --from on the render path: it chooses which kind the no-id
+// lookup resolves to, and it never silently substitutes another kind.
+func TestViewFrom(t *testing.T) {
+	// resolved renders with the given args and returns the entrypoint of whatever
+	// session `view` chose — the observable that distinguishes the selectors.
+	resolved := func(t *testing.T, args ...string) string {
+		t.Helper()
+		out := captureStdout(t, func() {
+			exec(append([]string{"view", "--format", "json"}, args...)...)
+		})
+		var got struct {
+			Meta struct {
+				Entrypoint string `json:"entrypoint"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+		}
+		return got.Meta.Entrypoint
+	}
+
+	t.Run("--from sdk renders the most recent headless run", func(t *testing.T) {
+		// The reason the flag exists: reading back the hook or `claude -p` call
+		// that just fired, which the default is built to skip.
+		entrypointFixture(t, "cli", "sdk-cli", "cli")
+		if ep := resolved(t, "--from", "sdk"); ep != "sdk-cli" {
+			t.Errorf("view --from sdk resolved to %q, want the headless session", ep)
+		}
+	})
+
+	t.Run("--from all renders the most recent of any kind", func(t *testing.T) {
+		// Newest overall is the headless one; the default would skip past it.
+		entrypointFixture(t, "cli", "sdk-cli")
+		if ep := resolved(t, "--from", "all"); ep != "sdk-cli" {
+			t.Errorf("view --from all resolved to %q, want the newest session", ep)
+		}
+	})
+
+	t.Run("a selector matching nothing errors instead of falling back", func(t *testing.T) {
+		// Rendering a cli session for --from app would present a kind the caller
+		// did not ask for as the one they did.
+		entrypointFixture(t, "cli")
+		var code int
+		var errOut string
+		out := captureStdout(t, func() { code, _, errOut = exec("view", "--from", "app", "--format", "json") })
+		if code != exNoInput {
+			t.Errorf("exit = %d, want %d", code, exNoInput)
+		}
+		if out != "" {
+			t.Errorf("nothing should be rendered, got %q", out)
+		}
+		if !strings.Contains(errOut, "--from app") {
+			t.Errorf("stderr should name the selector that matched nothing, got %q", errOut)
+		}
+	})
+
+	t.Run("--from beside a session id is a usage error", func(t *testing.T) {
+		// The id already names the session, so the flag could only contradict it.
+		entrypointFixture(t, "cli", "sdk-cli")
+		code, _, errOut := exec("view", "00000000-0000-0000-0000-000000000000", "--from", "sdk")
+		if code != exUsage {
+			t.Errorf("exit = %d, want %d", code, exUsage)
+		}
+		if !strings.Contains(errOut, "--from") {
+			t.Errorf("stderr should name the conflict, got %q", errOut)
+		}
+	})
+
+	t.Run("an unknown value is rejected with a suggestion", func(t *testing.T) {
+		// view validates through the same parseFrom the listing uses, so a typo
+		// cannot be accepted on one path and rejected on the other.
+		code, _, errOut := exec("view", "--from", "ap")
+		if code != exUsage {
+			t.Errorf("exit = %d, want %d", code, exUsage)
+		}
+		if !strings.Contains(errOut, `"app"`) {
+			t.Errorf("error should suggest \"app\", got %q", errOut)
+		}
+	})
+}
+
 // TestMetaCarriesEntrypoint pins that the render path knows what the listing
 // knows. The two disagreeing about the same session is the defect this closes.
 func TestMetaCarriesEntrypoint(t *testing.T) {
@@ -694,16 +775,46 @@ func TestMetaCarriesEntrypoint(t *testing.T) {
 }
 
 // TestCompletionSkipsHeadless pins that tabbing a UUID offers the ids a listing
-// would show. Completion has no room to explain why a hook run is in the menu.
+// under the same --from would show. Completion has no room to explain why a hook
+// run is in the menu — nor to explain, once --from all is on the line, why one
+// is missing from it.
 func TestCompletionSkipsHeadless(t *testing.T) {
-	entrypointFixture(t, "cli", "sdk-cli")
-	got, _ := completeSessionIDs(nil, nil, "")
-	if len(got) != 1 {
-		t.Fatalf("completion offered %d ids, want 1 (headless skipped): %v", len(got), got)
+	// completeSessionIDs reads --from off the command being completed, so the
+	// candidate command must be a real one carrying that flag.
+	complete := func(t *testing.T, args ...string) []string {
+		t.Helper()
+		cmd := newViewCmd(new(bool))
+		if err := cmd.ParseFlags(args); err != nil {
+			t.Fatalf("parse %v: %v", args, err)
+		}
+		got, _ := completeSessionIDs(cmd, nil, "")
+		return got
 	}
-	if !strings.HasPrefix(got[0], "00000000-") {
-		t.Errorf("completion offered %q, want the interactive session", got[0])
-	}
+
+	t.Run("headless runs are absent by default", func(t *testing.T) {
+		entrypointFixture(t, "cli", "sdk-cli")
+		got := complete(t)
+		if len(got) != 1 {
+			t.Fatalf("completion offered %d ids, want 1 (headless skipped): %v", len(got), got)
+		}
+		if !strings.HasPrefix(got[0], "00000000-") {
+			t.Errorf("completion offered %q, want the interactive session", got[0])
+		}
+	})
+
+	t.Run("--from on the line selects what is offered", func(t *testing.T) {
+		entrypointFixture(t, "cli", "sdk-cli")
+		got := complete(t, "--from", "sdk")
+		if len(got) != 1 {
+			t.Fatalf("completion offered %d ids, want 1 (headless only): %v", len(got), got)
+		}
+		if !strings.HasPrefix(got[0], "00000001-") {
+			t.Errorf("completion offered %q, want the headless session", got[0])
+		}
+		if all := complete(t, "--from", "all"); len(all) != 2 {
+			t.Errorf("--from all offered %d ids, want 2: %v", len(all), all)
+		}
+	})
 }
 
 // TestBareCommandLists pins the front-door behavior: bare `agentry` produces the
@@ -781,7 +892,7 @@ func TestCompleteFlagValues(t *testing.T) {
 // maps to no project.
 func TestCompleteSessionIDsNoProject(t *testing.T) {
 	t.Chdir(t.TempDir())
-	got, dir := completeSessionIDs(nil, nil, "")
+	got, dir := completeSessionIDs(newViewCmd(new(bool)), nil, "")
 	if len(got) != 0 {
 		t.Errorf("want no suggestions in a project-less dir, got %v", got)
 	}

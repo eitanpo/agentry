@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -52,11 +51,19 @@ func addListFlags(cmd *cobra.Command) {
 	cmd.Flags().String("used-agent", "", "only sessions that spawned this subagent type")
 	cmd.Flags().String("used-command", "", "only sessions that ran a Bash command matching this text")
 	cmd.Flags().String("used", "", "only sessions that used this as a skill, agent, or command")
+	cmd.Flags().Bool("all-projects", false, "list every project's sessions, not just this directory's")
+	cmd.Flags().String("project", "", "list PATH's sessions instead of this directory's, including anything nested under it")
+	addFromFlag(cmd)
+}
+
+// addFromFlag installs --from. It is registered separately from the rest of the
+// list flags because `view` takes it too — it picks which session the no-id
+// lookup resolves to — and `view` carries none of the other selectors. The root
+// gets it through addListFlags and must not register it twice.
+func addFromFlag(cmd *cobra.Command) {
 	cmd.Flags().String("from", "", "where the session ran: cli, app, sdk, all (default: everything but sdk)")
 	// Complete the enum flag to its allowed values instead of filenames.
 	_ = cmd.RegisterFlagCompletionFunc("from", fixedComp(entrypoint.Names))
-	cmd.Flags().Bool("all-projects", false, "list every project's sessions, not just this directory's")
-	cmd.Flags().String("project", "", "list PATH's sessions instead of this directory's, including anything nested under it")
 }
 
 // sessionPaths resolves which sessions the listing covers: this directory's by
@@ -116,12 +123,9 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	if err != nil {
 		return err
 	}
-	from, _ := cmd.Flags().GetString("from")
-	if from != "" && !slices.Contains(entrypoint.Names, from) {
-		if g := nearest(from, entrypoint.Names); g != "" {
-			return usageErr("--from: unknown source %q — did you mean %q?", from, g)
-		}
-		return usageErr("--from: unknown source %q (want: %s)", from, strings.Join(entrypoint.Names, ", "))
+	from, err := parseFrom(cmd)
+	if err != nil {
+		return err
 	}
 
 	now := time.Now()
