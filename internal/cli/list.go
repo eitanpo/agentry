@@ -46,12 +46,10 @@ func addListFlags(cmd *cobra.Command) {
 	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
 	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
 	cmd.Flags().String("include", "", "add detail channels (comma-separated): prompts, tools, files, all")
-	cmd.Flags().String("used-tool", "", "only sessions that used this tool, by name (Bash, Skill, Agent, WebFetch, …)")
-	cmd.Flags().String("used-skill", "", "only sessions that invoked this skill")
-	cmd.Flags().String("used-agent", "", "only sessions that spawned this subagent type")
-	cmd.Flags().String("used-command", "", "only sessions that ran a Bash command matching this text")
-	cmd.Flags().String("used-file", "", "only sessions that modified a file matching this path")
-	cmd.Flags().String("used", "", "only sessions that used this as a skill, agent, or command")
+	for _, u := range usageFilters {
+		cmd.Flags().String(u.flag, "", "only sessions that "+u.did)
+		cmd.Flags().String("not-"+u.flag, "", "only sessions that never "+u.did)
+	}
 	cmd.Flags().Bool("all-projects", false, "list every project's sessions, not just this directory's")
 	cmd.Flags().String("project", "", "list PATH's sessions instead of this directory's, including anything nested under it")
 	addFromFlag(cmd)
@@ -90,9 +88,37 @@ func sessionPaths(cmd *cobra.Command) ([]string, error) {
 	return locate.Sessions(cwd)
 }
 
-// usedFlags are the --used* filter flags; any of them, like a time filter,
-// lifts the default --limit so a filtered listing is not silently capped.
-var usedFlags = []string{"used-tool", "used-skill", "used-agent", "used-command", "used-file", "used"}
+// usageFilters is the single source for the usage-filter surface: each entry
+// registers a --used* flag and its --not-used* twin, and fills the matching
+// field on both sides of list.Filters. One list rather than three parallel ones,
+// so a filter cannot be added to the flag set and forgotten in the negation or
+// in the limit-lifting below.
+//
+// did completes both "only sessions that <did>" and "only sessions that never
+// <did>", which is why it is phrased as a past-tense verb phrase.
+var usageFilters = []struct {
+	flag string
+	did  string
+	set  func(*list.Criteria, string)
+}{
+	{"used-tool", "used this tool, by name (Bash, Skill, Agent, WebFetch, …)", func(c *list.Criteria, v string) { c.Tool = v }},
+	{"used-skill", "invoked this skill", func(c *list.Criteria, v string) { c.Skill = v }},
+	{"used-agent", "spawned this subagent type", func(c *list.Criteria, v string) { c.Agent = v }},
+	{"used-command", "ran a Bash command matching this text", func(c *list.Criteria, v string) { c.Command = v }},
+	{"used-file", "modified a file matching this path", func(c *list.Criteria, v string) { c.File = v }},
+	{"used", "used this as a skill, agent, or command", func(c *list.Criteria, v string) { c.Any = v }},
+}
+
+// usedFlags are the usage-filter flag names, positive and negated; any of them,
+// like a time filter, lifts the default --limit so a filtered listing is not
+// silently capped.
+var usedFlags = func() []string {
+	names := make([]string, 0, 2*len(usageFilters))
+	for _, u := range usageFilters {
+		names = append(names, u.flag, "not-"+u.flag)
+	}
+	return names
+}()
 
 func runList(cmd *cobra.Command, noColor *bool) error {
 	limit, _ := cmd.Flags().GetInt("limit")
@@ -158,13 +184,10 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	}
 
 	get := func(name string) string { v, _ := cmd.Flags().GetString(name); return v }
-	filters := list.Filters{
-		Tool:    get("used-tool"),
-		Skill:   get("used-skill"),
-		Agent:   get("used-agent"),
-		Command: get("used-command"),
-		Any:     get("used"),
-		File:    get("used-file"),
+	var filters list.Filters
+	for _, u := range usageFilters {
+		u.set(&filters.Used, get(u.flag))
+		u.set(&filters.NotUsed, get("not-"+u.flag))
 	}
 
 	paths, err := sessionPaths(cmd)

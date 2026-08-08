@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -679,6 +680,56 @@ func TestViewSkipsHeadless(t *testing.T) {
 			t.Errorf("stderr should explain the fallback, got %q", errOut)
 		}
 	})
+}
+
+// TestNotUsedFlags pins that every usage filter has a negation that actually
+// filters. Registering a flag and reading it into Filters are separate steps, so
+// the failure this catches is a --not-used-* that parses, accepts a value, and
+// narrows nothing — which looks like "no session matched" from the outside.
+func TestNotUsedFlags(t *testing.T) {
+	root := newRootCmd("test")
+	for _, u := range usageFilters {
+		if root.Flags().Lookup(u.flag) == nil {
+			t.Errorf("--%s is not registered", u.flag)
+		}
+		if root.Flags().Lookup("not-"+u.flag) == nil {
+			t.Errorf("--not-%s is not registered", u.flag)
+		}
+	}
+
+	// sample.jsonl's session runs Bash (ls -la) and Read, and nothing else.
+	fixtureProject(t)
+	count := func(t *testing.T, args ...string) int {
+		t.Helper()
+		out := captureStdout(t, func() {
+			exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
+		})
+		var got []map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+		}
+		return len(got)
+	}
+
+	if n := count(t); n != 1 {
+		t.Fatalf("fixture project has %d sessions, want 1", n)
+	}
+	if n := count(t, "--used-tool", "Bash"); n != 1 {
+		t.Errorf("--used-tool Bash matched %d sessions, want 1", n)
+	}
+	// The negation drops exactly what the positive kept.
+	if n := count(t, "--not-used-tool", "Bash"); n != 0 {
+		t.Errorf("--not-used-tool Bash matched %d sessions, want 0", n)
+	}
+	// And keeps what the positive would not have matched.
+	if n := count(t, "--not-used-tool", "WebFetch"); n != 1 {
+		t.Errorf("--not-used-tool WebFetch matched %d sessions, want 1", n)
+	}
+	// A negation lifts the default --limit like every other usage filter, so a
+	// filtered listing is not silently capped at ten.
+	if !slices.Contains(usedFlags, "not-used-skill") {
+		t.Errorf("negated filters must be in usedFlags, got %v", usedFlags)
+	}
 }
 
 // TestViewFrom pins --from on the render path: it chooses which kind the no-id

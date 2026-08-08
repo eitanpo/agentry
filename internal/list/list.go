@@ -108,51 +108,91 @@ func FilterByFrom(sums []model.Summary, from string) []model.Summary {
 	return out
 }
 
-// Filters narrows a listing to sessions whose top-level tool calls match. An
-// empty field imposes no constraint; set fields AND together. Tool is matched
-// case-insensitively and exact (the tool-use name); the rest are
-// case-insensitive substring. Any is the identity catch-all — a skill name,
-// subagent type, or command — and deliberately ignores tool names.
-type Filters struct {
+// Criteria is one set of usage tests over a session's top-level tool calls. An
+// empty field imposes no constraint. Tool is matched case-insensitively and
+// exact (the tool-use name); the rest are case-insensitive substring. Any is the
+// identity catch-all — a skill name, subagent type, or command — and
+// deliberately ignores tool names. File is the "what did the work land on" axis,
+// read from both records of it: Edit/Write targets and the tracked-file list.
+type Criteria struct {
 	Tool    string
 	Skill   string
 	Agent   string
 	Command string
 	Any     string
-	// File is the "what did the work land on" axis, matched against both records
-	// of it — the session's tracked files and its Edit/Write targets.
-	File string
+	File    string
+}
+
+func (c Criteria) empty() bool {
+	return c == Criteria{}
+}
+
+// hit runs every set test against s and reports whether all of them matched and
+// whether any did. One traversal serves both sides of a filter: the positive
+// flags require all, the negated ones forbid any.
+func (c Criteria) hit(s model.Summary) (all, any bool) {
+	all = true
+	add := func(matched bool) {
+		if matched {
+			any = true
+		} else {
+			all = false
+		}
+	}
+	if c.Tool != "" {
+		add(hasTool(s.Tools, c.Tool))
+	}
+	if c.Skill != "" {
+		add(hasIdentity(s.Tools, "Skill", c.Skill))
+	}
+	if c.Agent != "" {
+		add(hasIdentity(s.Tools, "Agent", c.Agent))
+	}
+	if c.Command != "" {
+		add(hasCommand(s.Commands, c.Command))
+	}
+	if c.Any != "" {
+		add(hasAny(s, c.Any))
+	}
+	if c.File != "" {
+		add(hasFile(s, c.File))
+	}
+	return all, any
+}
+
+// Filters narrows a listing by what a session used. Used keeps the sessions that
+// match every one of its tests; NotUsed drops the sessions matching any of its
+// own. Both sides are the same Criteria type on purpose: a filter and its
+// negation must accept the same values and match by the same rule, and two
+// parallel field lists would let a new filter be added to one side only.
+type Filters struct {
+	Used    Criteria
+	NotUsed Criteria
 }
 
 // Empty reports whether no constraint is set, so callers can skip filtering.
 func (f Filters) Empty() bool {
-	return f.Tool == "" && f.Skill == "" && f.Agent == "" && f.Command == "" && f.Any == "" && f.File == ""
+	return f.Used.empty() && f.NotUsed.empty()
 }
 
-// Match reports whether s satisfies every set field.
+// Match reports whether s satisfies every positive test and no negated one.
 func (f Filters) Match(s model.Summary) bool {
-	if f.Tool != "" && !hasTool(s.Tools, f.Tool) {
+	if all, _ := f.Used.hit(s); !all {
 		return false
 	}
-	if f.Skill != "" && !hasIdentity(s.Tools, "Skill", f.Skill) {
-		return false
-	}
-	if f.Agent != "" && !hasIdentity(s.Tools, "Agent", f.Agent) {
-		return false
-	}
-	if f.Command != "" && !hasCommand(s.Commands, f.Command) {
-		return false
-	}
-	if f.Any != "" &&
-		!hasIdentity(s.Tools, "Skill", f.Any) &&
-		!hasIdentity(s.Tools, "Agent", f.Any) &&
-		!hasCommand(s.Commands, f.Any) {
-		return false
-	}
-	if f.File != "" && !hasFile(s, f.File) {
+	if _, any := f.NotUsed.hit(s); any {
 		return false
 	}
 	return true
+}
+
+// hasAny is the identity catch-all: a skill name, a subagent type, or a command.
+// Named rather than inlined so the positive and negated forms of --used cannot
+// end up asking different questions.
+func hasAny(s model.Summary, sub string) bool {
+	return hasIdentity(s.Tools, "Skill", sub) ||
+		hasIdentity(s.Tools, "Agent", sub) ||
+		hasCommand(s.Commands, sub)
 }
 
 // hasFile reports whether the session modified a file matching sub. Edit and

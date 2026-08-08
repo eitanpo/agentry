@@ -624,15 +624,41 @@ func TestFilterByTools(t *testing.T) {
 		want []string
 	}{
 		{"empty is no-op", Filters{}, []string{"expert-run", "exa-run", "research"}},
-		{"used-tool exact, case-insensitive", Filters{Tool: "bash"}, []string{"exa-run"}},
-		{"used-skill substring", Filters{Skill: "sonar"}, []string{"exa-run"}}, // sonar-search
-		{"used-agent", Filters{Agent: "researcher"}, []string{"research"}},
-		{"used-command substring", Filters{Command: "git"}, []string{"expert-run"}},
-		{"used matches command", Filters{Any: "exa"}, []string{"exa-run"}}, // via command text
-		{"used matches skill", Filters{Any: "expert"}, []string{"expert-run"}},
-		{"used does not match tool name", Filters{Any: "Bash"}, nil}, // identity axis only
-		{"AND of two fields", Filters{Skill: "expert", Agent: "general"}, []string{"expert-run"}},
-		{"AND with no overlap", Filters{Skill: "expert", Agent: "researcher"}, nil},
+		{"used-tool exact, case-insensitive", Filters{Used: Criteria{Tool: "bash"}}, []string{"exa-run"}},
+		{"used-skill substring", Filters{Used: Criteria{Skill: "sonar"}}, []string{"exa-run"}}, // sonar-search
+		{"used-agent", Filters{Used: Criteria{Agent: "researcher"}}, []string{"research"}},
+		{"used-command substring", Filters{Used: Criteria{Command: "git"}}, []string{"expert-run"}},
+		{"used matches command", Filters{Used: Criteria{Any: "exa"}}, []string{"exa-run"}}, // via command text
+		{"used matches skill", Filters{Used: Criteria{Any: "expert"}}, []string{"expert-run"}},
+		{"used does not match tool name", Filters{Used: Criteria{Any: "Bash"}}, nil}, // identity axis only
+		{"AND of two fields", Filters{Used: Criteria{Skill: "expert", Agent: "general"}}, []string{"expert-run"}},
+		{"AND with no overlap", Filters{Used: Criteria{Skill: "expert", Agent: "researcher"}}, nil},
+
+		// Negation keeps exactly what its positive twin drops.
+		{"not-used-tool", Filters{NotUsed: Criteria{Tool: "bash"}}, []string{"expert-run", "research"}},
+		{"not-used-skill", Filters{NotUsed: Criteria{Skill: "sonar"}}, []string{"expert-run", "research"}},
+		{"not-used-agent", Filters{NotUsed: Criteria{Agent: "researcher"}}, []string{"expert-run", "exa-run"}},
+		{"not-used-command", Filters{NotUsed: Criteria{Command: "git"}}, []string{"exa-run", "research"}},
+		{"not-used catch-all", Filters{NotUsed: Criteria{Any: "expert"}}, []string{"exa-run", "research"}},
+		// The compliance shape the flag exists for: a presence AND an absence,
+		// which used to take two listings and a set difference on ids.
+		{"presence and absence together", Filters{
+			Used:    Criteria{Agent: "general-purpose"},
+			NotUsed: Criteria{Skill: "expert"},
+		}, nil},
+		{"presence and absence that do co-occur", Filters{
+			Used:    Criteria{Agent: "general-purpose"},
+			NotUsed: Criteria{Skill: "sonar"},
+		}, []string{"expert-run"}},
+		// Negations AND with each other: a session must fail every one.
+		{"two negations", Filters{NotUsed: Criteria{Skill: "sonar", Agent: "researcher"}}, []string{"expert-run"}},
+		// A flag and its negation on one value describe no session. That is an
+		// empty result, not a usage error — they are not competing to decide the
+		// same thing, they simply cannot both hold.
+		{"a value both required and forbidden", Filters{
+			Used:    Criteria{Skill: "expert"},
+			NotUsed: Criteria{Skill: "expert"},
+		}, nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -719,7 +745,7 @@ func TestFilterByFile(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := ids(FilterByTools(sums, Filters{File: c.file}))
+			got := ids(FilterByTools(sums, Filters{Used: Criteria{File: c.file}}))
 			if len(got) != len(c.want) {
 				t.Fatalf("--used-file %q = %v, want %v", c.file, got, c.want)
 			}
@@ -733,7 +759,7 @@ func TestFilterByFile(t *testing.T) {
 
 	// A file axis is not the identity axis: --used stays a skill/agent/command
 	// catch-all, so widening it here would change what existing calls return.
-	if got := ids(FilterByTools(sums, Filters{Any: "PRODUCT.md"})); len(got) != 0 {
+	if got := ids(FilterByTools(sums, Filters{Used: Criteria{Any: "PRODUCT.md"}})); len(got) != 0 {
 		t.Errorf("--used should not match files, got %v", got)
 	}
 }

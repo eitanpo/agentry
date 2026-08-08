@@ -57,6 +57,7 @@ agentry list --used-command exa           # only sessions that ran a Bash comman
 agentry list --used-skill expert          # only sessions that invoked the expert skill
 agentry list --used-file PRODUCT.md       # only sessions that modified that file
 agentry list --used researcher            # skill, agent, or command matching "researcher"
+agentry list --used-command 'git commit' --not-used-skill review   # committed without loading a skill
 agentry list --used-skill expert --format json | jq   # machine-readable, for piping
 agentry list --all-projects                # every project, not just this directory
 agentry list --project ~/Projects/me/app   # that repo and every worktree nested in it
@@ -95,6 +96,7 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--used-skill`, `--used-agent`, `--used-command` | `list` | — | Identity axis: a Skill's skill, an Agent's subagent type, a Bash command's text (case-insensitive substring). |
 | `--used-file PATH` | `list` | — | Only sessions that modified a matching file (case-insensitive substring, so `list.go` catches every directory's and `internal/cli/list.go` names one). Reads `Edit`/`Write` targets and the tracked-file record together; the tool targets do nearly all the work, since about half of sessions have no tracked-file record at all. Not covered by `--used`. |
 | `--used TOKEN` | `list` | — | Catch-all over the identity axis: skill name, agent type, or command. Not tool names — use `--used-tool` for those. |
+| `--not-used-*` | `list` | — | Every `--used*` flag above has a `--not-` twin (`--not-used-tool`, `--not-used-skill`, `--not-used-agent`, `--not-used-command`, `--not-used-file`, `--not-used`) keeping the sessions the positive one drops. Combine the two for a compliance audit: `--used-command 'git commit' --not-used-skill review`. Absence is judged over top-level calls only, so a subagent may have used what the main thread did not. |
 | `--all-projects` | `list` | — | Every project under `~/.claude/projects/`, not just this directory's. Mutually exclusive with `--project`. |
 | `--project PATH` | `list` | — | PATH's sessions instead of this directory's, including every project nested under PATH — which is how naming a repo picks up its git worktrees. |
 | `--from cli\|app\|sdk\|all` | `list`, `view` | `cli`+`app` | Where the session was run. `sdk` is anything non-interactive (`claude -p`, a hook, CI) and is **hidden by default**; `all` restores it. On `view` (no id) it picks which kind the most-recent lookup walks back to; it cannot be combined with a session id. |
