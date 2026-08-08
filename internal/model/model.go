@@ -16,8 +16,15 @@ type Session struct {
 
 // Meta is session-level metadata aggregated across all turns and subagents.
 type Meta struct {
-	ID           string    `json:"id"`
-	Model        string    `json:"model,omitempty"`
+	ID    string `json:"id"`
+	Model string `json:"model,omitempty"`
+	// Effort is the reasoning effort the model ran at, resolved like Entrypoint:
+	// the last value the session carries. Efforts lists every distinct one, set
+	// only when it changed mid-session. Empty on a session predating the field
+	// (about half of them), which is not a claim that effort was any particular
+	// value — the log simply does not say.
+	Effort       string    `json:"effort,omitempty"`
+	Efforts      []string  `json:"efforts,omitempty"`
 	Start        time.Time `json:"start"`
 	End          time.Time `json:"end"`
 	Usage        Usage     `json:"usage"`

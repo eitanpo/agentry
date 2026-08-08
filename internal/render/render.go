@@ -133,6 +133,18 @@ func (r *renderer) initStyles() {
 
 // ── Session header ─────────────────────────────────────────────────────────
 
+// trail spells a per-session setting that may have changed mid-way: the whole
+// sequence joined by an arrow when it did, the resolved value alone when it did
+// not. entrypoint.Trail is the same idea over values that need translating to a
+// short tag first; this is the untranslated form, for settings whose log values
+// are already the words to show.
+func trail(resolved string, all []string) string {
+	if len(all) > 1 {
+		return strings.Join(all, "→")
+	}
+	return resolved
+}
+
 func (r *renderer) header(s *model.Session) string {
 	m := s.Meta
 	title := fmt.Sprintf("Session · %s → %s", fmtTime(m.Start), fmtTime(m.End))
@@ -140,6 +152,12 @@ func (r *renderer) header(s *model.Session) string {
 		title += " · " + d
 	}
 	title += " · " + m.Model
+	// How hard the model was run, as a phrase — "high" alone beside a model name
+	// would not say high what. A session that changed effort shows the transition
+	// with the same arrow the entrypoint trail uses.
+	if e := trail(m.Effort, m.Efforts); e != "" {
+		title += " · " + e + " effort"
+	}
 	// Where the session ran, spelled out rather than abbreviated to the "+" the
 	// listing column uses — the header has a line to itself.
 	if t := entrypoint.Trail(m.Entrypoint, m.Entrypoints); t != "" {

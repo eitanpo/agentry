@@ -528,6 +528,43 @@ func TestChannelGating(t *testing.T) {
 	})
 }
 
+// TestHeaderEffort pins how the header reports reasoning effort. It reads as a
+// phrase because "high" alone beside a model name does not say high what.
+func TestHeaderEffort(t *testing.T) {
+	head := func(t *testing.T, m model.Meta) string {
+		t.Helper()
+		sess := &model.Session{Meta: m, Turns: []model.Turn{{Prompt: "go"}}}
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 120, Color: false}); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	t.Run("named beside the model", func(t *testing.T) {
+		out := head(t, model.Meta{Model: "claude-opus-5", Effort: "high"})
+		if !strings.Contains(out, "claude-opus-5 · high effort") {
+			t.Errorf("want the effort after the model, got %q", out)
+		}
+	})
+
+	t.Run("a mid-session change shows the transition", func(t *testing.T) {
+		out := head(t, model.Meta{Model: "claude-opus-5", Effort: "high", Efforts: []string{"xhigh", "high"}})
+		if !strings.Contains(out, "xhigh→high effort") {
+			t.Errorf("want the whole sequence, got %q", out)
+		}
+	})
+
+	t.Run("a session without the field says nothing", func(t *testing.T) {
+		// Half of sessions predate it; an invented default would be a claim about
+		// how the model was run that the log never made.
+		out := head(t, model.Meta{Model: "claude-opus-5"})
+		if strings.Contains(out, "effort") {
+			t.Errorf("no effort recorded, so none should be shown: %q", out)
+		}
+	})
+}
+
 // TestDenialOnToolLine pins that a refused call says so. Both a denied call and
 // a failed one carry isError, so the error glyph alone sends a reader to fix the
 // tool when the thing to fix is a permission rule.

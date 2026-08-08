@@ -43,6 +43,7 @@ func Load(jsonlPath string) (*model.Session, error) {
 	stem := strings.TrimSuffix(filepath.Base(jsonlPath), filepath.Ext(jsonlPath))
 	subs := loadSubagents(filepath.Join(projectDir, stem, "subagents"))
 	eps := entrypoints(entries)
+	effs := efforts(entries)
 
 	sess := &model.Session{
 		Meta: model.Meta{
@@ -51,6 +52,8 @@ func Load(jsonlPath string) (*model.Session, error) {
 			NumSubagents: len(subs),
 			Entrypoint:   lastOf(eps),
 			Entrypoints:  manyOrNone(eps),
+			Effort:       lastOf(effs),
+			Efforts:      manyOrNone(effs),
 		},
 	}
 	sess.Meta.Start, sess.Meta.End = timeRange(entries)
@@ -120,14 +123,31 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 // rather than recorded as a change. A session resumed in another client carries
 // two — observed as contiguous blocks, never interleaved.
 func entrypoints(entries []entry) []string {
+	return distinct(entries, func(e entry) string { return e.entrypoint })
+}
+
+// efforts returns every distinct reasoning effort the session carries, in
+// first-seen order. Only assistant entries have the field, so an absent value is
+// skipped rather than recorded as a change — otherwise every user turn would
+// read as effort being switched off and back on.
+func efforts(entries []entry) []string {
+	return distinct(entries, func(e entry) string { return e.effort })
+}
+
+// distinct collects the non-empty values of one per-entry setting in first-seen
+// order. Entrypoint and effort are the same shape of fact — absent on some entry
+// types, occasionally changed mid-session — and both resolve as "last wins" with
+// the full list kept only when it diverges, so they share the reading.
+func distinct(entries []entry, field func(entry) string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, e := range entries {
-		if e.entrypoint == "" || seen[e.entrypoint] {
+		v := field(e)
+		if v == "" || seen[v] {
 			continue
 		}
-		seen[e.entrypoint] = true
-		out = append(out, e.entrypoint)
+		seen[v] = true
+		out = append(out, v)
 	}
 	return out
 }
@@ -389,6 +409,9 @@ type entry struct {
 	// entrypoint is where the session was run. Meta entries omit it, and a
 	// session resumed elsewhere carries two values in contiguous blocks.
 	entrypoint string
+	// effort is the reasoning effort, carried on assistant entries only. Absent
+	// on sessions predating Claude Code 2.1.212, and it can change mid-session.
+	effort string
 	// denialKind is why a call was refused, on the user entry carrying its
 	// tool_result. Empty on every other entry and on results that ran.
 	denialKind string
@@ -421,6 +444,7 @@ type rawEntry struct {
 	AgentName     string          `json:"agentName"`     // agent-name entries: the name set by --name or /rename
 	Cwd           string          `json:"cwd"`           // working directory the session ran in
 	Entrypoint    string          `json:"entrypoint"`    // where the session was run: cli, claude-desktop, sdk-cli
+	Effort        string          `json:"effort"`        // reasoning effort, on assistant entries: low, high, xhigh, …
 	ToolUseResult json.RawMessage `json:"toolUseResult"` // structured tool-result mirror; carries agentId for spawn children
 	// ToolDenialKind is why a call was refused, on the user entry carrying its
 	// tool_result. Not to be confused with permission-mode entries, which record
@@ -492,6 +516,7 @@ func loadEntries(path string) ([]entry, error) {
 			// each belongs to a different entry type — so concatenating picks it.
 			typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle + re.AgentName,
 			isCompactSummary: re.IsCompactSummary, cwd: re.Cwd, entrypoint: re.Entrypoint,
+			effort:     re.Effort,
 			denialKind: re.ToolDenialKind, trackingPath: re.TrackingPath,
 		}
 		if re.Snapshot != nil {

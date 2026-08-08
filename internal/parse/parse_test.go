@@ -489,6 +489,45 @@ func TestLoadStitching(t *testing.T) {
 	}
 }
 
+// TestLoadEffort pins the setting that separates two sessions on the same model:
+// how hard it was run. Effort moves both cost and quality, and no output named
+// it before, so those two sessions were indistinguishable in every view.
+func TestLoadEffort(t *testing.T) {
+	t.Run("a session that changed effort keeps both values", func(t *testing.T) {
+		// Rare but real: 1 of 136 local sessions carrying the field does this.
+		sess, err := Load(filepath.Join("testdata", "effort-changed.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The resolved value is the last, matching how the entrypoint resolves and
+		// what the session's most recent activity actually ran at.
+		if sess.Meta.Effort != "high" {
+			t.Errorf("Effort = %q, want the last value", sess.Meta.Effort)
+		}
+		want := []string{"xhigh", "high"}
+		if len(sess.Meta.Efforts) != len(want) {
+			t.Fatalf("Efforts = %q, want %q", sess.Meta.Efforts, want)
+		}
+		for i := range want {
+			if sess.Meta.Efforts[i] != want[i] {
+				t.Errorf("Efforts[%d] = %q, want %q", i, sess.Meta.Efforts[i], want[i])
+			}
+		}
+	})
+
+	t.Run("a session predating the field reports none", func(t *testing.T) {
+		// About half of local sessions have no effort at all. Reporting a default
+		// would state a setting the log does not record.
+		sess, err := Load(filepath.Join("testdata", "sample.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sess.Meta.Effort != "" || sess.Meta.Efforts != nil {
+			t.Errorf("Effort = %q / %q, want neither", sess.Meta.Effort, sess.Meta.Efforts)
+		}
+	})
+}
+
 // TestLoadCarriesDelegation pins the structured facts a rendered Agent call used
 // to lose. Args flattens an Agent's input to its human description, so before
 // this the subagent type and the delegated model were unrecoverable from a
