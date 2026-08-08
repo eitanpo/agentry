@@ -37,7 +37,7 @@ var levels = map[string]render.Channels{
 var (
 	verbNames    = []string{"view", "list"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
-	includeNames = []string{"prompts", "tools", "all"}
+	includeNames = []string{"prompts", "tools", "files", "all"}
 	formatNames  = []string{"json", "text"}
 )
 

@@ -268,6 +268,25 @@ func (r *renderer) events(events []model.Event, prefix string, depth int) []stri
 	return out
 }
 
+// delegation is the bracketed suffix naming what an Agent call handed work to —
+// "[Explore@haiku]", the subagent type and the model, either half absent when
+// the call did not name it. Only Agent gets one: it is the sole tool whose args
+// hide its own identity, since that string is the human description, where a
+// Bash line already opens with its program and a Skill line with its skill.
+func delegation(t *model.Tool) string {
+	if t.Name != "Agent" {
+		return ""
+	}
+	label := t.Identity
+	if t.Model != "" {
+		label += "@" + t.Model
+	}
+	if label == "" {
+		return "" // an Agent call that named neither says nothing rather than "[]"
+	}
+	return "[" + label + "]"
+}
+
 func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 	glyph, style := glyphTool, r.tool
 	if t.Subagent != nil {
@@ -278,9 +297,15 @@ func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 		status = r.bad.Render(glyphErr)
 	}
 	dur := fmtToolDuration(t.Start, t.End)
+	// A refused call says why in place of its duration. The error glyph alone
+	// reads as "ran and failed", which sends a reader to fix the wrong thing —
+	// and how long a call took before being denied is not worth the space.
+	if t.Denial != "" {
+		dur = r.bad.Render("denied: " + t.Denial)
+	}
 
 	head := fmt.Sprintf("%s%s %s%s %s %s",
-		prefix, r.dim.Render("╭─"), style.Render(glyph+" "+t.Name),
+		prefix, r.dim.Render("╭─"), style.Render(glyph+" "+t.Name+delegation(t)),
 		r.args.Render("("+truncate(oneLine(t.Args), 60)+")"), status, dur)
 	out := []string{strings.TrimRight(head, " ")}
 

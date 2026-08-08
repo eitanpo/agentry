@@ -53,12 +53,14 @@ func TestSummarizeToolStats(t *testing.T) {
 	}
 	// git ×2 (status + push), exa ×1, jq ×1 (after leading VAR= assignments),
 	// Skill expert ×1, Agent researcher ×2, Edit ×1. Order is first-seen.
+	// Edit carries its target path: a summary saying a session edited something
+	// and never what cannot tell one kind of work from another.
 	assertToolStats(t, s.Tools, []model.ToolStat{
 		{Tool: "Bash", Identity: "git", Count: 2},
 		{Tool: "Bash", Identity: "exa", Count: 1},
 		{Tool: "Skill", Identity: "expert", Count: 1},
 		{Tool: "Agent", Identity: "researcher", Count: 2},
-		{Tool: "Edit", Identity: "", Count: 1},
+		{Tool: "Edit", Identity: "/a/b.go", Count: 1},
 		{Tool: "Bash", Identity: "jq", Count: 1},
 	})
 	// Commands are the distinct full Bash commands, first-seen order, for
@@ -76,6 +78,85 @@ func TestSummarizeToolStats(t *testing.T) {
 		if s.Commands[i] != w {
 			t.Errorf("Commands[%d] = %q, want %q", i, s.Commands[i], w)
 		}
+	}
+}
+
+// TestSummarizeDenials pins the outcome a summary could not report: which calls
+// were refused and by what. A denied call errors like any other, so without the
+// kind it is indistinguishable from one that ran and failed — and the fix for
+// each is different.
+func TestSummarizeDenials(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "outcomes.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two Bash/rm denials collapse into one entry; the user-rejected git call is
+	// a separate kind and stays separate. First-seen order.
+	want := []model.DenialStat{
+		{Kind: "permission-rule", Tool: "Bash", Identity: "rm", Count: 2},
+		{Kind: "user-rejected", Tool: "Bash", Identity: "git", Count: 1},
+	}
+	if len(s.Denials) != len(want) {
+		t.Fatalf("Denials = %+v, want %+v", s.Denials, want)
+	}
+	for i := range want {
+		if s.Denials[i] != want[i] {
+			t.Errorf("Denials[%d] = %+v, want %+v", i, s.Denials[i], want[i])
+		}
+	}
+	// A call that ran is in Tools and in no denial entry — the two are different
+	// questions about the same session, not one tally.
+	assertToolStats(t, s.Tools, []model.ToolStat{
+		{Tool: "Bash", Identity: "rm", Count: 2},
+		{Tool: "Edit", Identity: "/repo/internal/list/list.go", Count: 1},
+		{Tool: "Write", Identity: "/repo/docs/notes.md", Count: 1},
+		{Tool: "Bash", Identity: "git", Count: 1},
+	})
+}
+
+// TestSummarizeFiles pins the session-level record of what changed. The log
+// mixes path forms — relative to the working directory inside it, absolute
+// outside — so a reader grouping by path gets two spellings of one file unless
+// they are resolved first.
+func TestSummarizeFiles(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "outcomes.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// list.go appears twice in the log (a delta, then the snapshot) and once
+	// here; the snapshot's relative paths are resolved against cwd, and the
+	// absolute one is left alone. Order is first-seen across entries — the delta
+	// precedes the snapshot — and within the one snapshot, whose backups are a
+	// map with no order of its own, sorted so a session reads the same every run.
+	want := []string{
+		"/repo/internal/list/list.go",
+		"/elsewhere/shared.md",
+		"/repo/docs/notes.md",
+	}
+	if len(s.Files) != len(want) {
+		t.Fatalf("Files = %q, want %q", s.Files, want)
+	}
+	for i := range want {
+		if s.Files[i] != want[i] {
+			t.Errorf("Files[%d] = %q, want %q", i, s.Files[i], want[i])
+		}
+	}
+}
+
+// TestSummarizeFilesWithoutHistory pins the absence case: a session whose log
+// carries no file-history entries reports no files. Claiming it changed nothing
+// would be a different, unsupported statement — roughly half of local sessions
+// have no such entries at all.
+func TestSummarizeFilesWithoutHistory(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "tools.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Files) != 0 {
+		t.Errorf("Files = %q, want none", s.Files)
+	}
+	if len(s.Denials) != 0 {
+		t.Errorf("Denials = %+v, want none", s.Denials)
 	}
 }
 
@@ -405,6 +486,61 @@ func TestLoadStitching(t *testing.T) {
 	}
 	if tools[4].Subagent != nil {
 		t.Errorf("inline skill tool[4] has %d subagent events, want none", len(tools[4].Subagent))
+	}
+}
+
+// TestLoadCarriesDelegation pins the structured facts a rendered Agent call used
+// to lose. Args flattens an Agent's input to its human description, so before
+// this the subagent type and the delegated model were unrecoverable from a
+// rendered session — and a cost audit asking what a subagent ran on had nowhere
+// to read it.
+func TestLoadCarriesDelegation(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "agent-delegation.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(sess.Turns))
+	}
+	var tools []*model.Tool
+	for _, e := range sess.Turns[0].Events {
+		if e.Kind == model.EventTool {
+			tools = append(tools, e.Tool)
+		}
+	}
+	if len(tools) != 4 {
+		t.Fatalf("tool events = %d, want 4", len(tools))
+	}
+
+	cases := []struct {
+		what             string
+		tool             *model.Tool
+		identity, model_ string
+	}{
+		// The audit case: both facts named, neither derivable from args.
+		{"an Agent naming type and model", tools[0], "Explore", "haiku"},
+		// No model named means the subagent inherited the session's. Defaulting to
+		// Meta.Model here would report a choice the caller never made.
+		{"an Agent naming no model", tools[1], "researcher", ""},
+		// subagent_type is optional in the log (17 of 543 local calls omit it);
+		// agentry reports it absent rather than guessing the harness default.
+		{"an Agent naming no type", tools[2], "", "sonnet"},
+		// Identity is not Agent-only: it is the same label the listing groups by,
+		// which is what stops the two paths naming one call two things.
+		{"a Bash call", tools[3], "git", ""},
+	}
+	for _, c := range cases {
+		if c.tool.Identity != c.identity {
+			t.Errorf("%s: identity = %q, want %q", c.what, c.tool.Identity, c.identity)
+		}
+		if c.tool.Model != c.model_ {
+			t.Errorf("%s: model = %q, want %q", c.what, c.tool.Model, c.model_)
+		}
+	}
+	// Args keeps being the human summary — the new fields are additions to it,
+	// not a redefinition, so anything reading args still sees what it did.
+	if tools[0].Args != "sweep for callers" {
+		t.Errorf("args = %q, want the description", tools[0].Args)
 	}
 }
 

@@ -682,6 +682,161 @@ func TestRenderIncludeTools(t *testing.T) {
 	}
 }
 
+// TestFilterByFile pins --used-file across the two records of what a session
+// touched. Each source alone answers wrongly for a large share of real sessions,
+// so both subtests below would pass against a half-implementation that dropped
+// the other source — which is why they are asserted separately.
+func TestFilterByFile(t *testing.T) {
+	sums := []model.Summary{
+		// A session with a tracked-file record and no matching Edit: the file was
+		// rewritten by a shell command, which no tool argument records.
+		{ID: "shell-rewrite",
+			Files: []string{"/repo/PRODUCT.md", "/repo/Makefile"},
+			Tools: []model.ToolStat{{Tool: "Bash", Identity: "sed", Count: 1}}},
+		// A session with Edit targets and no tracked-file record at all — about
+		// half of local sessions carry no file-history entries.
+		{ID: "no-history",
+			Tools: []model.ToolStat{{Tool: "Edit", Identity: "/repo/internal/list/list.go", Count: 3}}},
+		// A Write target, to confirm the filter is not Edit-only.
+		{ID: "wrote",
+			Tools: []model.ToolStat{{Tool: "Write", Identity: "/repo/docs/notes.md", Count: 1}}},
+		// Reads the file but changes nothing: --used-file is about what the work
+		// landed on, so this must not match.
+		{ID: "read-only",
+			Tools: []model.ToolStat{{Tool: "Read", Identity: "", Count: 5}},
+			Files: []string{"/repo/other.go"}},
+	}
+	cases := []struct {
+		name, file string
+		want       []string
+	}{
+		{"tracked file with no matching tool call", "PRODUCT.md", []string{"shell-rewrite"}},
+		{"edit target in a session with no tracked record", "list/list.go", []string{"no-history"}},
+		{"write target counts too", "notes.md", []string{"wrote"}},
+		{"substring spans directories", "/repo/", []string{"shell-rewrite", "no-history", "wrote", "read-only"}},
+		{"case-insensitive", "product.md", []string{"shell-rewrite"}},
+		{"a file nothing touched", "absent.txt", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ids(FilterByTools(sums, Filters{File: c.file}))
+			if len(got) != len(c.want) {
+				t.Fatalf("--used-file %q = %v, want %v", c.file, got, c.want)
+			}
+			for i := range c.want {
+				if got[i] != c.want[i] {
+					t.Errorf("--used-file %q = %v, want %v", c.file, got, c.want)
+				}
+			}
+		})
+	}
+
+	// A file axis is not the identity axis: --used stays a skill/agent/command
+	// catch-all, so widening it here would change what existing calls return.
+	if got := ids(FilterByTools(sums, Filters{Any: "PRODUCT.md"})); len(got) != 0 {
+		t.Errorf("--used should not match files, got %v", got)
+	}
+}
+
+// TestRenderIncludeEditsAndDenials pins the two dimensions the tools breakdown
+// used to drop: which files a session edited, and which calls never ran.
+func TestRenderIncludeEditsAndDenials(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "s1", Title: "do work",
+			Tools: []model.ToolStat{
+				{Tool: "Edit", Identity: "/repo/internal/list/list.go", Count: 3},
+				{Tool: "Write", Identity: "/repo/docs/notes.md", Count: 1},
+				{Tool: "Bash", Identity: "git", Count: 4},
+			},
+			Denials: []model.DenialStat{
+				{Kind: "permission-rule", Tool: "Bash", Identity: "rm", Count: 2},
+				{Kind: "user-rejected", Tool: "Edit", Identity: "/repo/main.go", Count: 1},
+			}},
+	}
+	var b strings.Builder
+	if err := Render(&b, sums, Options{Width: 120, Color: false, Tools: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	// Edits are labelled by base name: a column of repeated directory prefixes
+	// distinguishes nothing, and --format json keeps the full path.
+	for _, want := range []string{"Edits", "list.go ×3", "notes.md ×1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+	if strings.Contains(out, "/repo/internal") {
+		t.Errorf("the table should shorten paths, not print them whole: %q", out)
+	}
+
+	// Two files sharing a base name keep enough path to tell them apart. Real
+	// sessions hit this immediately — a repo with internal/list/list.go and
+	// internal/cli/list.go printed two entries reading "list.go" with different
+	// counts, which looks like a bug in the tally rather than two files.
+	collide := []model.Summary{{ID: "s3", Title: "collide", Tools: []model.ToolStat{
+		{Tool: "Edit", Identity: "/repo/internal/list/list.go", Count: 2},
+		{Tool: "Edit", Identity: "/repo/internal/cli/list.go", Count: 1},
+	}}}
+	var c strings.Builder
+	if err := Render(&c, collide, Options{Width: 120, Color: false, Tools: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"list/list.go ×2", "cli/list.go ×1"} {
+		if !strings.Contains(c.String(), want) {
+			t.Errorf("colliding base names not disambiguated, missing %q: %q", want, c.String())
+		}
+	}
+	// Denials name what refused the call, so an auto-allow decision has a source.
+	for _, want := range []string{"Denied", "permission-rule: Bash/rm ×2", "user-rejected: Edit/main.go ×1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+	// A session with no denials gets no Denied line at all — an empty one would
+	// read as a report that something was checked and found clean.
+	var clean strings.Builder
+	if err := Render(&clean, []model.Summary{{ID: "s2", Title: "clean",
+		Tools: []model.ToolStat{{Tool: "Bash", Identity: "git", Count: 1}}}},
+		Options{Width: 120, Color: false, Tools: true}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(clean.String(), "Denied") {
+		t.Errorf("no denials should print no Denied line: %q", clean.String())
+	}
+}
+
+// TestRenderIncludeFiles pins the files channel — the session-level record of
+// what changed, which covers a file a shell command rewrote and the per-call
+// Edits line does not.
+func TestRenderIncludeFiles(t *testing.T) {
+	sums := []model.Summary{{ID: "s1", Title: "do work",
+		Files: []string{"/repo/internal/list/list.go", "/repo/PRODUCT.md"}}}
+
+	var off strings.Builder
+	if err := Render(&off, sums, Options{Width: 120, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(off.String(), "PRODUCT.md") {
+		t.Errorf("files should be hidden without the channel: %q", off.String())
+	}
+
+	var on strings.Builder
+	if err := Render(&on, sums, Options{Width: 120, Color: false, Files: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := on.String()
+	for _, want := range []string{"/repo/internal/list/list.go", "/repo/PRODUCT.md"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+	// The channel opens a detail block like the others, closed by a rule.
+	if !strings.Contains(out, "╰─") {
+		t.Errorf("session block not closed by a rule: %q", out)
+	}
+}
+
 func assertIDs(t *testing.T, got []model.Summary, want []string) {
 	t.Helper()
 	if len(got) != len(want) {

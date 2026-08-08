@@ -29,6 +29,7 @@ type Options struct {
 	Color   bool
 	Prompts bool // --include prompts: list each session's prompts under its row
 	Tools   bool // --include tools: break down each session's tool calls under its row
+	Files   bool // --include files: list each file the session modified
 }
 
 // Prompt blocks reuse the renderer's turn chrome: a left rail closed by a rule.
@@ -118,11 +119,14 @@ type Filters struct {
 	Agent   string
 	Command string
 	Any     string
+	// File is the "what did the work land on" axis, matched against both records
+	// of it — the session's tracked files and its Edit/Write targets.
+	File string
 }
 
 // Empty reports whether no constraint is set, so callers can skip filtering.
 func (f Filters) Empty() bool {
-	return f.Tool == "" && f.Skill == "" && f.Agent == "" && f.Command == "" && f.Any == ""
+	return f.Tool == "" && f.Skill == "" && f.Agent == "" && f.Command == "" && f.Any == "" && f.File == ""
 }
 
 // Match reports whether s satisfies every set field.
@@ -145,7 +149,28 @@ func (f Filters) Match(s model.Summary) bool {
 		!hasCommand(s.Commands, f.Any) {
 		return false
 	}
+	if f.File != "" && !hasFile(s, f.File) {
+		return false
+	}
 	return true
+}
+
+// hasFile reports whether the session modified a file matching sub. Edit and
+// Write targets are checked first because they answer nearly every case: about
+// half of sessions carry no tracked-file record, so consulting only that record
+// would silently never match them. The tracked list is the backstop for a change
+// no tool argument names — measured at one added path across the whole
+// development corpus, so it is insurance rather than the primary source.
+func hasFile(s model.Summary, sub string) bool {
+	if hasIdentity(s.Tools, "Edit", sub) || hasIdentity(s.Tools, "Write", sub) {
+		return true
+	}
+	for _, f := range s.Files {
+		if containsFold(f, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // FilterByTools keeps only the summaries matching f, preserving input order. A
@@ -419,7 +444,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	}
 	// A session shows a detail block (rail + closing rule) when any --include
 	// channel is on; the channels share one block.
-	block := opts.Prompts || opts.Tools
+	block := opts.Prompts || opts.Tools || opts.Files
 	var b strings.Builder
 	rows := arrange(sums)
 	for idx, r := range rows {
@@ -463,8 +488,16 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			}
 		}
 		if opts.Tools {
-			for _, line := range toolLines(s.Tools) {
+			for _, line := range toolLines(s.Tools, s.Denials) {
 				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncate(line, promptW)))
+			}
+		}
+		if opts.Files {
+			// Truncated from the left: what distinguishes one modified file from
+			// another is its tail, the same reason the project column truncates
+			// that way.
+			for _, f := range s.Files {
+				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncateLeft(f, promptW)))
 			}
 		}
 		if block {
@@ -478,8 +511,8 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 // toolLines renders a session's tool breakdown as one line per non-empty
 // category: Skills / Agents / Bash labelled by identity, Other by tool name.
 // Entries within a line are ordered by count descending, then name ascending.
-func toolLines(stats []model.ToolStat) []string {
-	var skills, agents, bash, other []model.ToolStat
+func toolLines(stats []model.ToolStat, denials []model.DenialStat) []string {
+	var skills, agents, bash, edits, other []model.ToolStat
 	for _, st := range stats {
 		switch st.Tool {
 		case "Skill":
@@ -488,18 +521,20 @@ func toolLines(stats []model.ToolStat) []string {
 			agents = append(agents, st)
 		case "Bash":
 			bash = append(bash, st)
+		case "Edit", "Write":
+			edits = append(edits, st)
 		default:
 			other = append(other, st)
 		}
 	}
 	var lines []string
-	emit := func(label string, group []model.ToolStat, byTool bool) {
+	emit := func(label string, group []model.ToolStat, label2 func(model.ToolStat) string) {
 		if len(group) == 0 {
 			return
 		}
 		name := func(st model.ToolStat) string {
-			if byTool {
-				return st.Tool
+			if label2 != nil {
+				return label2(st)
 			}
 			if st.Identity == "" {
 				return "?"
@@ -518,11 +553,61 @@ func toolLines(stats []model.ToolStat) []string {
 		}
 		lines = append(lines, fmt.Sprintf("%-7s %s", label, strings.Join(parts, ", ")))
 	}
-	emit("Skills", skills, false)
-	emit("Agents", agents, false)
-	emit("Bash", bash, false)
-	emit("Other", other, true)
+	byTool := func(st model.ToolStat) string { return st.Tool }
+	// Edits are shortened: the table has one line to spend, and a column of
+	// repeated directory prefixes distinguishes nothing. --format json keeps the
+	// full path, so the compression costs a reader nothing they cannot recover —
+	// the same trade Bash makes in showing a program, not its whole command line.
+	// Shortening stops at whatever is unique within this session, so two files
+	// sharing a base name stay two entries the reader can tell apart.
+	editPaths := map[string]bool{}
+	for _, st := range edits {
+		if st.Identity != "" {
+			editPaths[st.Identity] = true
+		}
+	}
+	editLabels := shortestUniqueLabels(editPaths)
+	byPath := func(st model.ToolStat) string {
+		if l := editLabels[st.Identity]; l != "" {
+			return l
+		}
+		return "?"
+	}
+	emit("Skills", skills, nil)
+	emit("Agents", agents, nil)
+	emit("Bash", bash, nil)
+	emit("Edits", edits, byPath)
+	emit("Other", other, byTool)
+	if line := denialLine(denials); line != "" {
+		lines = append(lines, line)
+	}
 	return lines
+}
+
+// denialLine reports the calls that were refused and by what, grouped kind by
+// kind. It is part of the tools block because a denial is an outcome of a call,
+// but it is not a ToolStat: the same call can both run and be refused in one
+// session, and collapsing the two would report neither honestly.
+func denialLine(denials []model.DenialStat) string {
+	if len(denials) == 0 {
+		return ""
+	}
+	sorted := append([]model.DenialStat(nil), denials...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Count != sorted[j].Count {
+			return sorted[i].Count > sorted[j].Count
+		}
+		return sorted[i].Kind < sorted[j].Kind
+	})
+	parts := make([]string, len(sorted))
+	for i, d := range sorted {
+		what := d.Tool
+		if d.Identity != "" {
+			what += "/" + filepath.Base(d.Identity)
+		}
+		parts[i] = fmt.Sprintf("%s: %s ×%d", d.Kind, what, d.Count)
+	}
+	return fmt.Sprintf("%-7s %s", "Denied", strings.Join(parts, ", "))
 }
 
 // varyingTags maps session id to its entrypoint tag, but only when the listing
@@ -566,7 +651,17 @@ func projectLabels(sums []model.Summary) map[string]string {
 	if len(paths) < 2 {
 		return nil
 	}
-	labels := map[string]string{}
+	return shortestUniqueLabels(paths)
+}
+
+// shortestUniqueLabels maps each path to the shortest suffix of its components
+// that no other path in the set shares: "list.go" where that names one file,
+// "cli/list.go" and "list/list.go" where two files would otherwise print
+// identically. Shared by the project column and the Edits breakdown — two places
+// shortening paths for one table have to shorten them the same way, and a bare
+// base name is a label that silently merges distinct things on screen.
+func shortestUniqueLabels(paths map[string]bool) map[string]string {
+	labels := make(map[string]string, len(paths))
 	for p := range paths {
 		parts := strings.Split(strings.Trim(p, string(filepath.Separator)), string(filepath.Separator))
 		// Grow the suffix until no other path yields the same one. A path that is

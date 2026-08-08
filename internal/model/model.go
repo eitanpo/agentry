@@ -56,6 +56,16 @@ type Summary struct {
 	// session carries more than one. The text table compresses that to a "+"
 	// suffix, so this is where the divergence survives intact.
 	Entrypoints []string `json:"entrypoints,omitempty"`
+	// Files is every file the session modified, as an absolute path in first-seen
+	// order. Read from Claude Code's own file-history entries rather than from
+	// tool arguments, so it covers a file changed by a shell command as well as
+	// one edited by a tool. Empty for a session whose log carries no such entries,
+	// which is not a claim that nothing changed.
+	Files []string `json:"files,omitempty"`
+	// Denials groups the calls that were refused rather than run. Separate from
+	// Tools because a denial is an outcome, not another call: the same (tool,
+	// identity) pair can appear in both.
+	Denials []DenialStat `json:"denials,omitempty"`
 	// Born is the session file's creation time, used to order a fork family
 	// (earliest = original). Filesystem metadata, not session content, so it is
 	// not serialized. Zero when unreadable; off macOS it falls back to mtime.
@@ -69,6 +79,18 @@ type Summary struct {
 // (Edit, Read, WebFetch, …). Top-level only — calls made inside subagents are
 // not counted, matching Turn.ToolCount.
 type ToolStat struct {
+	Tool     string `json:"tool"`
+	Identity string `json:"identity,omitempty"`
+	Count    int    `json:"count"`
+}
+
+// DenialStat counts the top-level calls refused for one reason, grouped the way
+// an auto-allow decision is made: by what refused them, then by which call. Kind
+// is the log's own toolDenialKind — "permission-rule", "automode-blocked",
+// "automode-unavailable", or "user-rejected" — and never a generic failure, so a
+// call that ran and errored is absent here.
+type DenialStat struct {
+	Kind     string `json:"kind"`
 	Tool     string `json:"tool"`
 	Identity string `json:"identity,omitempty"`
 	Count    int    `json:"count"`
@@ -135,8 +157,22 @@ type Event struct {
 
 // Tool is a single tool call and its result.
 type Tool struct {
-	Name     string    `json:"name"`
-	Args     string    `json:"args,omitempty"` // short single-line summary of the call's input
+	Name string `json:"name"`
+	Args string `json:"args,omitempty"` // short single-line summary of the call's input
+	// Identity is the call's grouping label, the same value ToolStat.Identity
+	// carries — so a rendered call and a listing's tally name it identically
+	// instead of the render path knowing less. Empty for tools whose own name is
+	// their identity.
+	Identity string `json:"identity,omitempty"`
+	// Model is the model this call delegated to, taken from the input rather than
+	// from Args, which flattens it away. Only Agent names one, and only sometimes:
+	// empty means the subagent ran on the session's own model, which is why it is
+	// not defaulted to Meta.Model — "inherited" and "chosen" are different facts.
+	Model string `json:"model,omitempty"`
+	// Denial is why this call was refused rather than run, the log's own
+	// toolDenialKind. Empty for every call that ran, including one that ran and
+	// failed — IsError is true either way, so this is what tells the two apart.
+	Denial   string    `json:"denial,omitempty"`
 	Result   string    `json:"result,omitempty"`
 	IsError  bool      `json:"isError,omitempty"`
 	Start    time.Time `json:"start"`

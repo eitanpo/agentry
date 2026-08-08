@@ -516,15 +516,100 @@ func TestChannelGating(t *testing.T) {
 
 	t.Run("subagents off falls through to result body", func(t *testing.T) {
 		out := renderChannels(t, Channels{Tools: true, ToolResults: true})
-		has(t, out, "Agent", true)              // head line present
-		has(t, out, "NESTEDMARKER", false)      // not expanded
-		has(t, out, "AGENTRESULTMARKER", true)  // its result body shown instead
+		has(t, out, "Agent", true)             // head line present
+		has(t, out, "NESTEDMARKER", false)     // not expanded
+		has(t, out, "AGENTRESULTMARKER", true) // its result body shown instead
 	})
 
 	t.Run("tools on, results off: head without body", func(t *testing.T) {
 		out := renderChannels(t, Channels{Tools: true})
 		has(t, out, "Read", true)
 		has(t, out, "TOOLBODYMARKER", false)
+	})
+}
+
+// TestDenialOnToolLine pins that a refused call says so. Both a denied call and
+// a failed one carry isError, so the error glyph alone sends a reader to fix the
+// tool when the thing to fix is a permission rule.
+func TestDenialOnToolLine(t *testing.T) {
+	line := func(t *testing.T, tool *model.Tool) string {
+		t.Helper()
+		sess := &model.Session{Turns: []model.Turn{{
+			Prompt: "go",
+			Events: []model.Event{{Kind: model.EventTool, Tool: tool}},
+		}}}
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 120, Color: false, Channels: Channels{Tools: true}}); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	t.Run("a denied call names what refused it", func(t *testing.T) {
+		out := line(t, &model.Tool{Name: "Bash", Args: "rm -rf /tmp/x", IsError: true, Denial: "permission-rule"})
+		if !strings.Contains(out, "denied: permission-rule") {
+			t.Errorf("want the denial kind on the line, got %q", out)
+		}
+	})
+
+	t.Run("a call that ran and failed says nothing about denial", func(t *testing.T) {
+		out := line(t, &model.Tool{Name: "Bash", Args: "false", IsError: true})
+		if strings.Contains(out, "denied") {
+			t.Errorf("an ordinary error is not a denial: %q", out)
+		}
+	})
+}
+
+// TestDelegationMarker pins what an Agent line says about the work it handed
+// off. Its args are the human description, so without this the line names the
+// task and never which agent ran it or on what model.
+func TestDelegationMarker(t *testing.T) {
+	line := func(t *testing.T, tool *model.Tool) string {
+		t.Helper()
+		sess := &model.Session{Turns: []model.Turn{{
+			Prompt: "go",
+			Events: []model.Event{{Kind: model.EventTool, Tool: tool}},
+		}}}
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 120, Color: false, Channels: Channels{Tools: true}}); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	t.Run("type and model", func(t *testing.T) {
+		out := line(t, &model.Tool{Name: "Agent", Identity: "Explore", Model: "haiku", Args: "sweep"})
+		if !strings.Contains(out, "Agent[Explore@haiku]") {
+			t.Errorf("want Agent[Explore@haiku] on the line, got %q", out)
+		}
+	})
+
+	t.Run("no model named shows the type alone", func(t *testing.T) {
+		// The subagent inherited the session's model. Printing that model here
+		// would report a choice the caller never made.
+		out := line(t, &model.Tool{Name: "Agent", Identity: "researcher", Args: "research"})
+		if !strings.Contains(out, "Agent[researcher]") {
+			t.Errorf("want Agent[researcher], got %q", out)
+		}
+		if strings.Contains(out, "@") {
+			t.Errorf("no model was named, so nothing should follow @: %q", out)
+		}
+	})
+
+	t.Run("neither named leaves no empty brackets", func(t *testing.T) {
+		out := line(t, &model.Tool{Name: "Agent", Args: "unnamed"})
+		if strings.Contains(out, "[") {
+			t.Errorf("an Agent naming neither should print no brackets: %q", out)
+		}
+	})
+
+	t.Run("other tools are not bracketed", func(t *testing.T) {
+		// Bash carries an identity too, but its args already open with the
+		// program — bracketing it would repeat what the line already shows.
+		out := line(t, &model.Tool{Name: "Bash", Identity: "git", Args: "git status"})
+		if strings.Contains(out, "Bash[") {
+			t.Errorf("only Agent is bracketed, got %q", out)
+		}
 	})
 }
 

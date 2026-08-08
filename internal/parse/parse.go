@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -85,6 +86,7 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 	start, end := timeRange(entries)
 	turns := splitTurns(entries)
 	eps := entrypoints(entries)
+	cwd := sessionCwd(entries)
 	var prompts []string
 	for _, tn := range turns {
 		if !isClearCmd(tn.prompt) {
@@ -101,7 +103,9 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		Tools:    toolStats(entries),
 		Commands: bashCommands(entries),
 		RootUUID: rootUUID(entries),
-		Cwd:      sessionCwd(entries),
+		Cwd:      cwd,
+		Files:    sessionFiles(entries, cwd),
+		Denials:  denialStats(entries),
 		Born:     fileBorn(jsonlPath),
 		// The last value is the session's, matching the last-activity time the
 		// listing orders by. The full list is kept only when it diverges, so a
@@ -240,8 +244,13 @@ func toolStats(entries []entry) []model.ToolStat {
 }
 
 // toolIdentity is the grouping label for a tool call: the invoked program for
-// Bash, the skill for Skill, the subagent type for Agent. Empty for every other
-// tool, whose own name is its identity. Field names verified against live logs.
+// Bash, the skill for Skill, the subagent type for Agent, the target file for
+// Edit and Write. Empty for every other tool, whose own name is its identity.
+// Field names verified against live logs.
+//
+// Read also carries file_path but is deliberately left without an identity: the
+// question these labels answer is what a session changed, and a Read tally by
+// path would be the largest group in most sessions while changing nothing.
 func toolIdentity(name string, input map[string]any) string {
 	str := func(k string) string { s, _ := input[k].(string); return s }
 	switch name {
@@ -251,9 +260,20 @@ func toolIdentity(name string, input map[string]any) string {
 		return str("skill")
 	case "Agent":
 		return str("subagent_type")
+	case "Edit", "Write":
+		return str("file_path")
 	default:
 		return ""
 	}
+}
+
+// toolModel returns the model a call delegated to, or "" when it named none.
+// Read from any tool's input rather than gated on the name: `Agent` is the only
+// tool that carries the field today (332 of 543 local Agent calls, and no other
+// tool at all), and a later tool carrying it would mean the same thing.
+func toolModel(input map[string]any) string {
+	s, _ := input["model"].(string)
+	return s
 }
 
 // bashProgram reduces a shell command to the program a histogram groups by: the
@@ -369,6 +389,14 @@ type entry struct {
 	// entrypoint is where the session was run. Meta entries omit it, and a
 	// session resumed elsewhere carries two values in contiguous blocks.
 	entrypoint string
+	// denialKind is why a call was refused, on the user entry carrying its
+	// tool_result. Empty on every other entry and on results that ran.
+	denialKind string
+	// trackingPath (file-history-delta) and trackedPaths (file-history-snapshot)
+	// are Claude Code's own record of which files changed, in the log's own mix of
+	// repo-relative and absolute forms — sessionFiles resolves them.
+	trackingPath string
+	trackedPaths []string
 }
 
 type block struct {
@@ -394,9 +422,25 @@ type rawEntry struct {
 	Cwd           string          `json:"cwd"`           // working directory the session ran in
 	Entrypoint    string          `json:"entrypoint"`    // where the session was run: cli, claude-desktop, sdk-cli
 	ToolUseResult json.RawMessage `json:"toolUseResult"` // structured tool-result mirror; carries agentId for spawn children
+	// ToolDenialKind is why a call was refused, on the user entry carrying its
+	// tool_result. Not to be confused with permission-mode entries, which record
+	// the mode in effect and never a per-call decision.
+	ToolDenialKind string `json:"toolDenialKind"`
+	// TrackingPath is the file a file-history-delta entry records a change to,
+	// and Snapshot the cumulative tracked set on a file-history-snapshot entry.
+	// Both are Claude Code's own record of what changed, independent of tools.
+	TrackingPath string       `json:"trackingPath"`
+	Snapshot     *rawSnapshot `json:"snapshot"`
 	// IsCompactSummary flags the compaction-boundary user entry. Absent in logs
 	// written before Claude Code added it, hence the text fallback in userPrompt.
 	IsCompactSummary bool `json:"isCompactSummary"`
+}
+
+// rawSnapshot is the file-history-snapshot payload. Only the keys of
+// trackedFileBackups matter — they are the paths — so the values are left
+// unparsed rather than modelling a backup record agentry never reads.
+type rawSnapshot struct {
+	TrackedFileBackups map[string]json.RawMessage `json:"trackedFileBackups"`
 }
 
 type rawMessage struct {
@@ -448,6 +492,16 @@ func loadEntries(path string) ([]entry, error) {
 			// each belongs to a different entry type — so concatenating picks it.
 			typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle + re.AgentName,
 			isCompactSummary: re.IsCompactSummary, cwd: re.Cwd, entrypoint: re.Entrypoint,
+			denialKind: re.ToolDenialKind, trackingPath: re.TrackingPath,
+		}
+		if re.Snapshot != nil {
+			for p := range re.Snapshot.TrackedFileBackups {
+				e.trackedPaths = append(e.trackedPaths, p)
+			}
+			// Map iteration is unordered, and the touched-file list is documented as
+			// first-seen order, so a snapshot's own paths are sorted to make one
+			// session's output identical on every run.
+			sort.Strings(e.trackedPaths)
 		}
 		if ts, err := time.Parse(time.RFC3339, re.Timestamp); err == nil {
 			e.t = ts
@@ -573,8 +627,12 @@ type toolResult struct {
 	end     time.Time
 	isError bool
 	text    string
+	denial  string
 }
 
+// toolResultMap indexes each call's outcome by tool_use id. The denial kind is
+// read from the entry rather than the block: the log puts toolDenialKind at the
+// top level of the user entry carrying the tool_result, not inside the result.
 func toolResultMap(entries []entry) map[string]toolResult {
 	m := map[string]toolResult{}
 	for _, e := range entries {
@@ -583,11 +641,87 @@ func toolResultMap(entries []entry) map[string]toolResult {
 		}
 		for _, b := range e.blocks {
 			if b.typ == "tool_result" {
-				m[b.toolUseID] = toolResult{end: e.t, isError: b.isError, text: b.resultText}
+				m[b.toolUseID] = toolResult{end: e.t, isError: b.isError, text: b.resultText, denial: e.denialKind}
 			}
 		}
 	}
 	return m
+}
+
+// denialStats groups the session's refused top-level calls by what refused them
+// and which call it was — the shape an auto-allow decision is made in. A denial
+// is matched back to its tool_use by id, so a result with no matching call (a
+// truncated log) contributes nothing rather than an entry named "".
+func denialStats(entries []entry) []model.DenialStat {
+	type call struct{ tool, identity string }
+	calls := map[string]call{}
+	for _, e := range entries {
+		if e.typ != "assistant" {
+			continue
+		}
+		for _, b := range e.blocks {
+			if b.typ == "tool_use" {
+				calls[b.id] = call{b.name, toolIdentity(b.name, b.input)}
+			}
+		}
+	}
+	type key struct{ kind, tool, identity string }
+	counts := map[key]int{}
+	var order []key
+	for _, e := range entries {
+		if e.typ != "user" || e.denialKind == "" {
+			continue
+		}
+		for _, b := range e.blocks {
+			if b.typ != "tool_result" {
+				continue
+			}
+			c, ok := calls[b.toolUseID]
+			if !ok {
+				continue
+			}
+			k := key{e.denialKind, c.tool, c.identity}
+			if counts[k] == 0 {
+				order = append(order, k)
+			}
+			counts[k]++
+		}
+	}
+	out := make([]model.DenialStat, 0, len(order))
+	for _, k := range order {
+		out = append(out, model.DenialStat{Kind: k.kind, Tool: k.tool, Identity: k.identity, Count: counts[k]})
+	}
+	return out
+}
+
+// sessionFiles is every file the session modified, absolute and deduplicated in
+// first-seen order. The log mixes forms — a path inside the session's working
+// directory is recorded relative to it, one outside is absolute — so a relative
+// path is resolved against cwd. With no cwd (a log predating the field) the
+// relative paths are kept as they are: reporting them beats dropping a real
+// change, and an unrooted path still names the file.
+func sessionFiles(entries []entry, cwd string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		if !filepath.IsAbs(p) && cwd != "" {
+			p = filepath.Join(cwd, p)
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, e := range entries {
+		add(e.trackingPath)
+		for _, p := range e.trackedPaths {
+			add(p)
+		}
+	}
+	return out
 }
 
 // sidecarIDs maps the tool_use ids of spawning calls (the named tool) to their
@@ -820,12 +954,17 @@ func buildEvents(entries []entry, subs map[string]*subagent, seen map[string]boo
 			case "tool_use":
 				res := results[b.id]
 				tool := &model.Tool{
-					Name:    b.name,
-					Args:    formatToolArgs(b.name, b.input),
-					Result:  res.text,
-					IsError: res.isError,
-					Start:   e.t,
-					End:     res.end,
+					Name: b.name,
+					Args: formatToolArgs(b.name, b.input),
+					// Same function the listing groups by, so the two paths cannot
+					// drift into naming one call two things.
+					Identity: toolIdentity(b.name, b.input),
+					Model:    toolModel(b.input),
+					Denial:   res.denial,
+					Result:   res.text,
+					IsError:  res.isError,
+					Start:    e.t,
+					End:      res.end,
 				}
 				attachSubagent(tool, b, agents, skills, subs, seen)
 				out = append(out, model.Event{Kind: model.EventTool, Tool: tool})

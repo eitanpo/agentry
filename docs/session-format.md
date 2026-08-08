@@ -191,6 +191,28 @@ against the turns around them by their own content.
 - `attachment`, `file-history-snapshot`, `file-history-delta` — attachments, whole-file
   snapshots, and per-file deltas (`trackingPath`, `snapshotMessageId`, nested `backup`).
   `file-history-delta` is new since 2.1.211.
+
+  Together these are Claude Code's own record of **which files a session
+  modified**, independent of any tool's arguments — so they catch a file rewritten
+  by a shell command, which reading `Edit`/`Write` inputs does not. A snapshot
+  keys `snapshot.trackedFileBackups` by path and is cumulative, re-listing the
+  whole tracked set (up to 59 paths observed) on each entry; a delta names one
+  path. **Paths mix forms**: one inside the session's working directory is
+  recorded relative to it, one outside is absolute — 13965 relative against 12258
+  absolute across 118 sessions on 2026-08-08 — so anything grouping by path must
+  resolve the relative ones against `cwd` first or it will hold two spellings of
+  one file. The backup map has no inherent order, so a stable reading sorts within
+  each snapshot. Present in only about 118 of 260 local sessions: absence is not
+  evidence that nothing changed.
+
+  **A tracked path is not always the path the tool wrote.** Resolving the relative
+  form against the session's `cwd` puts a worktree file under the main checkout —
+  a session editing `<repo>/.claude/worktrees/w/AGENTS.md` had it tracked as
+  `AGENTS.md`, which resolves to `<repo>/AGENTS.md`. So the two records can name
+  one edit twice, at two paths. Measured 2026-08-08: across every local session,
+  exactly one tracked path had no matching `Edit`/`Write` target, and it was this
+  case — meaning the tracked record adds almost nothing over reading tool
+  arguments, and what it does add may be a path that never existed.
 - `system` — carries `subtype`; the eight observed values are listed under Common
   top-level fields above.
 - `fork-context-ref` — appears only inside subagent sidecars; see Subagent stitching.
@@ -234,8 +256,31 @@ array of typed blocks:
 - `tool_use` — `.id`, `.name`, `.input` (object). `.input` shape varies by tool;
   the fields used for a call's identity (`list --include tools`) are `.command`
   (Bash), `.skill` (Skill), and `.subagent_type` (Agent).
+
+  An `Agent` call's `.input` carries `.description` and `.prompt` always, and
+  `.subagent_type`, `.model`, `.run_in_background` optionally — measured over 543
+  local calls: `.subagent_type` on 526, `.model` on 332, `.run_in_background` on
+  110. **Both optional identity fields are genuinely optional, and their absence
+  means something.** No `.model` means the subagent ran on the session's own
+  model, so substituting the session model would report a choice the caller never
+  made; no `.subagent_type` means the harness default (`general-purpose`), which
+  agentry reports as absent rather than filling in, since the log does not say it.
+  `.model` values are the short aliases the tool accepts (`sonnet` 285, `opus` 22,
+  `haiku` 15, `fable` 10), never a full model id like the session-level
+  `message.model`. **`.model` appears on `Agent` and no other tool** — checked
+  across every `tool_use` block in `~/.claude/projects` on 2026-08-08.
 - `tool_result` (inside `user` entries) — `.tool_use_id`, `.is_error`, `.content`
   (a string, or an array of `{type:"text", text}`)
+
+  **A refused call is reported as an ordinary error.** `.is_error` is true whether
+  the tool ran and failed or was never allowed to run; the distinguishing field is
+  `toolDenialKind`, at the **top level of the `user` entry**, not inside the
+  result block. Values measured 2026-08-08: `automode-blocked` 42,
+  `permission-rule` 34, `automode-unavailable` 31, `user-rejected` 9. Of those,
+  20/29/26/2 respectively are in main session files and the rest in subagent
+  sidecars, so anything counting top-level calls only will legitimately see about
+  two thirds of the total. `permission-mode` entries are **not** this signal —
+  they record the mode in effect, never a per-call decision.
 - `image` (94 occurrences), `document` (3) — pasted or attached media. Inline images are a
   stated non-goal, so a renderer skips these rather than failing on them.
 - `fallback` (1) — not content at all but a model swap mid-turn, shaped

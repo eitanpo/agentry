@@ -45,11 +45,12 @@ func addListFlags(cmd *cobra.Command) {
 	cmd.Flags().Int("limit", 10, "cap to N most-recent sessions (0 = no cap)")
 	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
 	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
-	cmd.Flags().String("include", "", "add detail channels (comma-separated): prompts, tools, all")
+	cmd.Flags().String("include", "", "add detail channels (comma-separated): prompts, tools, files, all")
 	cmd.Flags().String("used-tool", "", "only sessions that used this tool, by name (Bash, Skill, Agent, WebFetch, …)")
 	cmd.Flags().String("used-skill", "", "only sessions that invoked this skill")
 	cmd.Flags().String("used-agent", "", "only sessions that spawned this subagent type")
 	cmd.Flags().String("used-command", "", "only sessions that ran a Bash command matching this text")
+	cmd.Flags().String("used-file", "", "only sessions that modified a file matching this path")
 	cmd.Flags().String("used", "", "only sessions that used this as a skill, agent, or command")
 	cmd.Flags().Bool("all-projects", false, "list every project's sessions, not just this directory's")
 	cmd.Flags().String("project", "", "list PATH's sessions instead of this directory's, including anything nested under it")
@@ -91,7 +92,7 @@ func sessionPaths(cmd *cobra.Command) ([]string, error) {
 
 // usedFlags are the --used* filter flags; any of them, like a time filter,
 // lifts the default --limit so a filtered listing is not silently capped.
-var usedFlags = []string{"used-tool", "used-skill", "used-agent", "used-command", "used"}
+var usedFlags = []string{"used-tool", "used-skill", "used-agent", "used-command", "used-file", "used"}
 
 func runList(cmd *cobra.Command, noColor *bool) error {
 	limit, _ := cmd.Flags().GetInt("limit")
@@ -99,7 +100,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	until, _ := cmd.Flags().GetString("until")
 	include, _ := cmd.Flags().GetString("include")
 
-	var showPrompts, showTools bool
+	var showPrompts, showTools, showFiles bool
 	for _, tok := range strings.Split(include, ",") {
 		switch tok = strings.TrimSpace(tok); tok {
 		case "": // empty entries (e.g. unset flag) contribute nothing
@@ -107,13 +108,15 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 			showPrompts = true
 		case "tools":
 			showTools = true
+		case "files":
+			showFiles = true
 		case "all":
-			showPrompts, showTools = true, true
+			showPrompts, showTools, showFiles = true, true, true
 		default:
 			if g := nearest(tok, includeNames); g != "" {
 				return usageErr("--include: unknown channel %q — did you mean %q?", tok, g)
 			}
-			return usageErr("--include: unknown channel %q (want: prompts, tools, all)", tok)
+			return usageErr("--include: unknown channel %q (want: %s)", tok, strings.Join(includeNames, ", "))
 		}
 	}
 
@@ -161,6 +164,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		Agent:   get("used-agent"),
 		Command: get("used-command"),
 		Any:     get("used"),
+		File:    get("used-file"),
 	}
 
 	paths, err := sessionPaths(cmd)
@@ -214,7 +218,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	}
 	color, width := terminal(*noColor)
 	if err := list.Render(os.Stdout, selected, list.Options{
-		Width: width, Color: color, Prompts: showPrompts, Tools: showTools,
+		Width: width, Color: color, Prompts: showPrompts, Tools: showTools, Files: showFiles,
 	}); err != nil {
 		return &exitError{code: 1, err: err}
 	}
