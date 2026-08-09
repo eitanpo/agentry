@@ -123,6 +123,8 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		Effort:      lastOf(effs),
 		Efforts:     manyOrNone(effs),
 		Usage:       sessionUsage(jsonlPath, entries),
+		PRs:         sessionPRs(entries),
+		Artifacts:   sessionArtifacts(entries),
 	}, nil
 }
 
@@ -488,6 +490,11 @@ type entry struct {
 	// repo-relative and absolute forms — sessionFiles resolves them.
 	trackingPath string
 	trackedPaths []string
+	// pr and frame carry the payloads of the two entries recording what a session
+	// produced. Each is filled only on its own entry type, so the frame's title
+	// cannot be mistaken for the session title the three title entries carry.
+	pr    model.PR
+	frame model.Artifact
 }
 
 type block struct {
@@ -523,6 +530,15 @@ type rawEntry struct {
 	// Both are Claude Code's own record of what changed, independent of tools.
 	TrackingPath string       `json:"trackingPath"`
 	Snapshot     *rawSnapshot `json:"snapshot"`
+	// pr-link and frame-link payloads: what the session produced. Title is
+	// frame-link's own field and unrelated to aiTitle/customTitle/agentName, which
+	// is why it is not folded into the title trio above.
+	PRNumber     int    `json:"prNumber"`
+	PRURL        string `json:"prUrl"`
+	PRRepository string `json:"prRepository"`
+	FrameURL     string `json:"frameUrl"`
+	FramePath    string `json:"path"`
+	FrameTitle   string `json:"title"`
 	// IsCompactSummary flags the compaction-boundary user entry. Absent in logs
 	// written before Claude Code added it, hence the text fallback in userPrompt.
 	IsCompactSummary bool `json:"isCompactSummary"`
@@ -586,6 +602,12 @@ func loadEntries(path string) ([]entry, error) {
 			isCompactSummary: re.IsCompactSummary, cwd: re.Cwd, entrypoint: re.Entrypoint,
 			effort:     re.Effort,
 			denialKind: re.ToolDenialKind, trackingPath: re.TrackingPath,
+		}
+		switch re.Type {
+		case "pr-link":
+			e.pr = model.PR{Repository: re.PRRepository, Number: re.PRNumber, URL: re.PRURL}
+		case "frame-link":
+			e.frame = model.Artifact{Title: re.FrameTitle, URL: re.FrameURL, Path: re.FramePath}
 		}
 		if re.Snapshot != nil {
 			for p := range re.Snapshot.TrackedFileBackups {
@@ -828,6 +850,84 @@ func sessionFiles(entries []entry, cwd string) []string {
 		}
 	}
 	return out
+}
+
+// sessionPRs and sessionArtifacts are what the session produced beyond its own
+// transcript, each read from the entry type Claude Code writes for it.
+func sessionPRs(entries []entry) []model.PR {
+	return dedupeOutputs(entries, "pr-link",
+		func(e entry) model.PR { return e.pr },
+		model.PR.Key, latestPR)
+}
+
+func sessionArtifacts(entries []entry) []model.Artifact {
+	return dedupeOutputs(entries, "frame-link",
+		func(e entry) model.Artifact { return e.frame },
+		model.Artifact.Key, latestArtifact)
+}
+
+// dedupeOutputs collapses one kind of re-recorded session event into the distinct
+// things it names, in first-seen order. Claude Code re-emits both pr-link and
+// frame-link on later turns of the same session, and heavily — 963 pr-link
+// entries across 250 local sessions name 67 pull requests — so the entries are a
+// stream of restatements, not a list. A record naming nothing (no key) is
+// dropped: it identifies no thing a reader could act on.
+//
+// One function rather than two loops because the rule is one rule. A copy per
+// entry type is where a later kind of output quietly stops deduplicating.
+func dedupeOutputs[T any](entries []entry, typ string, get func(entry) T, key func(T) string, merge func(old, cur T) T) []T {
+	var out []T
+	at := map[string]int{}
+	for _, e := range entries {
+		if e.typ != typ {
+			continue
+		}
+		v := get(e)
+		k := key(v)
+		if k == "" {
+			continue
+		}
+		if i, ok := at[k]; ok {
+			out[i] = merge(out[i], v)
+			continue
+		}
+		at[k] = len(out)
+		out = append(out, v)
+	}
+	return out
+}
+
+// latestPR and latestArtifact fold a re-record over the entry already held: the
+// newer values win, except where the newer entry says nothing. An omitted field
+// is an omission and not a deletion — the log gives no way to tell those apart,
+// and discarding a value agentry already read is the worse guess. It is not
+// hypothetical for an artifact: a third of local frame-link entries carry no
+// title, so a republish from a moved file would otherwise lose the name the
+// artifact had.
+func latestPR(old, cur model.PR) model.PR {
+	if cur.Repository == "" {
+		cur.Repository = old.Repository
+	}
+	if cur.Number == 0 {
+		cur.Number = old.Number
+	}
+	if cur.URL == "" {
+		cur.URL = old.URL
+	}
+	return cur
+}
+
+func latestArtifact(old, cur model.Artifact) model.Artifact {
+	if cur.Title == "" {
+		cur.Title = old.Title
+	}
+	if cur.URL == "" {
+		cur.URL = old.URL
+	}
+	if cur.Path == "" {
+		cur.Path = old.Path
+	}
+	return cur
 }
 
 // sidecarIDs maps the tool_use ids of spawning calls (the named tool) to their

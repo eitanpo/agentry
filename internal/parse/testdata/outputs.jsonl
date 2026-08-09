@@ -1,0 +1,10 @@
+{"type":"user","timestamp":"2026-05-27T10:00:00Z","uuid":"u1","cwd":"/repo","message":{"role":"user","content":"open the PRs"}}
+{"type":"assistant","timestamp":"2026-05-27T10:00:05Z","uuid":"a1","cwd":"/repo","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"done"}]}}
+{"type":"pr-link","sessionId":"outputs","prNumber":14,"prUrl":"https://github.com/eitanpo/central/pull/14","prRepository":"eitanpo/central","timestamp":"2026-05-27T10:00:10Z"}
+{"type":"pr-link","sessionId":"outputs","prNumber":14,"prUrl":"https://github.com/eitanpo/central/pull/14","prRepository":"eitanpo/central","timestamp":"2026-05-27T10:01:10Z"}
+{"type":"frame-link","sessionId":"outputs","path":"/tmp/scratch/cost.html","frameUrl":"https://claude.ai/code/artifact/aaa","title":"Cost report","timestamp":"2026-05-27T10:02:00Z"}
+{"type":"pr-link","sessionId":"outputs","prNumber":27,"prUrl":"https://github.com/eitanpo/central/pull/27","prRepository":"eitanpo/central","timestamp":"2026-05-27T10:03:00Z"}
+{"type":"pr-link","sessionId":"outputs","prNumber":3,"prUrl":"https://github.com/wix-private/devex-costs/pull/3","prRepository":"wix-private/devex-costs","timestamp":"2026-05-27T10:04:00Z"}
+{"type":"frame-link","sessionId":"outputs","path":"/repo/reports/cost.html","frameUrl":"https://claude.ai/code/artifact/aaa","timestamp":"2026-05-27T10:05:00Z"}
+{"type":"frame-link","sessionId":"outputs","path":"/tmp/scratch/notes.html","frameUrl":"https://claude.ai/code/artifact/bbb","title":"Notes","timestamp":"2026-05-27T10:06:00Z"}
+{"type":"pr-link","sessionId":"outputs","prNumber":14,"prUrl":"https://github.com/eitanpo/central/pull/14","prRepository":"eitanpo/central","timestamp":"2026-05-27T10:07:00Z"}

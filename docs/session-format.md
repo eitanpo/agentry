@@ -180,7 +180,27 @@ against the turns around them by their own content.
 
 - `pr-link` — a pull request it opened: `prNumber`, `prUrl`, `prRepository`.
 - `frame-link` — an artifact it published: local `path`, the `frameUrl` on claude.ai, and a
-  `title`.
+  `title`. `title` is optional — 21 of 66 entries omit it; the other three fields were
+  present on every entry observed.
+
+  **Both are re-recorded, not written once.** Claude Code re-emits the entry on later
+  turns of the same session, so the entry count is not the thing count: 963 `pr-link`
+  entries across 42 sessions named 67 session-and-pull-request pairs (56 distinct pull
+  requests, a few of them opened from two sessions), and 66 `frame-link` entries across 6
+  sessions named 7 pairs (5 distinct artifacts) — verified 2026-08-09 over 250 main logs.
+  Reading them without deduplication reports one pull request dozens of times.
+
+  **Dedupe on the URL, not the local path.** Repeated `frame-link` entries for one
+  artifact keep a constant `frameUrl` while `path` changes, observed where a page was
+  republished from a file that had moved (scratchpad → repository). Keying on `path`
+  splits one artifact in two; keying on `frameUrl` does not. Repeated entries can also
+  disagree on `title` — one session carries entries with a title and, from an earlier
+  session publishing the same `frameUrl`, entries without.
+
+  **Neither type appears in a subagent sidecar.** Zero occurrences across 645 sidecars,
+  and every entry's `sessionId` equals its own file's stem. These are recorded against the
+  session as a whole, so reading only the main log loses nothing — unlike a token tally,
+  which must open the sidecars.
 - `relocated` — its working directory moved, to `relocatedCwd`. Observed only for a move
   into a worktree.
 - `worktree-state` — it entered a git worktree. Nested `worktreeSession` carries

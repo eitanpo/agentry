@@ -790,6 +790,53 @@ func TestSummarizeUsageIncludesSubagents(t *testing.T) {
 	}
 }
 
+// TestSummarizeOutputs pins how a session's outputs are read. Claude Code
+// re-records a pr-link or frame-link entry on later turns, so the natural
+// implementation — collect every entry — reports one pull request as many, and
+// the fixture's five pr-link entries name three pull requests.
+func TestSummarizeOutputs(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "outputs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("pull requests are deduplicated in first-seen order", func(t *testing.T) {
+		want := []model.PR{
+			{Repository: "eitanpo/central", Number: 14, URL: "https://github.com/eitanpo/central/pull/14"},
+			{Repository: "eitanpo/central", Number: 27, URL: "https://github.com/eitanpo/central/pull/27"},
+			{Repository: "wix-private/devex-costs", Number: 3, URL: "https://github.com/wix-private/devex-costs/pull/3"},
+		}
+		if len(s.PRs) != len(want) {
+			t.Fatalf("PRs = %+v, want %d entries", s.PRs, len(want))
+		}
+		for i := range want {
+			if s.PRs[i] != want[i] {
+				t.Errorf("PRs[%d] = %+v, want %+v", i, s.PRs[i], want[i])
+			}
+		}
+	})
+
+	t.Run("an artifact republished from a moved file stays one artifact", func(t *testing.T) {
+		// The fixture publishes artifact aaa from a scratchpad file, then from a
+		// path inside the repository. Keying on the path would report two.
+		if len(s.Artifacts) != 2 {
+			t.Fatalf("Artifacts = %+v, want 2", s.Artifacts)
+		}
+		got := s.Artifacts[0]
+		if got.URL != "https://claude.ai/code/artifact/aaa" {
+			t.Errorf("first artifact URL = %q", got.URL)
+		}
+		// The later record wins on the path it names...
+		if got.Path != "/repo/reports/cost.html" {
+			t.Errorf("Path = %q, want the later publish's path", got.Path)
+		}
+		// ...but says nothing about the title, and an omission is not a deletion.
+		if got.Title != "Cost report" {
+			t.Errorf("Title = %q, want the earlier record's title to survive", got.Title)
+		}
+	})
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

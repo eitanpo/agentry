@@ -5,6 +5,7 @@ package model
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -90,6 +91,12 @@ type Summary struct {
 	// and one read off a rendered session agree. Paired with Model, it is what
 	// lets a single cross-project listing answer what a model cost.
 	Usage Usage `json:"usage"`
+	// PRs and Artifacts are what the session produced beyond its own transcript,
+	// each deduplicated in first-seen order (Claude Code re-records both on later
+	// turns). They come from entries Claude Code writes for the session as a whole,
+	// so unlike Tools they are not limited to the main thread's calls.
+	PRs       []PR       `json:"prs,omitempty"`
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 	// Born is the session file's creation time, used to order a fork family
 	// (earliest = original). Filesystem metadata, not session content, so it is
 	// not serialized. Zero when unreadable; off macOS it falls back to mtime.
@@ -118,6 +125,59 @@ type DenialStat struct {
 	Tool     string `json:"tool"`
 	Identity string `json:"identity,omitempty"`
 	Count    int    `json:"count"`
+}
+
+// PR is a pull request a session opened, from Claude Code's own pr-link record.
+type PR struct {
+	Repository string `json:"repository,omitempty"`
+	Number     int    `json:"number,omitempty"`
+	URL        string `json:"url,omitempty"`
+}
+
+// Ref names a pull request the way a person does: "owner/repo#14". Degrades to
+// whichever half the record carries, and is empty when it carries neither.
+func (p PR) Ref() string {
+	switch {
+	case p.Repository != "" && p.Number > 0:
+		return p.Repository + "#" + strconv.Itoa(p.Number)
+	case p.Repository != "":
+		return p.Repository
+	case p.Number > 0:
+		return "#" + strconv.Itoa(p.Number)
+	}
+	return ""
+}
+
+// Key identifies the pull request: its URL, or the "owner/repo#14" reference when
+// the record carries no URL. It is both what deduplication groups by and what a
+// text view prints, so a listing cannot name one pull request two ways. Empty
+// when the record names nothing at all, which is the signal to drop it.
+func (p PR) Key() string {
+	if p.URL != "" {
+		return p.URL
+	}
+	return p.Ref()
+}
+
+// Artifact is a page a session published, from Claude Code's own frame-link
+// record. Title is optional — a third of observed records carry none. Path is the
+// local file the page was rendered from, which can move between publishes while
+// the page keeps its URL.
+type Artifact struct {
+	Title string `json:"title,omitempty"`
+	URL   string `json:"url,omitempty"`
+	Path  string `json:"path,omitempty"`
+}
+
+// Key identifies the artifact: its published URL, falling back to the local file.
+// It must be the URL rather than the path, because republishing from a moved file
+// keeps the URL and changes the path — keying on the path would report one
+// artifact as two.
+func (a Artifact) Key() string {
+	if a.URL != "" {
+		return a.URL
+	}
+	return a.Path
 }
 
 // Usage is a token tally. Cache fields mirror the Anthropic usage object.

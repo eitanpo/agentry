@@ -94,11 +94,13 @@ func sessionPaths(cmd *cobra.Command) ([]string, error) {
 	return locate.Sessions(cwd)
 }
 
-// usageFilters is the single source for the usage-filter surface: each entry
-// registers a --used* flag and its --not-used* twin, and fills the matching
-// field on both sides of list.Filters. One list rather than three parallel ones,
-// so a filter cannot be added to the flag set and forgotten in the negation or
-// in the limit-lifting below.
+// usageFilters is the single source for the what-a-session-did filter surface:
+// each entry registers its flag and the --not- twin of the same name, and fills
+// the matching field on both sides of list.Filters. One list rather than three
+// parallel ones, so a filter cannot be added to the flag set and forgotten in the
+// negation or in the limit-lifting below. Most entries name a tool the session
+// used; the last two name something it produced, which is a different axis but
+// the same flag shape and the same negation rule.
 //
 // did completes both "only sessions that <did>" and "only sessions that never
 // <did>", which is why it is phrased as a past-tense verb phrase.
@@ -113,9 +115,11 @@ var usageFilters = []struct {
 	{"used-command", "ran a Bash command matching this text", func(c *list.Criteria, v string) { c.Command = v }},
 	{"used-file", "modified a file matching this path", func(c *list.Criteria, v string) { c.File = v }},
 	{"used", "used this as a skill, agent, or command", func(c *list.Criteria, v string) { c.Any = v }},
+	{"opened-pr", "opened a matching pull request, by repository, number, or url", func(c *list.Criteria, v string) { c.PR = v }},
+	{"published-artifact", "published a matching artifact, by title, url, or local path", func(c *list.Criteria, v string) { c.Artifact = v }},
 }
 
-// usedFlags are the usage-filter flag names, positive and negated; any of them,
+// usedFlags are every usageFilters flag name, positive and negated; any of them,
 // like a time filter, lifts the default --limit so a filtered listing is not
 // silently capped.
 var usedFlags = func() []string {
@@ -132,7 +136,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	until, _ := cmd.Flags().GetString("until")
 	include, _ := cmd.Flags().GetString("include")
 
-	var showPrompts, showTools, showFiles, showModel bool
+	var showPrompts, showTools, showFiles, showModel, showOutputs bool
 	for _, tok := range strings.Split(include, ",") {
 		switch tok = strings.TrimSpace(tok); tok {
 		case "": // empty entries (e.g. unset flag) contribute nothing
@@ -144,8 +148,11 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 			showFiles = true
 		case "model":
 			showModel = true
+		case "outputs":
+			showOutputs = true
 		case "all":
-			showPrompts, showTools, showFiles, showModel = true, true, true, true
+			showPrompts, showTools, showFiles = true, true, true
+			showModel, showOutputs = true, true
 		default:
 			if g := nearest(tok, includeNames); g != "" {
 				return usageErr("--include: unknown channel %q — did you mean %q?", tok, g)
@@ -251,7 +258,8 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	}
 	color, width := terminal(*noColor)
 	if err := list.Render(os.Stdout, selected, list.Options{
-		Width: width, Color: color, Prompts: showPrompts, Tools: showTools, Files: showFiles, Model: showModel,
+		Width: width, Color: color, Prompts: showPrompts, Tools: showTools, Files: showFiles,
+		Model: showModel, Outputs: showOutputs,
 	}); err != nil {
 		return &exitError{code: 1, err: err}
 	}

@@ -32,6 +32,7 @@ type Options struct {
 	Tools   bool // --include tools: break down each session's tool calls under its row
 	Files   bool // --include files: list each file the session modified
 	Model   bool // --include model: name the model and reasoning effort the session ran on
+	Outputs bool // --include outputs: list the PRs the session opened and the artifacts it published
 }
 
 // Prompt blocks reuse the renderer's turn chrome: a left rail closed by a rule.
@@ -110,19 +111,26 @@ func FilterByFrom(sums []model.Summary, from string) []model.Summary {
 	return out
 }
 
-// Criteria is one set of usage tests over a session's top-level tool calls. An
-// empty field imposes no constraint. Tool is matched case-insensitively and
-// exact (the tool-use name); the rest are case-insensitive substring. Any is the
-// identity catch-all — a skill name, subagent type, or command — and
-// deliberately ignores tool names. File is the "what did the work land on" axis,
-// read from both records of it: Edit/Write targets and the tracked-file list.
+// Criteria is one set of tests over what a session did. An empty field imposes
+// no constraint. Tool is matched case-insensitively and exact (the tool-use
+// name); the rest are case-insensitive substring. Any is the identity catch-all —
+// a skill name, subagent type, or command — and deliberately ignores tool names.
+// File is the "what did the work land on" axis, read from both records of it:
+// Edit/Write targets and the tracked-file list.
+//
+// PR and Artifact are the "what came out of it" axis and are the two fields that
+// do not read tool calls at all: they test Claude Code's own session-level record
+// of a pull request opened or a page published, so they see work a subagent did
+// as readily as work the main thread did.
 type Criteria struct {
-	Tool    string
-	Skill   string
-	Agent   string
-	Command string
-	Any     string
-	File    string
+	Tool     string
+	Skill    string
+	Agent    string
+	Command  string
+	Any      string
+	File     string
+	PR       string
+	Artifact string
 }
 
 func (c Criteria) empty() bool {
@@ -158,6 +166,12 @@ func (c Criteria) hit(s model.Summary) (all, any bool) {
 	}
 	if c.File != "" {
 		add(hasFile(s, c.File))
+	}
+	if c.PR != "" {
+		add(hasPR(s.PRs, c.PR))
+	}
+	if c.Artifact != "" {
+		add(hasArtifact(s.Artifacts, c.Artifact))
 	}
 	return all, any
 }
@@ -278,6 +292,40 @@ func hasFile(s model.Summary, sub string) bool {
 	}
 	for _, f := range s.Files {
 		if containsFold(f, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPR reports whether the session opened a pull request matching sub, tested
+// over all three of the ways one gets named: the repository, the number, and the
+// URL. All three because the question arrives in all three forms — a repository's
+// worth of work, one pull request by number, or a URL pasted from a browser — and
+// which field a given phrasing lands in is not something a caller should have to
+// know. The number is matched as text so it shares the substring rule, which does
+// mean "4" also matches pull request 14; the same looseness every substring
+// filter in this family carries.
+func hasPR(prs []model.PR, sub string) bool {
+	for _, p := range prs {
+		if containsFold(p.Repository, sub) || containsFold(p.URL, sub) {
+			return true
+		}
+		if p.Number > 0 && containsFold(strconv.Itoa(p.Number), sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasArtifact reports whether the session published an artifact matching sub,
+// over its title, its published URL, and the local file it was rendered from —
+// the same "every way it gets named" rule hasPR follows. The local path is
+// included because an artifact is often remembered by the file that produced it
+// rather than by a title it may not even carry.
+func hasArtifact(as []model.Artifact, sub string) bool {
+	for _, a := range as {
+		if containsFold(a.Title, sub) || containsFold(a.URL, sub) || containsFold(a.Path, sub) {
 			return true
 		}
 	}
@@ -555,7 +603,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	}
 	// A session shows a detail block (rail + closing rule) when any --include
 	// channel is on; the channels share one block.
-	block := opts.Prompts || opts.Tools || opts.Files || opts.Model
+	block := opts.Prompts || opts.Tools || opts.Files || opts.Model || opts.Outputs
 	var b strings.Builder
 	rows := arrange(sums)
 	for idx, r := range rows {
@@ -618,6 +666,22 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncateLeft(f, promptW)))
 			}
 		}
+		if opts.Outputs {
+			// One rule, two directions: each line is cut so that the half identifying
+			// the thing survives. A pull request is identified by its URL's tail — the
+			// repository and the number — with the scheme and host every line repeats
+			// at the head, so it truncates from the left like the files channel. An
+			// artifact is identified by its title, at the head, so its line truncates
+			// from the right and lets the URL go: a claude.ai artifact id is an opaque
+			// uuid that identifies nothing to a reader, and --format json carries it in
+			// full — the trade the Edits line already makes for paths.
+			for _, p := range s.PRs {
+				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncateLeft(p.Key(), promptW)))
+			}
+			for _, a := range s.Artifacts {
+				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncate(artifactLine(a), promptW)))
+			}
+		}
 		if block {
 			fmt.Fprintf(&b, "%s%s\n", railIndent, dim.Render(railClose))
 		}
@@ -640,6 +704,17 @@ func runLine(s model.Summary) string {
 		parts = append(parts, e+" effort")
 	}
 	return strings.Join(parts, " · ")
+}
+
+// artifactLine names one published artifact: its title, then its URL. The title
+// leads because it is the only half a person recognizes — the URL ends in an
+// opaque uuid — and an artifact whose record carried no title is its URL alone
+// rather than a line that opens with a blank column.
+//
+// A pull request needs no such function: its URL already spells the repository
+// and the number, so PR.Key is both its identity and its whole display.
+func artifactLine(a model.Artifact) string {
+	return strings.TrimSpace(a.Title + "  " + a.Key())
 }
 
 // toolLines renders a session's tool breakdown as one line per non-empty

@@ -992,3 +992,145 @@ func TestRenderIncludeModel(t *testing.T) {
 		}
 	})
 }
+
+// TestFilterByOutputs pins the "what came out of it" axis. It is the one filter
+// family that reads no tool call, so a session whose pull request was opened by a
+// subagent is findable here and by no --used* flag.
+func TestFilterByOutputs(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "central", PRs: []model.PR{
+			{Repository: "eitanpo/central", Number: 14, URL: "https://github.com/eitanpo/central/pull/14"},
+		}},
+		{ID: "devex", PRs: []model.PR{
+			{Repository: "wix-private/devex-costs", Number: 187, URL: "https://github.com/wix-private/devex-costs/pull/187"},
+		}, Artifacts: []model.Artifact{
+			{Title: "DevEx cost", URL: "https://claude.ai/code/artifact/aaa", Path: "/repo/reports/cost.html"},
+		}},
+		{ID: "untitled", Artifacts: []model.Artifact{
+			{URL: "https://claude.ai/code/artifact/bbb", Path: "/tmp/scratch/notes.html"},
+		}},
+		{ID: "quiet"},
+	}
+	matching := func(t *testing.T, c Criteria) []model.Summary {
+		t.Helper()
+		return FilterByTools(sums, Filters{Used: c})
+	}
+
+	t.Run("a pull request matches by repository, by number, and by url", func(t *testing.T) {
+		// All three because the question arrives in all three forms, and which field
+		// a given phrasing lands in is not something a caller should have to know.
+		assertIDs(t, matching(t, Criteria{PR: "devex-costs"}), []string{"devex"})
+		assertIDs(t, matching(t, Criteria{PR: "187"}), []string{"devex"})
+		assertIDs(t, matching(t, Criteria{PR: "eitanpo/central/pull/14"}), []string{"central"})
+	})
+
+	t.Run("pull-request matching is case-insensitive substring", func(t *testing.T) {
+		assertIDs(t, matching(t, Criteria{PR: "CENTRAL"}), []string{"central"})
+	})
+
+	t.Run("an artifact matches by title, by url, and by local path", func(t *testing.T) {
+		// The path is in because an artifact is often remembered by the file that
+		// produced it rather than by a title it may not even carry.
+		assertIDs(t, matching(t, Criteria{Artifact: "devex cost"}), []string{"devex"})
+		assertIDs(t, matching(t, Criteria{Artifact: "artifact/bbb"}), []string{"untitled"})
+		assertIDs(t, matching(t, Criteria{Artifact: "notes.html"}), []string{"untitled"})
+	})
+
+	t.Run("the two axes do not bleed into each other", func(t *testing.T) {
+		// A pull-request filter must not match an artifact's URL, or a listing
+		// answers a question nobody asked.
+		if got := matching(t, Criteria{PR: "claude.ai"}); len(got) != 0 {
+			t.Errorf("--opened-pr matched artifacts: %v", ids(got))
+		}
+		if got := matching(t, Criteria{Artifact: "github.com"}); len(got) != 0 {
+			t.Errorf("--published-artifact matched pull requests: %v", ids(got))
+		}
+	})
+
+	t.Run("the negated form keeps exactly what the positive drops", func(t *testing.T) {
+		kept := FilterByTools(sums, Filters{NotUsed: Criteria{PR: "central"}})
+		assertIDs(t, kept, []string{"devex", "untitled", "quiet"})
+	})
+
+	t.Run("a session that produced nothing matches no output filter", func(t *testing.T) {
+		if got := matching(t, Criteria{PR: "quiet"}); len(got) != 0 {
+			t.Errorf("got %v, want no sessions", ids(got))
+		}
+	})
+}
+
+// TestRenderIncludeOutputs pins the channel that shows what a session produced.
+// Without it, --opened-pr and --published-artifact filter on facts the text
+// output never displays, which leaves a reader guessing at the values to pass.
+func TestRenderIncludeOutputs(t *testing.T) {
+	sums := []model.Summary{{ID: "s1", Title: "ship it",
+		PRs: []model.PR{
+			{Repository: "eitanpo/central", Number: 14, URL: "https://github.com/eitanpo/central/pull/14"},
+		},
+		Artifacts: []model.Artifact{
+			{Title: "Cost report", URL: "https://claude.ai/code/artifact/aaa"},
+			{URL: "https://claude.ai/code/artifact/bbb"},
+		}}}
+
+	var off strings.Builder
+	if err := Render(&off, sums, Options{Width: 200, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(off.String(), "pull/14") {
+		t.Errorf("outputs should be hidden without the channel: %q", off.String())
+	}
+
+	var on strings.Builder
+	if err := Render(&on, sums, Options{Width: 200, Color: false, Outputs: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := on.String()
+	// A pull request prints as the URL that identifies it — repository and number
+	// are already in it, so a label beside it would only repeat itself.
+	if !strings.Contains(out, "https://github.com/eitanpo/central/pull/14") {
+		t.Errorf("output missing the pull request URL: %q", out)
+	}
+	// An artifact leads with its title, since a claude.ai artifact id names
+	// nothing a person recognizes.
+	if !strings.Contains(out, "Cost report  https://claude.ai/code/artifact/aaa") {
+		t.Errorf("output missing the titled artifact line: %q", out)
+	}
+	// And an artifact whose record carried no title is its URL alone, not a line
+	// that opens with a blank column.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "artifact/bbb") && !strings.HasSuffix(line, "https://claude.ai/code/artifact/bbb") {
+			t.Errorf("untitled artifact should print as its URL alone, got %q", line)
+		}
+	}
+	if !strings.Contains(out, "╰─") {
+		t.Errorf("session block not closed by a rule: %q", out)
+	}
+
+	t.Run("a narrow terminal keeps the half that identifies each thing", func(t *testing.T) {
+		// The two kinds truncate in opposite directions on purpose: a pull request is
+		// named by its URL's tail, an artifact by its title at the head. Cutting
+		// either from the wrong end leaves a line naming nothing a reader can act on.
+		var b strings.Builder
+		if err := Render(&b, sums, Options{Width: 60, Color: false, Outputs: true}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		if !strings.Contains(out, "central/pull/14") {
+			t.Errorf("the pull request lost its number to truncation: %q", out)
+		}
+		if !strings.Contains(out, "Cost report") {
+			t.Errorf("the artifact lost its title to truncation: %q", out)
+		}
+	})
+
+	t.Run("a session that produced nothing shows no line", func(t *testing.T) {
+		var b strings.Builder
+		if err := Render(&b, []model.Summary{{ID: "s1", Title: "quiet"}},
+			Options{Width: 120, Color: false, Outputs: true}); err != nil {
+			t.Fatal(err)
+		}
+		if lines := strings.Count(strings.TrimSpace(b.String()), "\n"); lines != 1 {
+			t.Errorf("want just the row and its closing rule, got %q", b.String())
+		}
+	})
+}
