@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-05-27T10:00:06Z","message":{"role":"user","content":"go look"}}
+{"type":"assistant","timestamp":"2026-05-27T10:00:20Z","message":{"role":"assistant","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":50,"cache_creation_input_tokens":30},"content":[{"type":"text","text":"found it"}]}}

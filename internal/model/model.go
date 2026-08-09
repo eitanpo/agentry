@@ -16,8 +16,13 @@ type Session struct {
 
 // Meta is session-level metadata aggregated across all turns and subagents.
 type Meta struct {
-	ID    string `json:"id"`
-	Model string `json:"model,omitempty"`
+	ID string `json:"id"`
+	// Model is the model the session ran on, resolved like Entrypoint: the last
+	// value the log carries. Models lists every distinct one, set only when the
+	// session switched mid-way. Empty on a session whose log names none, which is
+	// not a claim that it ran on nothing — the log simply does not say.
+	Model  string   `json:"model,omitempty"`
+	Models []string `json:"models,omitempty"`
 	// Effort is the reasoning effort the model ran at, resolved like Entrypoint:
 	// the last value the session carries. Efforts lists every distinct one, set
 	// only when it changed mid-session. Empty on a session predating the field
@@ -73,6 +78,18 @@ type Summary struct {
 	// Tools because a denial is an outcome, not another call: the same (tool,
 	// identity) pair can appear in both.
 	Denials []DenialStat `json:"denials,omitempty"`
+	// Model/Models and Effort/Efforts mirror the Meta fields of the same names,
+	// resolved identically, so a listing and a rendered header never disagree
+	// about what one session ran on.
+	Model   string   `json:"model,omitempty"`
+	Models  []string `json:"models,omitempty"`
+	Effort  string   `json:"effort,omitempty"`
+	Efforts []string `json:"efforts,omitempty"`
+	// Usage is the session's token tally over the main thread and every subagent
+	// it spawned — the same total Meta.Usage carries, so a cost read off a listing
+	// and one read off a rendered session agree. Paired with Model, it is what
+	// lets a single cross-project listing answer what a model cost.
+	Usage Usage `json:"usage"`
 	// Born is the session file's creation time, used to order a fork family
 	// (earliest = original). Filesystem metadata, not session content, so it is
 	// not serialized. Zero when unreadable; off macOS it falls back to mtime.

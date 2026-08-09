@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/eitanpo/agentry/internal/trail"
 	"github.com/muesli/termenv"
 )
 
@@ -30,6 +31,7 @@ type Options struct {
 	Prompts bool // --include prompts: list each session's prompts under its row
 	Tools   bool // --include tools: break down each session's tool calls under its row
 	Files   bool // --include files: list each file the session modified
+	Model   bool // --include model: name the model and reasoning effort the session ran on
 }
 
 // Prompt blocks reuse the renderer's turn chrome: a left rail closed by a rule.
@@ -184,6 +186,75 @@ func (f Filters) Match(s model.Summary) bool {
 		return false
 	}
 	return true
+}
+
+// Run narrows a listing by what a session ran on. An empty field imposes no
+// constraint.
+//
+// Model is a case-insensitive substring because model names nest by family and
+// version, and one flag has to serve both readings: "opus" for the family,
+// "opus-5" for the release. Effort is case-insensitive and exact, alone among
+// the value filters — the levels nest as substrings, so a substring rule would
+// make --effort high quietly include xhigh, which is a wrong answer rather than
+// a wide one. Neither validates against a known set: both grow without notice,
+// and a value agentry has not heard of should return no sessions, not an error.
+type Run struct {
+	Model  string
+	Effort string
+}
+
+// Empty reports whether no constraint is set, so callers can skip filtering.
+func (r Run) Empty() bool { return r.Model == "" && r.Effort == "" }
+
+// Match tests s against both fields, over every value the session carried
+// rather than only the resolved one: a session that switched from Sonnet to
+// Opus really did run both, and a test seeing only the last would deny it ran
+// the first.
+func (r Run) Match(s model.Summary) bool {
+	if r.Model != "" && !anyMatch(carried(s.Model, s.Models), r.Model, containsFold) {
+		return false
+	}
+	if r.Effort != "" && !anyMatch(carried(s.Effort, s.Efforts), r.Effort, strings.EqualFold) {
+		return false
+	}
+	return true
+}
+
+// carried expands the parser's "resolved value, plus the full list only when it
+// changed" pair back into every value the session held. It is the inverse of
+// what the parser stores, so a filter reads the same set the parser saw.
+func carried(resolved string, all []string) []string {
+	if len(all) > 1 {
+		return all
+	}
+	if resolved == "" {
+		return nil
+	}
+	return []string{resolved}
+}
+
+func anyMatch(vals []string, want string, eq func(string, string) bool) bool {
+	for _, v := range vals {
+		if eq(v, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// FilterByRun keeps only the summaries matching r, preserving input order. A
+// no-op (returns the input) when r is empty.
+func FilterByRun(sums []model.Summary, r Run) []model.Summary {
+	if r.Empty() {
+		return sums
+	}
+	out := make([]model.Summary, 0, len(sums))
+	for _, s := range sums {
+		if r.Match(s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // hasAny is the identity catch-all: a skill name, a subagent type, or a command.
@@ -484,7 +555,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	}
 	// A session shows a detail block (rail + closing rule) when any --include
 	// channel is on; the channels share one block.
-	block := opts.Prompts || opts.Tools || opts.Files
+	block := opts.Prompts || opts.Tools || opts.Files || opts.Model
 	var b strings.Builder
 	rows := arrange(sums)
 	for idx, r := range rows {
@@ -522,6 +593,13 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			pad(title, titleW),
 			meta.Render(s.ID))
 		rail := railIndent + dim.Render(railGlyph) + " "
+		// What the session ran on leads the block: it describes the session, where
+		// the channels below it enumerate the session's contents.
+		if opts.Model {
+			if line := runLine(s); line != "" {
+				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncate(line, promptW)))
+			}
+		}
 		if opts.Prompts {
 			for _, p := range s.Prompts {
 				fmt.Fprintf(&b, "%s%s %s\n", rail, dim.Render(promptGlyph), truncate(oneLine(p), promptW))
@@ -546,6 +624,22 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// runLine names what a session ran on, in the rendered header's phrasing: the
+// model, then the reasoning effort as a phrase ("high" alone would not say high
+// what), each spelling out a mid-session change with the shared arrow. Empty
+// when the log names neither, so a session predating both fields shows no line
+// rather than an empty one.
+func runLine(s model.Summary) string {
+	var parts []string
+	if m := trail.Of(s.Model, s.Models); m != "" {
+		parts = append(parts, m)
+	}
+	if e := trail.Of(s.Effort, s.Efforts); e != "" {
+		parts = append(parts, e+" effort")
+	}
+	return strings.Join(parts, " · ")
 }
 
 // toolLines renders a session's tool breakdown as one line per non-empty

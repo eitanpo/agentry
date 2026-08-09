@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-05-27T10:00:00Z","message":{"role":"user","content":"delegate this"}}
+{"type":"assistant","timestamp":"2026-05-27T10:00:05Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":3},"content":[{"type":"tool_use","id":"tool1","name":"Agent","input":{"description":"go look","subagent_type":"Explore"}}]}}
+{"type":"user","timestamp":"2026-05-27T10:00:30Z","toolUseResult":{"agentId":"agent-u1"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool1","is_error":false,"content":"found it"}]}}

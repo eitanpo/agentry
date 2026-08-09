@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/eitanpo/agentry/internal/trail"
 	"github.com/muesli/termenv"
 )
 
@@ -133,29 +134,23 @@ func (r *renderer) initStyles() {
 
 // ── Session header ─────────────────────────────────────────────────────────
 
-// trail spells a per-session setting that may have changed mid-way: the whole
-// sequence joined by an arrow when it did, the resolved value alone when it did
-// not. entrypoint.Trail is the same idea over values that need translating to a
-// short tag first; this is the untranslated form, for settings whose log values
-// are already the words to show.
-func trail(resolved string, all []string) string {
-	if len(all) > 1 {
-		return strings.Join(all, "→")
-	}
-	return resolved
-}
-
 func (r *renderer) header(s *model.Session) string {
 	m := s.Meta
 	title := fmt.Sprintf("Session · %s → %s", fmtTime(m.Start), fmtTime(m.End))
 	if d := fmtDuration(m.Start, m.End); d != "" {
 		title += " · " + d
 	}
-	title += " · " + m.Model
+	// What it ran on, with the transition spelled out when the session switched
+	// models mid-way. A session whose log names no model says nothing: "unknown"
+	// asserted a fact the log does not carry, which is the rule the effort and
+	// entrypoint beside it already follow.
+	if mo := trail.Of(m.Model, m.Models); mo != "" {
+		title += " · " + mo
+	}
 	// How hard the model was run, as a phrase — "high" alone beside a model name
 	// would not say high what. A session that changed effort shows the transition
 	// with the same arrow the entrypoint trail uses.
-	if e := trail(m.Effort, m.Efforts); e != "" {
+	if e := trail.Of(m.Effort, m.Efforts); e != "" {
 		title += " · " + e + " effort"
 	}
 	// Where the session ran, spelled out rather than abbreviated to the "+" the

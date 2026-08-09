@@ -39,16 +39,17 @@ func Load(jsonlPath string) (*model.Session, error) {
 		return nil, err
 	}
 
-	projectDir := filepath.Dir(jsonlPath)
 	stem := strings.TrimSuffix(filepath.Base(jsonlPath), filepath.Ext(jsonlPath))
-	subs := loadSubagents(filepath.Join(projectDir, stem, "subagents"))
+	subs := loadSubagents(subagentDir(jsonlPath))
 	eps := entrypoints(entries)
 	effs := efforts(entries)
+	ms := models(entries)
 
 	sess := &model.Session{
 		Meta: model.Meta{
 			ID:           stem,
-			Model:        extractModel(entries),
+			Model:        lastOf(ms),
+			Models:       manyOrNone(ms),
 			NumSubagents: len(subs),
 			Entrypoint:   lastOf(eps),
 			Entrypoints:  manyOrNone(eps),
@@ -89,6 +90,8 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 	start, end := timeRange(entries)
 	turns := splitTurns(entries)
 	eps := entrypoints(entries)
+	effs := efforts(entries)
+	ms := models(entries)
 	cwd := sessionCwd(entries)
 	var prompts []string
 	for _, tn := range turns {
@@ -115,7 +118,72 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		// single-entrypoint session serializes one field rather than two.
 		Entrypoint:  lastOf(eps),
 		Entrypoints: manyOrNone(eps),
+		Model:       lastOf(ms),
+		Models:      manyOrNone(ms),
+		Effort:      lastOf(effs),
+		Efforts:     manyOrNone(effs),
+		Usage:       sessionUsage(jsonlPath, entries),
 	}, nil
+}
+
+// subagentDir is where a session's subagent sidecars live, next to its own log.
+// Named once because Load and Summarize must look in the same place: a listing
+// that read a different directory would report a different cost for the session
+// the render path is showing.
+func subagentDir(jsonlPath string) string {
+	stem := strings.TrimSuffix(filepath.Base(jsonlPath), filepath.Ext(jsonlPath))
+	return filepath.Join(filepath.Dir(jsonlPath), stem, "subagents")
+}
+
+// sessionUsage totals a session's tokens the way Load builds Meta.Usage: the
+// main thread plus every subagent sidecar. Summarize is otherwise deliberately
+// cheap, and this is the one place it opens files the main log does not name —
+// sidecars run to roughly 60% of a project tree's bytes. It is paid anyway,
+// because a tally that silently dropped delegated work would answer the cost
+// question wrong for exactly the sessions that cost the most.
+func sessionUsage(jsonlPath string, entries []entry) model.Usage {
+	u := sumUsage(entries)
+	paths, _ := filepath.Glob(filepath.Join(subagentDir(jsonlPath), "agent-*.jsonl"))
+	for _, p := range paths {
+		u.Add(sidecarUsage(p))
+	}
+	return u
+}
+
+// usageOnly is the slice of an entry a token tally needs. Sidecars are read
+// through it rather than through loadEntries, which would also decode every
+// content block on the way: over 250 local sessions a cross-project listing
+// measured 2.40s reading no sidecars, 2.96s through this, and 3.96s through
+// loadEntries. An unreadable file or a malformed line is skipped rather than
+// raised — it undercounts the tally, where an error would drop the whole
+// session from the listing over a subagent's log.
+type usageOnly struct {
+	Type    string `json:"type"`
+	Message struct {
+		Usage rawUsage `json:"usage"`
+	} `json:"message"`
+}
+
+func sidecarUsage(path string) model.Usage {
+	var u model.Usage
+	f, err := os.Open(path)
+	if err != nil {
+		return u
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // sidecars hold large tool results too
+	for sc.Scan() {
+		var re usageOnly
+		if json.Unmarshal(sc.Bytes(), &re) != nil || re.Type != "assistant" {
+			continue
+		}
+		u.Add(model.Usage{
+			Input: re.Message.Usage.Input, Output: re.Message.Usage.Output,
+			CacheRead: re.Message.Usage.CacheRead, CacheCreate: re.Message.Usage.CacheCreate,
+		})
+	}
+	return u
 }
 
 // entrypoints returns every distinct entrypoint the session carries, in
@@ -627,13 +695,26 @@ func timeRange(entries []entry) (start, end time.Time) {
 	return start, end
 }
 
-func extractModel(entries []entry) string {
-	for _, e := range entries {
-		if e.typ == "assistant" && e.model != "" {
-			return e.model
+// syntheticModel is the model Claude Code writes on assistant messages it
+// composed itself rather than received from a model — an API-error notice, a
+// session-limit warning, "No response requested.". They carry zero tokens and
+// name no model the session ran on, so counting one would end a session on a
+// model that never ran: 17 of 250 local sessions carry such an entry, and in
+// none of them was it the last real message.
+const syntheticModel = "<synthetic>"
+
+// models returns every distinct model the session ran on, in first-seen order.
+// Only assistant entries name one, so an absent value is skipped rather than
+// recorded as a change — the same reading efforts uses, and for the same reason.
+// Switching mid-session is not rare (13 of 250 local sessions did), and the
+// values come in contiguous blocks, so the last one is the session's.
+func models(entries []entry) []string {
+	return distinct(entries, func(e entry) string {
+		if e.typ != "assistant" || e.model == syntheticModel {
+			return ""
 		}
-	}
-	return "unknown"
+		return e.model
+	})
 }
 
 func sumUsage(entries []entry) model.Usage {

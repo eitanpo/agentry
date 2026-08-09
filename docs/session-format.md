@@ -248,8 +248,26 @@ user did not choose. Of the 12 sessions carrying an `agent-name`, 11 also carry 
 
 ### message
 
-`{ role, model, content, usage, ... }`. `content` is **either** a JSON string **or** an
-array of typed blocks:
+`{ role, model, content, usage, ... }`.
+
+`message.model` names the model an assistant entry came from, and two things about it are
+easy to get wrong (measured 2026-08-08 over 250 local sessions):
+
+- **`<synthetic>` is not a model.** Claude Code writes it on assistant entries it composed
+  itself — `API Error: 529 Overloaded.`, `You've hit your session limit`, `Login expired`,
+  `No response requested.` — 31 such entries across 17 sessions, every one of them carrying
+  zero tokens in `usage`. It is never the last *entry* in a session, but it is often the
+  last *distinct value first seen*, so a "last distinct wins" reading resolves 17 sessions
+  to `<synthetic>` unless it is filtered out first.
+- **A session's model changes more often than the entrypoint does.** 13 of 250 sessions
+  carry more than one real model, against 2 of 251 for the entrypoint; one carries three.
+  The values arrive in contiguous blocks and never interleave — checked on all 13 — so the
+  last distinct value equals the model on the final assistant entry in every case, and the
+  same last-wins-with-a-trail reading the entrypoint uses is correct here too. Reading the
+  *first* value instead — which agentry did originally — misreports those sessions as still
+  on a model they left.
+
+`content` is **either** a JSON string **or** an array of typed blocks:
 
 - `text` — `.text`
 - `thinking` — `.thinking` (+ `.signature`)

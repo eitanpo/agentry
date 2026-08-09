@@ -665,3 +665,139 @@ func lastTool(events []model.Event) *model.Tool {
 	}
 	return nil
 }
+
+// TestModelResolution pins how a session's model is read. It used to be the
+// first assistant entry's, which misreports a session that switched: 13 of 250
+// local sessions did, and the header then names a model the session left.
+func TestModelResolution(t *testing.T) {
+	t.Run("a session that switched keeps both, resolving to the last", func(t *testing.T) {
+		sess, err := Load(filepath.Join("testdata", "model-changed.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sess.Meta.Model != "claude-opus-5" {
+			t.Errorf("Model = %q, want the last one the session ran on", sess.Meta.Model)
+		}
+		want := []string{"claude-sonnet-5", "claude-opus-5"}
+		if !equalStrings(sess.Meta.Models, want) {
+			t.Errorf("Models = %q, want %q", sess.Meta.Models, want)
+		}
+	})
+
+	t.Run("<synthetic> is not a model", func(t *testing.T) {
+		// Claude Code writes it on messages it composed itself — an API-error
+		// notice, a session-limit warning. The fixture ends on one, which is the
+		// shape that matters: 17 of 250 local sessions carry such an entry, and
+		// counting it would end each of them on a model that never ran.
+		sess, err := Load(filepath.Join("testdata", "model-changed.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sess.Meta.Model == syntheticModel {
+			t.Errorf("Model = %q, which names no model the session ran on", sess.Meta.Model)
+		}
+		for _, m := range sess.Meta.Models {
+			if m == syntheticModel {
+				t.Errorf("Models = %q, want %q excluded", sess.Meta.Models, syntheticModel)
+			}
+		}
+	})
+
+	t.Run("a session naming no model reports none", func(t *testing.T) {
+		// It used to report the word "unknown", which asserted a fact the log does
+		// not carry. Effort and entrypoint already say nothing in this case.
+		sess, err := Load(filepath.Join("testdata", "rooted.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sess.Meta.Model != "" || sess.Meta.Models != nil {
+			t.Errorf("Model = %q / %q, want neither", sess.Meta.Model, sess.Meta.Models)
+		}
+	})
+}
+
+// TestSummarizeCarriesRun pins that a listing knows what a session ran on. The
+// render path named the model and effort while a Summary carried neither, so
+// "which sessions ran at xhigh" had no answer short of rendering each one.
+func TestSummarizeCarriesRun(t *testing.T) {
+	t.Run("model and its trail", func(t *testing.T) {
+		s, err := Summarize(filepath.Join("testdata", "model-changed.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Model != "claude-opus-5" {
+			t.Errorf("Model = %q, want the last one", s.Model)
+		}
+		want := []string{"claude-sonnet-5", "claude-opus-5"}
+		if !equalStrings(s.Models, want) {
+			t.Errorf("Models = %q, want %q", s.Models, want)
+		}
+	})
+
+	t.Run("effort and its trail", func(t *testing.T) {
+		s, err := Summarize(filepath.Join("testdata", "effort-changed.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Effort != "high" {
+			t.Errorf("Effort = %q, want the last one", s.Effort)
+		}
+		want := []string{"xhigh", "high"}
+		if !equalStrings(s.Efforts, want) {
+			t.Errorf("Efforts = %q, want %q", s.Efforts, want)
+		}
+	})
+
+	t.Run("a summary agrees with the rendered session", func(t *testing.T) {
+		// The two paths read one session, so they must not name two different
+		// models: that disagreement is the whole reason this field exists.
+		path := filepath.Join("testdata", "model-changed.jsonl")
+		s, err := Summarize(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sess, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Model != sess.Meta.Model || !equalStrings(s.Models, sess.Meta.Models) {
+			t.Errorf("summary %q/%q vs meta %q/%q", s.Model, s.Models, sess.Meta.Model, sess.Meta.Models)
+		}
+	})
+}
+
+// TestSummarizeUsageIncludesSubagents pins that a listing's token tally covers
+// delegated work. Summarize otherwise never opens a sidecar, so the natural
+// implementation counts the main thread alone — and undercounts exactly the
+// sessions that cost the most, while Meta.Usage reports the full figure.
+func TestSummarizeUsageIncludesSubagents(t *testing.T) {
+	path := filepath.Join("testdata", "subagent-usage.jsonl")
+	s, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := model.Usage{Input: 110, Output: 220, CacheRead: 55, CacheCreate: 33}
+	if s.Usage != want {
+		t.Errorf("Usage = %+v, want %+v (main thread plus the agent-u1 sidecar)", s.Usage, want)
+	}
+
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Usage != sess.Meta.Usage {
+		t.Errorf("summary usage %+v != meta usage %+v; a cost read off a listing must match one read off a render", s.Usage, sess.Meta.Usage)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

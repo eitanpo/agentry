@@ -966,3 +966,86 @@ func TestCompTitle(t *testing.T) {
 		}
 	}
 }
+
+// TestRunFlags pins --model, --effort and --include model end to end: the flags
+// exist, they select on what the session ran on, and the channel shows it. The
+// fixture session ran on claude-opus-4-7 and records no effort.
+func TestRunFlags(t *testing.T) {
+	root := newRootCmd("test")
+	for _, f := range []string{"model", "effort"} {
+		if root.Flags().Lookup(f) == nil {
+			t.Errorf("--%s is not registered", f)
+		}
+	}
+
+	fixtureProject(t)
+	count := func(t *testing.T, args ...string) int {
+		t.Helper()
+		out := captureStdout(t, func() {
+			exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
+		})
+		var got []map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+		}
+		return len(got)
+	}
+
+	if n := count(t, "--model", "opus"); n != 1 {
+		t.Errorf("--model opus matched %d sessions, want 1", n)
+	}
+	if n := count(t, "--model", "sonnet"); n != 0 {
+		t.Errorf("--model sonnet matched %d sessions, want 0", n)
+	}
+	// The session records no effort, so no level matches it — and asking for one
+	// agentry has never heard of is an empty listing, not a usage error.
+	if n := count(t, "--effort", "high"); n != 0 {
+		t.Errorf("--effort high matched %d sessions, want 0", n)
+	}
+	if n := count(t, "--effort", "ultra"); n != 0 {
+		t.Errorf("--effort ultra matched %d sessions, want 0", n)
+	}
+
+	t.Run("the summary carries the model into JSON", func(t *testing.T) {
+		out := captureStdout(t, func() { exec("list", "--limit", "0", "--format", "json") })
+		var got []map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0]["model"] != "claude-opus-4-7" {
+			t.Errorf("model = %v, want claude-opus-4-7 on the one session", got)
+		}
+		// The token tally is what pairs with the model to answer what it cost.
+		if _, ok := got[0]["usage"]; !ok {
+			t.Errorf("summary carries no usage: %v", got[0])
+		}
+	})
+
+	t.Run("--include model names it in the text table", func(t *testing.T) {
+		out := captureStdout(t, func() { exec("list", "--include", "model") })
+		if !strings.Contains(out, "claude-opus-4-7") {
+			t.Errorf("output missing the model: %q", out)
+		}
+	})
+
+	t.Run("--include all covers the new channel", func(t *testing.T) {
+		// A channel omitted from "all" is one nobody discovers.
+		out := captureStdout(t, func() { exec("list", "--include", "all") })
+		if !strings.Contains(out, "claude-opus-4-7") {
+			t.Errorf("--include all missing the model: %q", out)
+		}
+	})
+}
+
+// TestIncludeHelpNamesEveryChannel pins that --include's help text and its
+// parser name the same set. They drifted once already: `model` was accepted and
+// suggested by name while the help still listed three channels, so the only
+// place a user reads the channels from was the one place missing one.
+func TestIncludeHelpNamesEveryChannel(t *testing.T) {
+	usage := newRootCmd("test").Flags().Lookup("include").Usage
+	for _, ch := range includeNames {
+		if !strings.Contains(usage, ch) {
+			t.Errorf("--include help %q does not name the %q channel", usage, ch)
+		}
+	}
+}

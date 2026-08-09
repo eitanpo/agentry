@@ -37,9 +37,15 @@ var levels = map[string]render.Channels{
 var (
 	verbNames    = []string{"view", "list"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
-	includeNames = []string{"prompts", "tools", "files", "all"}
+	includeNames = []string{"prompts", "tools", "files", "model", "all"}
 	formatNames  = []string{"json", "text"}
 )
+
+// effortLevels are the levels `claude --effort` accepts, offered as completion
+// for --effort. They are suggestions only: the filter never validates against
+// them, because Claude Code can add a level without notice and an unknown one
+// should return no sessions rather than a usage error.
+var effortLevels = []string{"low", "medium", "high", "xhigh", "max"}
 
 // fixedComp is a shell-completion handler for an enum flag: it offers a static
 // candidate set and suppresses file completion, so `--format <Tab>` proposes

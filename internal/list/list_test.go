@@ -882,3 +882,113 @@ func ids(sums []model.Summary) []string {
 	}
 	return out
 }
+
+// TestFilterByRun pins the two selectors over what a session ran on. Before
+// them, "which sessions ran at xhigh" meant rendering each session in turn.
+func TestFilterByRun(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "opus5", Model: "claude-opus-5", Effort: "high"},
+		{ID: "opus48", Model: "claude-opus-4-8", Effort: "xhigh"},
+		{ID: "sonnet", Model: "claude-sonnet-5"},
+		{ID: "switched", Model: "claude-opus-5", Models: []string{"claude-sonnet-5", "claude-opus-5"}},
+		{ID: "none"},
+	}
+
+	t.Run("model is a substring, so a family and a release both work", func(t *testing.T) {
+		assertIDs(t, FilterByRun(sums, Run{Model: "opus"}), []string{"opus5", "opus48", "switched"})
+		assertIDs(t, FilterByRun(sums, Run{Model: "opus-5"}), []string{"opus5", "switched"})
+	})
+
+	t.Run("model matching is case-insensitive", func(t *testing.T) {
+		assertIDs(t, FilterByRun(sums, Run{Model: "OPUS-4-8"}), []string{"opus48"})
+	})
+
+	t.Run("a session that switched matches either model it ran", func(t *testing.T) {
+		// It really did run both; a test seeing only the resolved value would deny
+		// the session ever ran the first one.
+		assertIDs(t, FilterByRun(sums, Run{Model: "sonnet"}), []string{"sonnet", "switched"})
+	})
+
+	t.Run("effort is exact, so high does not swallow xhigh", func(t *testing.T) {
+		// The levels nest as substrings. A substring rule here would make
+		// --effort high a silent superset rather than the answer asked for.
+		assertIDs(t, FilterByRun(sums, Run{Effort: "high"}), []string{"opus5"})
+		assertIDs(t, FilterByRun(sums, Run{Effort: "xhigh"}), []string{"opus48"})
+	})
+
+	t.Run("effort matching is case-insensitive", func(t *testing.T) {
+		assertIDs(t, FilterByRun(sums, Run{Effort: "XHigh"}), []string{"opus48"})
+	})
+
+	t.Run("both fields AND", func(t *testing.T) {
+		assertIDs(t, FilterByRun(sums, Run{Model: "opus", Effort: "xhigh"}), []string{"opus48"})
+	})
+
+	t.Run("an unknown value is an empty listing, not an error", func(t *testing.T) {
+		// The level set grows without notice, so agentry does not validate against
+		// it: a level it has not heard of must return nothing, not reject the call.
+		if got := FilterByRun(sums, Run{Effort: "ultra"}); len(got) != 0 {
+			t.Errorf("got %v, want no sessions", ids(got))
+		}
+	})
+
+	t.Run("an empty selector is a no-op", func(t *testing.T) {
+		assertIDs(t, FilterByRun(sums, Run{}), ids(sums))
+	})
+}
+
+// TestRenderIncludeModel pins the channel that shows what a session ran on.
+// Without it, --model and --effort filter on a fact the text output never
+// displays, which leaves a reader guessing at the values to pass.
+func TestRenderIncludeModel(t *testing.T) {
+	sums := []model.Summary{{ID: "s1", Title: "do work", Model: "claude-opus-5", Effort: "high"}}
+
+	var off strings.Builder
+	if err := Render(&off, sums, Options{Width: 120, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(off.String(), "claude-opus-5") {
+		t.Errorf("the model should be hidden without the channel: %q", off.String())
+	}
+
+	var on strings.Builder
+	if err := Render(&on, sums, Options{Width: 120, Color: false, Model: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := on.String()
+	// The rendered header's phrasing, so one session reads the same in both paths.
+	if !strings.Contains(out, "claude-opus-5 · high effort") {
+		t.Errorf("output missing the model and effort phrase: %q", out)
+	}
+	if !strings.Contains(out, "╰─") {
+		t.Errorf("session block not closed by a rule: %q", out)
+	}
+
+	t.Run("a mid-session change shows the transition", func(t *testing.T) {
+		var b strings.Builder
+		sums := []model.Summary{{ID: "s1", Title: "do work",
+			Model:  "claude-opus-5",
+			Models: []string{"claude-sonnet-5", "claude-opus-5"},
+			Effort: "high", Efforts: []string{"xhigh", "high"}}}
+		if err := Render(&b, sums, Options{Width: 120, Color: false, Model: true}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), "claude-sonnet-5→claude-opus-5 · xhigh→high effort") {
+			t.Errorf("want both sequences spelled out, got %q", b.String())
+		}
+	})
+
+	t.Run("a session naming neither shows no line", func(t *testing.T) {
+		// About half of sessions predate the effort field, and a few name no model
+		// either. An empty rail line would read as data rather than as absence.
+		var b strings.Builder
+		if err := Render(&b, []model.Summary{{ID: "s1", Title: "do work"}},
+			Options{Width: 120, Color: false, Model: true}); err != nil {
+			t.Fatal(err)
+		}
+		// The block is the row, then the closing rule — no line between them.
+		if lines := strings.Count(strings.TrimSpace(b.String()), "\n"); lines != 1 {
+			t.Errorf("want just the row and its closing rule, got %q", b.String())
+		}
+	})
+}

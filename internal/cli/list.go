@@ -45,11 +45,17 @@ func addListFlags(cmd *cobra.Command) {
 	cmd.Flags().Int("limit", 10, "cap to N most-recent sessions (0 = no cap)")
 	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
 	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
-	cmd.Flags().String("include", "", "add detail channels (comma-separated): prompts, tools, files, all")
+	// The channel list is spelled from includeNames rather than repeated, so help
+	// and the parser cannot name different sets — they already had, the help text
+	// having been left behind when a channel was added.
+	cmd.Flags().String("include", "", "add detail channels (comma-separated): "+strings.Join(includeNames, ", "))
 	for _, u := range usageFilters {
 		cmd.Flags().String(u.flag, "", "only sessions that "+u.did)
 		cmd.Flags().String("not-"+u.flag, "", "only sessions that never "+u.did)
 	}
+	cmd.Flags().String("model", "", "only sessions that ran on a matching model (substring: opus, claude-opus-5)")
+	cmd.Flags().String("effort", "", "only sessions run at this reasoning effort (exact: low, medium, high, xhigh, max)")
+	_ = cmd.RegisterFlagCompletionFunc("effort", fixedComp(effortLevels))
 	cmd.Flags().Bool("all-projects", false, "list every project's sessions, not just this directory's")
 	cmd.Flags().String("project", "", "list PATH's sessions instead of this directory's, including anything nested under it")
 	addFromFlag(cmd)
@@ -126,7 +132,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	until, _ := cmd.Flags().GetString("until")
 	include, _ := cmd.Flags().GetString("include")
 
-	var showPrompts, showTools, showFiles bool
+	var showPrompts, showTools, showFiles, showModel bool
 	for _, tok := range strings.Split(include, ",") {
 		switch tok = strings.TrimSpace(tok); tok {
 		case "": // empty entries (e.g. unset flag) contribute nothing
@@ -136,8 +142,10 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 			showTools = true
 		case "files":
 			showFiles = true
+		case "model":
+			showModel = true
 		case "all":
-			showPrompts, showTools, showFiles = true, true, true
+			showPrompts, showTools, showFiles, showModel = true, true, true, true
 		default:
 			if g := nearest(tok, includeNames); g != "" {
 				return usageErr("--include: unknown channel %q — did you mean %q?", tok, g)
@@ -173,9 +181,10 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		}
 		untilT = t
 	}
-	// A time or --used* filter without an explicit --limit lifts the default
+	// A time, --used* or run filter without an explicit --limit lifts the default
 	// cap, so a filtered listing shows every match, not just ten.
-	filtering := cmd.Flags().Changed("since") || cmd.Flags().Changed("until")
+	filtering := cmd.Flags().Changed("since") || cmd.Flags().Changed("until") ||
+		cmd.Flags().Changed("model") || cmd.Flags().Changed("effort")
 	for _, f := range usedFlags {
 		filtering = filtering || cmd.Flags().Changed(f)
 	}
@@ -189,6 +198,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		u.set(&filters.Used, get(u.flag))
 		u.set(&filters.NotUsed, get("not-"+u.flag))
 	}
+	run := list.Run{Model: get("model"), Effort: get("effort")}
 
 	paths, err := sessionPaths(cmd)
 	if err != nil {
@@ -224,7 +234,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	// caller will actually see: capping first and filtering after would return
 	// fewer than N rows and give no hint why.
 	visible := list.FilterByFrom(sums, from)
-	selected := list.Select(list.FilterByTools(visible, filters), sinceT, untilT, limit)
+	selected := list.Select(list.FilterByTools(list.FilterByRun(visible, run), filters), sinceT, untilT, limit)
 	// A default that empties the listing must say so. Hidden non-interactive
 	// sessions are the one exclusion the caller did not ask for, so without this
 	// an empty result is indistinguishable from a project holding nothing.
@@ -241,7 +251,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	}
 	color, width := terminal(*noColor)
 	if err := list.Render(os.Stdout, selected, list.Options{
-		Width: width, Color: color, Prompts: showPrompts, Tools: showTools, Files: showFiles,
+		Width: width, Color: color, Prompts: showPrompts, Tools: showTools, Files: showFiles, Model: showModel,
 	}); err != nil {
 		return &exitError{code: 1, err: err}
 	}

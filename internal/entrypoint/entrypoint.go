@@ -8,7 +8,11 @@
 // reason to make one depend on the other.
 package entrypoint
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/eitanpo/agentry/internal/trail"
+)
 
 // Selector values, as accepted by --from and shown in the listing's tag column.
 const (
@@ -79,13 +83,16 @@ func Tag(logValue string) string {
 // there is room for it: "app→cli" for a session started in the desktop app and
 // resumed from the terminal, or the one tag when it never moved. This is the
 // same information a listing compresses to a "+" suffix for want of width.
+//
+// It is trail.Of over translated values: the log's entrypoint words are not the
+// ones shown, so each is tagged first, and only the joining is shared.
 func Trail(resolved string, all []string) string {
 	if len(all) > 1 {
 		parts := make([]string, len(all))
 		for i, e := range all {
 			parts[i] = Tag(e)
 		}
-		return strings.Join(parts, "→")
+		return strings.Join(parts, trail.Arrow)
 	}
 	return Tag(resolved)
 }

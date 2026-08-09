@@ -24,7 +24,7 @@ source <(agentry completion bash)    # add to ~/.bashrc
 agentry completion fish | source     # or: > ~/.config/fish/completions/agentry.fish
 ```
 
-Completion covers the verbs and flags, the enum values of `--format`/`--level`, and — the useful one — the current project's **session ids**, each shown with its title, so you tab a UUID instead of pasting it.
+Completion covers the verbs and flags, the enum values of `--format`, `--level`, `--from` and `--effort`, and — the useful one — the current project's **session ids**, each shown with its title, so you tab a UUID instead of pasting it.
 
 ## Usage
 
@@ -53,12 +53,18 @@ agentry list --since 2026-06-01 --until 2026-06-03
 agentry list --include prompts            # list each session's prompts beneath its row
 agentry list --include tools              # break down each session's tool calls by command/skill/agent
 agentry list --include files              # every file each session modified
+agentry list --include model              # what each session ran on: model and reasoning effort
+agentry list --model opus                 # only sessions that ran on an opus model
+agentry list --model claude-opus-5        # only that one model
+agentry list --effort xhigh               # only sessions run at xhigh reasoning effort
 agentry list --used-command exa           # only sessions that ran a Bash command matching "exa"
 agentry list --used-skill expert          # only sessions that invoked the expert skill
 agentry list --used-file PRODUCT.md       # only sessions that modified that file
 agentry list --used researcher            # skill, agent, or command matching "researcher"
 agentry list --used-command 'git commit' --not-used-skill review   # committed without loading a skill
 agentry list --used-skill expert --format json | jq   # machine-readable, for piping
+agentry list --all-projects --from all --limit 0 --format json \
+  | jq -r 'group_by(.model)[] | "\(.[0].model) \(map(.usage.output) | add)"'   # output tokens per model, everywhere
 agentry list --all-projects                # every project, not just this directory
 agentry list --project ~/Projects/me/app   # that repo and every worktree nested in it
 agentry list --project ~/Projects/me       # every repo under that directory
@@ -91,16 +97,18 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--[no-]thinking\|tools\|tool-results\|subagents\|metrics` | render | — | Override a single channel on top of `--level` (adds or subtracts). `tools` = a tool fired; `tool-results` = its output. An `Agent` line also names what it delegated to: `Agent[Explore@haiku]` is the subagent type and the model, and the `@model` half is absent when the call left the subagent on the session's model. |
 | `--limit N` | `list` | `10` | Cap to N most-recent (`0` = no cap; lifted when a time filter is set). |
 | `--since WHEN`, `--until WHEN` | `list` | — | Filter by last-activity time. WHEN: `today`/`yesterday`, `Nh`/`Nd`/`Nw`, or `YYYY-MM-DD`. |
-| `--include CHANNELS` | `list` | — | Add per-session detail. Comma-separated; channels: `prompts`, `tools`, `files` (or `all`). `tools` breaks down a session's top-level tool calls grouped by identity — Bash by program, Skill by name, Agent by subagent type, Edit/Write by target file, everything else by tool name — and adds a `Denied` line naming the calls that were refused and by what (`permission-rule`, `automode-blocked`, `automode-unavailable`, `user-rejected`), which an error glyph alone cannot tell you. `files` lists every file the session modified by any means, from Claude Code's own file-history record rather than from tool arguments. |
+| `--include CHANNELS` | `list` | — | Add per-session detail. Comma-separated; channels: `prompts`, `tools`, `files`, `model` (or `all`). `tools` breaks down a session's top-level tool calls grouped by identity — Bash by program, Skill by name, Agent by subagent type, Edit/Write by target file, everything else by tool name — and adds a `Denied` line naming the calls that were refused and by what (`permission-rule`, `automode-blocked`, `automode-unavailable`, `user-rejected`), which an error glyph alone cannot tell you. `files` lists every file the session modified by any means, from Claude Code's own file-history record rather than from tool arguments. `model` names what the session ran on — its model and reasoning effort, in the rendered header's phrasing — which is otherwise invisible in the text table. |
 | `--used-tool NAME` | `list` | — | Only sessions where that tool fired, by tool-use name (case-insensitive, exact). The "which mechanism" axis. |
 | `--used-skill`, `--used-agent`, `--used-command` | `list` | — | Identity axis: a Skill's skill, an Agent's subagent type, a Bash command's text (case-insensitive substring). |
 | `--used-file PATH` | `list` | — | Only sessions that modified a matching file (case-insensitive substring, so `list.go` catches every directory's and `internal/cli/list.go` names one). Reads `Edit`/`Write` targets and the tracked-file record together; the tool targets do nearly all the work, since about half of sessions have no tracked-file record at all. Not covered by `--used`. |
 | `--used TOKEN` | `list` | — | Catch-all over the identity axis: skill name, agent type, or command. Not tool names — use `--used-tool` for those. |
 | `--not-used-*` | `list` | — | Every `--used*` flag above has a `--not-` twin (`--not-used-tool`, `--not-used-skill`, `--not-used-agent`, `--not-used-command`, `--not-used-file`, `--not-used`) keeping the sessions the positive one drops. Combine the two for a compliance audit: `--used-command 'git commit' --not-used-skill review`. Absence is judged over top-level calls only, so a subagent may have used what the main thread did not. |
+| `--model NAME` | `list` | — | Only sessions that ran on a matching model (case-insensitive substring, so `opus` covers `claude-opus-5` and `claude-opus-4-8` while `claude-opus-5` picks one). Matches any model the session carried, so one that switched mid-way matches both. |
+| `--effort LEVEL` | `list` | — | Only sessions run at that reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Case-insensitive and **exact**, unlike the substring filters — the levels nest, so `high` must not quietly include `xhigh`. Unknown levels return nothing rather than erroring, since the set grows. |
 | `--all-projects` | `list` | — | Every project under `~/.claude/projects/`, not just this directory's. Mutually exclusive with `--project`. |
 | `--project PATH` | `list` | — | PATH's sessions instead of this directory's, including every project nested under PATH — which is how naming a repo picks up its git worktrees. |
 | `--from cli\|app\|sdk\|all` | `list`, `view` | `cli`+`app` | Where the session was run. `sdk` is anything non-interactive (`claude -p`, a hook, CI) and is **hidden by default**; `all` restores it. On `view` (no id) it picks which kind the most-recent lookup walks back to; it cannot be combined with a session id. |
-| `--format json\|text` | render, `list` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color), with `meta.effort` beside `meta.model` and each tool call carrying the `identity` that `list --include tools` groups by plus the `model` an `Agent` call delegated to; on `list` it's a JSON array of per-session summaries, each carrying its `cwd`, the `files` it modified as absolute paths, and its `denials` (ignoring `--include` and color), and stdout is always a valid array — a directory with no project, or a project with no sessions, prints `[]` while still reporting the error on stderr and exiting non-zero, so you can pipe into `jq` without a guard. |
+| `--format json\|text` | render, `list` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color), with `meta.effort` beside `meta.model` and each tool call carrying the `identity` that `list --include tools` groups by plus the `model` an `Agent` call delegated to; on `list` it's a JSON array of per-session summaries, each carrying its `cwd`, the `files` it modified as absolute paths, its `denials`, its `model` and `effort`, and its `usage` — the token tally over the main thread and every subagent, the same number the render path reports as `meta.usage`, which is what makes a cross-project cost tally one call instead of one render per session (ignoring `--include` and color), and stdout is always a valid array — a directory with no project, or a project with no sessions, prints `[]` while still reporting the error on stderr and exiting non-zero, so you can pipe into `jq` without a guard. |
 | `--no-color` | global | — | Disable color (also honors the `NO_COLOR` env var). |
 | `--help`, `--version` | global | — | Per-verb `--help` lists only that mode's flags. |
 

@@ -664,3 +664,38 @@ func TestSessionPlainNoANSI(t *testing.T) {
 		t.Error("render missing prompt text")
 	}
 }
+
+// TestHeaderModel pins how the header names what a session ran on. The model
+// used to be printed unconditionally from the first assistant entry, so a
+// session that switched was reported as still on the model it left, and one
+// whose log names none was reported as "unknown".
+func TestHeaderModel(t *testing.T) {
+	head := func(t *testing.T, m model.Meta) string {
+		t.Helper()
+		sess := &model.Session{Meta: m, Turns: []model.Turn{{Prompt: "go"}}}
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 120, Color: false}); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	t.Run("a mid-session switch shows the transition", func(t *testing.T) {
+		out := head(t, model.Meta{Model: "claude-opus-5", Models: []string{"claude-sonnet-5", "claude-opus-5"}})
+		if !strings.Contains(out, "claude-sonnet-5→claude-opus-5") {
+			t.Errorf("want the whole sequence, got %q", out)
+		}
+	})
+
+	t.Run("a session naming no model says nothing", func(t *testing.T) {
+		// The word "unknown" claimed a fact the log does not carry; the effort and
+		// entrypoint beside it already stay silent in this case.
+		out := head(t, model.Meta{Effort: "high"})
+		if strings.Contains(out, "unknown") {
+			t.Errorf("no model recorded, so none should be named: %q", out)
+		}
+		if !strings.Contains(out, "high effort") {
+			t.Errorf("the rest of the header should survive a missing model: %q", out)
+		}
+	})
+}
