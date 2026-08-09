@@ -61,10 +61,10 @@ obvious. Plain `go build`/`go install`/`go run` (no make) print the bare base ve
 Release builds set the full version from the git tag via `-ldflags "-X main.Version=<v>"`
 (GoReleaser does this on tag).
 
-Increment policy (pre-1.0): bump MINOR (`0.x.0`) for a backward-compatible feature or
-behavior addition, PATCH (`0.x.y`) for bug fixes and refactors; MAJOR is reserved for the
-1.0 stabilization. `var Version` changes **only when releasing** (step 1 below), never in a
-feature commit — the bump covers everything accumulated since the last tag.
+The increment policy lives in [AGENTS.md](AGENTS.md) § Versioning, which owns the bump
+decision — do not restate it here. This file owns the mechanics only. `var Version` changes
+**only when releasing** (step 1 below), never in a feature commit — the bump covers everything
+accumulated since the last tag.
 
 ## Releasing
 

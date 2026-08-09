@@ -50,7 +50,17 @@ Commit directly to `main`; do not create a feature branch. This is a solo repo w
 
 ## Versioning
 
-`main.go`'s `var Version` holds the **last published** version — the Makefile and release tags derive from it. It changes **only when publishing a release**, never in a feature commit: feature work leaves it untouched and accumulates under the next version. To publish, bump `var Version` and create the matching `vX.Y.Z` tag in the same step (see the release flow below), choosing the bump from the accumulated change under pre-1.0 SemVer — MINOR (`0.Y`) for backward-compatible public-surface additions, PATCH (`0.y.Z`) for fixes only. So a feature commit states no version; the bump decision is made once, at release, covering everything since the last tag.
+This section owns the **bump decision**; [DEVELOPMENT.md](DEVELOPMENT.md) owns the release mechanics and does not restate the policy.
+
+`main.go`'s `var Version` holds the **last published** version — the Makefile and release tags derive from it. It changes **only when publishing a release**, never in a feature commit: feature work leaves it untouched and accumulates under the next version. To publish, bump `var Version` and create the matching `vX.Y.Z` tag in the same step (see the release flow below). So a feature commit states no version; the bump decision is made once, at release, covering everything since the last tag.
+
+Choose the bump from everything accumulated since the last tag, under pre-1.0 SemVer:
+
+- **MINOR** (`0.Y.0`) — the release lets a caller ask something no released version could answer.
+- **PATCH** (`0.y.Z`) — a fix; a refactor with no observable change; or a release that adds no new command, verb, flag, or output mode and only fills in a fact on a surface already carrying its siblings.
+- **MAJOR** — reserved for the 1.0 stabilization.
+
+**Adding fields does not by itself make a release MINOR** — capability decides, not surface area. The third PATCH case is not a judgment call, and it has two gates, both required. Adding a command, verb, flag, or output mode fails the first outright, however small the addition. Passing the second means naming the released version that already answers the question this release makes reachable; where you cannot name one, the bump is MINOR. Record the chosen bump in the release commit message, naming that earlier version whenever you used this case — the decision is otherwise invisible the moment the release ships.
 
 ## Building
 
