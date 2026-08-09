@@ -2,6 +2,7 @@ package parse
 
 import (
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -833,6 +834,22 @@ func TestSummarizeOutputs(t *testing.T) {
 		// ...but says nothing about the title, and an omission is not a deletion.
 		if got.Title != "Cost report" {
 			t.Errorf("Title = %q, want the earlier record's title to survive", got.Title)
+		}
+	})
+
+	t.Run("a summary agrees with the rendered session", func(t *testing.T) {
+		// The two paths read one session, so they must not name different outputs:
+		// a pull request visible in the listing and absent from the render is the
+		// disagreement carrying these onto Meta was meant to end.
+		sess, err := Load(filepath.Join("testdata", "outputs.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(s.PRs, sess.Meta.PRs) {
+			t.Errorf("summary PRs %+v vs meta %+v", s.PRs, sess.Meta.PRs)
+		}
+		if !slices.Equal(s.Artifacts, sess.Meta.Artifacts) {
+			t.Errorf("summary artifacts %+v vs meta %+v", s.Artifacts, sess.Meta.Artifacts)
 		}
 	})
 }

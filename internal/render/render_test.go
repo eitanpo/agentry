@@ -699,3 +699,93 @@ func TestHeaderModel(t *testing.T) {
 		}
 	})
 }
+
+// TestOutputsSection pins what a rendered session says it produced. The header
+// describes what a session was; without this, a pull request the session opened
+// is visible in `list` and nowhere in the render path, which is the two paths
+// knowing different things about one session.
+func TestOutputsSection(t *testing.T) {
+	sess := &model.Session{
+		Meta: model.Meta{
+			ID: "s1",
+			PRs: []model.PR{
+				{Repository: "eitanpo/central", Number: 14, URL: "https://github.com/eitanpo/central/pull/14"},
+			},
+			Artifacts: []model.Artifact{
+				{Title: "Cost report", URL: "https://claude.ai/code/artifact/aaa"},
+				{URL: "https://claude.ai/code/artifact/bbb"},
+			},
+		},
+		Turns: []model.Turn{{Prompt: "ship it"}},
+	}
+
+	t.Run("plain output shows every URL, since there is no href to hide one in", func(t *testing.T) {
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 100, Color: false}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		if !strings.Contains(out, "── Outputs ──") {
+			t.Fatalf("no Outputs section: %q", out)
+		}
+		for _, want := range []string{
+			"https://github.com/eitanpo/central/pull/14",
+			"Cost report  https://claude.ai/code/artifact/aaa",
+			"https://claude.ai/code/artifact/bbb",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q: %q", want, out)
+			}
+		}
+		if strings.Contains(out, "\x1b]8;;") {
+			t.Errorf("plain output must carry no OSC 8 escape: %q", out)
+		}
+	})
+
+	t.Run("the section renders at minimal verbosity", func(t *testing.T) {
+		// It is deliberately ungated: thinking and tool bodies are hidden at low
+		// verbosity because they are the machinery, and a link to the pull request
+		// the session opened is the opposite of machinery.
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{}}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), "pull/14") {
+			t.Errorf("Outputs must not be gated on a channel: %q", b.String())
+		}
+	})
+
+	t.Run("a session that produced nothing draws no section", func(t *testing.T) {
+		var b strings.Builder
+		quiet := &model.Session{Meta: model.Meta{ID: "s1"}, Turns: []model.Turn{{Prompt: "think"}}}
+		if err := Session(&b, quiet, Options{Width: 100, Color: false}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.String(), "Outputs") {
+			t.Errorf("empty section drawn: %q", b.String())
+		}
+	})
+
+	t.Run("with color on, an artifact links by title and a PR by its URL", func(t *testing.T) {
+		// The split assistant prose already makes: a markdown link hides its URL
+		// behind a name, a bare URL is its own name. An artifact id is an opaque
+		// uuid, so the title is the only useful name it has.
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 100, Color: true}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		if !strings.Contains(out, "\x1b]8;;https://claude.ai/code/artifact/aaa\x1b\\") {
+			t.Errorf("artifact is not an OSC 8 hyperlink: %q", out)
+		}
+		// The artifact's URL is hidden behind its title, so it appears only in the
+		// href — never as visible text beside it.
+		plain, _ := stripANSI(out)
+		if strings.Contains(plain, "Cost report  https://claude.ai/code/artifact/aaa") {
+			t.Errorf("a linked artifact must hide its URL from the visible text: %q", plain)
+		}
+		if !strings.Contains(plain, "https://github.com/eitanpo/central/pull/14") {
+			t.Errorf("a pull request's visible text is its URL: %q", plain)
+		}
+	})
+}

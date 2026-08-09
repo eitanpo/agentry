@@ -40,6 +40,11 @@ type Meta struct {
 	// about where one session ran.
 	Entrypoint  string   `json:"entrypoint,omitempty"`
 	Entrypoints []string `json:"entrypoints,omitempty"`
+	// PRs and Artifacts likewise mirror the Summary fields of those names, so a
+	// rendered session and a listing never disagree about what one session
+	// produced.
+	PRs       []PR       `json:"prs,omitempty"`
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 }
 
 // Summary is a lightweight session descriptor for listing: enough to identify

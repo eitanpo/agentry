@@ -55,6 +55,8 @@ func Load(jsonlPath string) (*model.Session, error) {
 			Entrypoints:  manyOrNone(eps),
 			Effort:       lastOf(effs),
 			Efforts:      manyOrNone(effs),
+			PRs:          sessionPRs(entries),
+			Artifacts:    sessionArtifacts(entries),
 		},
 	}
 	sess.Meta.Start, sess.Meta.End = timeRange(entries)

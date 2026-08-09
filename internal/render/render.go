@@ -99,6 +99,16 @@ func Session(w io.Writer, s *model.Session, opts Options) error {
 		b.WriteString("\n")
 		b.WriteString(r.turn(t))
 	}
+	// What the session produced comes after the last turn and before the metrics,
+	// because an output is a result of the session rather than a property of it —
+	// the header says what the session was. It is not gated on a channel: thinking
+	// and tool bodies are hidden at low verbosity because they are the machinery,
+	// and a link to the pull request the session opened is the opposite of
+	// machinery. A session that produced nothing renders nothing here.
+	if out := r.outputs(s); out != "" {
+		b.WriteString("\n")
+		b.WriteString(out)
+	}
 	if opts.Channels.Metrics {
 		b.WriteString("\n")
 		b.WriteString(r.summary(s))
@@ -527,9 +537,11 @@ func (r *renderer) linkifyMarkdown(lines []string, links []mdLinkSpec) {
 		last := 0
 		for _, sp := range spans {
 			b.WriteString(line[last:sp.ss])
-			b.WriteString("\x1b]8;;" + links[sp.li].url + "\x1b\\")
-			b.WriteString(r.link.Render(links[sp.li].text))
-			b.WriteString("\x1b]8;;\x1b\\")
+			// Through the shared helper, so prose links and the Outputs section
+			// cannot emit two different escape sequences for one idea. Unguarded
+			// because reaching here already means links were collected, which
+			// markdown does only when color is on.
+			b.WriteString(r.hyperlink(links[sp.li].text, links[sp.li].url))
 			last = sp.se
 		}
 		b.WriteString(line[last:])
@@ -593,6 +605,66 @@ func (r *renderer) glamourFor(width int) *glamour.TermRenderer {
 	}
 	r.gcache[width] = g
 	return g
+}
+
+// ── Outputs ────────────────────────────────────────────────────────────────
+
+// outputs lists what the session produced beyond its own transcript: the pull
+// requests it opened, then the artifacts it published. Empty when it produced
+// neither, which is the signal not to draw the section at all.
+//
+// The two kinds link differently, following the split assistant prose already
+// makes. A pull request is its own URL as the link text, the way a bare URL in
+// prose is — the URL already spells the repository and the number, so there is no
+// better name to show. An artifact is its title with the URL hidden in the href,
+// the way a markdown link is, because a claude.ai artifact id is an opaque uuid
+// and showing it in place of a name would be strictly worse than the name.
+func (r *renderer) outputs(s *model.Session) string {
+	m := s.Meta
+	if len(m.PRs) == 0 && len(m.Artifacts) == 0 {
+		return ""
+	}
+	// Two columns of indent, matching the summary table's rows below.
+	const indent = "  "
+	width := max(r.opts.Width-len(indent), 20)
+
+	var b strings.Builder
+	b.WriteString(r.dim.Render("── Outputs ──") + "\n")
+	for _, p := range m.PRs {
+		u := p.Key()
+		b.WriteString(indent + r.maybeLink(truncate(u, width), u) + "\n")
+	}
+	for _, a := range m.Artifacts {
+		href, text := a.Key(), a.Title
+		switch {
+		case text == "":
+			text = href // no title recorded: the URL is the only name there is
+		case !r.opts.Color:
+			// Plain output has no href to hide the URL in, so it is shown beside the
+			// title — the same degradation a markdown link in prose makes.
+			text += "  " + href
+		}
+		b.WriteString(indent + r.maybeLink(truncate(text, width), href) + "\n")
+	}
+	return b.String()
+}
+
+// maybeLink hyperlinks text when color is on and leaves it plain when off. The
+// escape is invisible in a terminal but is literal bytes in a pipe or a file, and
+// plain output's contract is plain text.
+func (r *renderer) maybeLink(text, url string) string {
+	if !r.opts.Color {
+		return text
+	}
+	return r.hyperlink(text, url)
+}
+
+// hyperlink wraps text in an OSC 8 terminal hyperlink to url, in the link style.
+// It carries no color policy of its own — callers that render in both modes gate
+// it through maybeLink — so the escape sequence has exactly one home and prose
+// links and the Outputs section cannot drift into emitting different bytes.
+func (r *renderer) hyperlink(text, url string) string {
+	return "\x1b]8;;" + url + "\x1b\\" + r.link.Render(text) + "\x1b]8;;\x1b\\"
 }
 
 // ── Summary table (metrics channel) ────────────────────────────────────────
