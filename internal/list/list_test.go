@@ -2,6 +2,8 @@ package list
 
 import (
 	"encoding/json"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1133,4 +1135,98 @@ func TestRenderIncludeOutputs(t *testing.T) {
 			t.Errorf("want just the row and its closing rule, got %q", b.String())
 		}
 	})
+}
+
+// TestFilterByReply pins the "what the reply said" axis — the only filter that
+// reads the model's own prose, and the only one whose corpus --format json does
+// not carry. Without it, no listing can count whether a rule about how a reply
+// is written ever fired.
+func TestFilterByReply(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "block", Replies: []string{
+			"Here is the change.",
+			"Done.\n\n**Learnings:** NONE",
+		}},
+		{ID: "mention", Replies: []string{
+			"I rewrote the Learnings rule so /capture-learnings can sweep it.",
+		}},
+		{ID: "praise", Replies: []string{
+			"Great question! Here is why that works.",
+		}},
+		{ID: "silent"},
+	}
+	matching := func(t *testing.T, pattern string) []model.Summary {
+		t.Helper()
+		re, err := regexp.Compile("(?i)" + pattern)
+		if err != nil {
+			t.Fatalf("compile %q: %v", pattern, err)
+		}
+		return FilterByTools(sums, Filters{Used: Criteria{Reply: re}})
+	}
+
+	t.Run("a line-anchored pattern separates the block from a mention of it", func(t *testing.T) {
+		// This is the whole reason the filter takes a regexp: the substring
+		// "learnings" cannot tell a session that emitted the block from one that
+		// merely discussed the rule, and an audit counting compliance needs to.
+		assertIDs(t, matching(t, `(?m)^\*{0,2}Learnings\b`), []string{"block"})
+		assertIDs(t, matching(t, `learnings`), []string{"block", "mention"})
+	})
+
+	t.Run("^ anchors to one reply, not to the session's joined text", func(t *testing.T) {
+		// "Did a reply open with praise" is a question about a reply. Joining the
+		// blocks would answer it only about the first one, so a session whose
+		// second reply opened with praise would read as compliant.
+		assertIDs(t, matching(t, `^great\b`), []string{"praise"})
+		assertIDs(t, matching(t, `^done\.`), []string{"block"})
+	})
+
+	t.Run("matching is case-insensitive across every branch of an alternation", func(t *testing.T) {
+		// The (?i) prefix has to cover the whole pattern; if it stopped at the
+		// first branch, "PRAISE|excellent" would silently match case-sensitively
+		// on the right-hand side and under-count.
+		assertIDs(t, matching(t, `GREAT QUESTION`), []string{"praise"})
+		assertIDs(t, matching(t, `nomatch|GREAT`), []string{"praise"})
+	})
+
+	t.Run("the negated form keeps exactly what the positive drops", func(t *testing.T) {
+		re := regexp.MustCompile(`(?i)(?m)^\*{0,2}Learnings\b`)
+		kept := FilterByTools(sums, Filters{NotUsed: Criteria{Reply: re}})
+		assertIDs(t, kept, []string{"mention", "praise", "silent"})
+	})
+
+	t.Run("a session with no replies matches no pattern", func(t *testing.T) {
+		// A session carrying no reply text must not fall through as a match; an
+		// empty corpus is an absence, and the negated form is where it belongs.
+		if got := matching(t, `.`); slices.Contains(ids(got), "silent") {
+			t.Errorf("a session with no replies matched: %v", ids(got))
+		}
+	})
+
+	t.Run("an unset Reply imposes no constraint", func(t *testing.T) {
+		// nil is the unset value, so Criteria{} must stay the identity filter.
+		if !(Criteria{}).empty() {
+			t.Error("Criteria{} with a nil Reply is not empty")
+		}
+		assertIDs(t, FilterByTools(sums, Filters{}), ids(sums))
+	})
+}
+
+// TestReplyTextIsNeverSerialized pins the size decision behind --reply-matches:
+// reply text is matched in memory and never shipped. It is the largest field a
+// summary could carry (2.8 MB across one local project's 59 sessions, against
+// 776 KB for that project's whole 50-session listing), and --include gates no
+// JSON key, so serializing it would enlarge every listing for every caller.
+func TestReplyTextIsNeverSerialized(t *testing.T) {
+	var b strings.Builder
+	if err := RenderJSON(&b, []model.Summary{
+		{ID: "s1", Title: "ship it", Replies: []string{"a distinctive reply body"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "distinctive reply body") {
+		t.Errorf("reply text leaked into --format json: %s", b.String())
+	}
+	if strings.Contains(strings.ToLower(b.String()), "replies") {
+		t.Errorf("a replies key appeared in --format json: %s", b.String())
+	}
 }

@@ -58,6 +58,17 @@ type Summary struct {
 	NumTurns int        `json:"numTurns"`
 	Tools    []ToolStat `json:"tools,omitempty"`    // top-level tool calls aggregated by identity (for --include tools)
 	Commands []string   `json:"commands,omitempty"` // distinct top-level Bash commands (for --used-command / --used)
+	// Replies is every non-blank assistant text block the main thread wrote, in
+	// order — the corpus --reply-matches tests. Thinking blocks are excluded:
+	// reasoning is not a reply.
+	//
+	// Deliberately not serialized, alone among the content fields. Reply text is
+	// the largest thing a session holds — 2.8 MB across one local project's 59
+	// sessions, against 776 KB for that project's whole 50-session JSON listing —
+	// and --include gates no JSON key, so carrying it would quadruple every
+	// listing for every caller. The filter reads it in memory; a caller who wants
+	// the prose renders the session, whose JSON carries every text event in full.
+	Replies []string `json:"-"`
 	// RootUUID is the uuid of the session's first content entry — the
 	// conversation root. A fork copies its parent's chain verbatim, so a fork and
 	// its parent share a RootUUID; the listing groups them into one fork family.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -104,19 +105,49 @@ func sessionPaths(cmd *cobra.Command) ([]string, error) {
 //
 // did completes both "only sessions that <did>" and "only sessions that never
 // <did>", which is why it is phrased as a past-tense verb phrase.
+//
+// set returns an error because one filter value can be malformed: --reply-matches
+// takes a regular expression. The error is carried on the shared shape rather
+// than special-casing that one flag outside the table, so a future filter with a
+// validated value cannot be added to the flag set and forgotten in the negation.
+// The caller names the flag, so the set functions stay flag-agnostic.
 var usageFilters = []struct {
 	flag string
 	did  string
-	set  func(*list.Criteria, string)
+	set  func(*list.Criteria, string) error
 }{
-	{"used-tool", "used this tool, by name (Bash, Skill, Agent, WebFetch, …)", func(c *list.Criteria, v string) { c.Tool = v }},
-	{"used-skill", "invoked this skill", func(c *list.Criteria, v string) { c.Skill = v }},
-	{"used-agent", "spawned this subagent type", func(c *list.Criteria, v string) { c.Agent = v }},
-	{"used-command", "ran a Bash command matching this text", func(c *list.Criteria, v string) { c.Command = v }},
-	{"used-file", "modified a file matching this path", func(c *list.Criteria, v string) { c.File = v }},
-	{"used", "used this as a skill, agent, or command", func(c *list.Criteria, v string) { c.Any = v }},
-	{"opened-pr", "opened a matching pull request, by repository, number, or url", func(c *list.Criteria, v string) { c.PR = v }},
-	{"published-artifact", "published a matching artifact, by title, url, or local path", func(c *list.Criteria, v string) { c.Artifact = v }},
+	{"used-tool", "used this tool, by name (Bash, Skill, Agent, WebFetch, …)", func(c *list.Criteria, v string) error { c.Tool = v; return nil }},
+	{"used-skill", "invoked this skill", func(c *list.Criteria, v string) error { c.Skill = v; return nil }},
+	{"used-agent", "spawned this subagent type", func(c *list.Criteria, v string) error { c.Agent = v; return nil }},
+	{"used-command", "ran a Bash command matching this text", func(c *list.Criteria, v string) error { c.Command = v; return nil }},
+	{"used-file", "modified a file matching this path", func(c *list.Criteria, v string) error { c.File = v; return nil }},
+	{"used", "used this as a skill, agent, or command", func(c *list.Criteria, v string) error { c.Any = v; return nil }},
+	{"opened-pr", "opened a matching pull request, by repository, number, or url", func(c *list.Criteria, v string) error { c.PR = v; return nil }},
+	{"published-artifact", "published a matching artifact, by title, url, or local path", func(c *list.Criteria, v string) error { c.Artifact = v; return nil }},
+	{"reply-matches", "wrote a reply matching this pattern (case-insensitive regexp)", func(c *list.Criteria, v string) error {
+		if v == "" {
+			return nil // unset flag: no constraint, and "" would match every reply
+		}
+		re, err := compileReply(v)
+		if err != nil {
+			return err
+		}
+		c.Reply = re
+		return nil
+	}},
+}
+
+// compileReply turns a --reply-matches value into the matcher the filter uses:
+// the caller's own pattern, made case-insensitive to match the rest of the
+// family. The (?i) prefix covers the whole pattern including every branch of a
+// top-level alternation, and a caller who wants case to matter overrides it with
+// (?-i). The error names the pattern, since cobra reports only the flag.
+func compileReply(pattern string) (*regexp.Regexp, error) {
+	re, err := regexp.Compile("(?i)" + pattern)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a valid regular expression: %w", pattern, err)
+	}
+	return re, nil
 }
 
 // usedFlags are every usageFilters flag name, positive and negated; any of them,
@@ -202,8 +233,14 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	get := func(name string) string { v, _ := cmd.Flags().GetString(name); return v }
 	var filters list.Filters
 	for _, u := range usageFilters {
-		u.set(&filters.Used, get(u.flag))
-		u.set(&filters.NotUsed, get("not-"+u.flag))
+		// Both sides are validated before any session is read, so a malformed
+		// value errors as usage rather than after a directory scan's delay.
+		if err := u.set(&filters.Used, get(u.flag)); err != nil {
+			return usageErr("--%s: %v", u.flag, err)
+		}
+		if err := u.set(&filters.NotUsed, get("not-"+u.flag)); err != nil {
+			return usageErr("--not-%s: %v", u.flag, err)
+		}
 	}
 	run := list.Run{Model: get("model"), Effort: get("effort")}
 

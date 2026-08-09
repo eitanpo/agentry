@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,6 +123,12 @@ func FilterByFrom(sums []model.Summary, from string) []model.Summary {
 // do not read tool calls at all: they test Claude Code's own session-level record
 // of a pull request opened or a page published, so they see work a subagent did
 // as readily as work the main thread did.
+//
+// Reply is the "what the reply said" axis and the one field that is a compiled
+// regular expression rather than a substring: it matches prose, where the
+// questions are positional and alternation-shaped. nil is the unset value, so a
+// caller sets it only with a pattern that already compiled — an invalid one is
+// rejected as a usage error before any session is read.
 type Criteria struct {
 	Tool     string
 	Skill    string
@@ -131,6 +138,7 @@ type Criteria struct {
 	File     string
 	PR       string
 	Artifact string
+	Reply    *regexp.Regexp
 }
 
 func (c Criteria) empty() bool {
@@ -172,6 +180,9 @@ func (c Criteria) hit(s model.Summary) (all, any bool) {
 	}
 	if c.Artifact != "" {
 		add(hasArtifact(s.Artifacts, c.Artifact))
+	}
+	if c.Reply != nil {
+		add(hasReply(s.Replies, c.Reply))
 	}
 	return all, any
 }
@@ -326,6 +337,22 @@ func hasPR(prs []model.PR, sub string) bool {
 func hasArtifact(as []model.Artifact, sub string) bool {
 	for _, a := range as {
 		if containsFold(a.Title, sub) || containsFold(a.URL, sub) || containsFold(a.Path, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasReply reports whether any of the session's assistant text blocks matches
+// re. Per block rather than over the blocks joined, because ^ and $ have to
+// anchor to one reply: "did a reply open with praise" is a question about a
+// reply, and a joined corpus would leave it answerable only about the session.
+//
+// Reply text is the one thing the filters read that --format json does not
+// carry, so this is the only way to ask the question over a corpus at all.
+func hasReply(replies []string, re *regexp.Regexp) bool {
+	for _, r := range replies {
+		if re.MatchString(r) {
 			return true
 		}
 	}

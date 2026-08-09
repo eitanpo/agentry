@@ -110,6 +110,7 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		NumTurns: len(turns),
 		Tools:    toolStats(entries),
 		Commands: bashCommands(entries),
+		Replies:  replyTexts(entries),
 		RootUUID: rootUUID(entries),
 		Cwd:      cwd,
 		Files:    sessionFiles(entries, cwd),
@@ -300,6 +301,29 @@ func bashCommands(entries []entry) []string {
 			}
 			seen[cmd] = true
 			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
+// replyTexts returns the main thread's assistant text blocks in order — the
+// corpus --reply-matches tests. One entry per block rather than one joined
+// string, so a pattern's ^ and $ anchor to a single reply.
+//
+// Thinking blocks are excluded because reasoning is not a reply: a rule about
+// what a reply said must not be satisfied by a thought the user never saw.
+// Blank blocks are dropped on the same rule buildEvents applies, so the render
+// path and the filter agree on which blocks are replies at all.
+func replyTexts(entries []entry) []string {
+	var out []string
+	for _, e := range entries {
+		if e.typ != "assistant" {
+			continue
+		}
+		for _, b := range e.blocks {
+			if b.typ == "text" && strings.TrimSpace(b.text) != "" {
+				out = append(out, b.text)
+			}
 		}
 	}
 	return out

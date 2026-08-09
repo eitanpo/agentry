@@ -1049,3 +1049,76 @@ func TestIncludeHelpNamesEveryChannel(t *testing.T) {
 		}
 	}
 }
+
+// TestReplyMatchesFlag pins the "what the reply said" axis end to end. It is the
+// only filter whose corpus --format json does not carry, so a listing is the
+// only place the question can be asked and this is the only test that asks it.
+func TestReplyMatchesFlag(t *testing.T) {
+	// sample.jsonl's assistant writes two text blocks — "here is an answer" and
+	// "trying to read" — and thinks "let me think" before the first.
+	fixtureProject(t)
+	count := func(t *testing.T, args ...string) int {
+		t.Helper()
+		out := captureStdout(t, func() {
+			exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
+		})
+		var got []map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+		}
+		return len(got)
+	}
+
+	if n := count(t); n != 1 {
+		t.Fatalf("fixture project has %d sessions, want 1", n)
+	}
+	if n := count(t, "--reply-matches", "here is an answer"); n != 1 {
+		t.Errorf("--reply-matches on reply text matched %d sessions, want 1", n)
+	}
+	// The pattern is matched per text block, so ^ anchors to the second reply
+	// rather than to the session's first. Joining the blocks would return 0 here.
+	if n := count(t, "--reply-matches", "^trying to read"); n != 1 {
+		t.Errorf("--reply-matches anchored to a later reply matched %d sessions, want 1", n)
+	}
+	// A thought is not a reply.
+	if n := count(t, "--reply-matches", "let me think"); n != 0 {
+		t.Errorf("--reply-matches matched a thinking block in %d sessions, want 0", n)
+	}
+	// Case-insensitive, like the rest of the filter family.
+	if n := count(t, "--reply-matches", "HERE IS AN ANSWER"); n != 1 {
+		t.Errorf("--reply-matches is case-sensitive: matched %d sessions, want 1", n)
+	}
+	// The negation drops exactly what the positive kept, and keeps what it missed.
+	if n := count(t, "--not-reply-matches", "here is an answer"); n != 0 {
+		t.Errorf("--not-reply-matches matched %d sessions, want 0", n)
+	}
+	if n := count(t, "--not-reply-matches", "never written"); n != 1 {
+		t.Errorf("--not-reply-matches on an absent pattern matched %d sessions, want 1", n)
+	}
+	// Reply text is filtered on and never shipped: the JSON must not grow a
+	// replies key just because the filter reads one.
+	out := captureStdout(t, func() {
+		exec("list", "--limit", "0", "--format", "json", "--reply-matches", "here is an answer")
+	})
+	if strings.Contains(out, "here is an answer") {
+		t.Errorf("reply text leaked into --format json: %s", out)
+	}
+}
+
+// TestReplyMatchesRejectsBadPattern pins the one filter value that can be
+// malformed. An unparseable regexp must be a usage error naming the pattern,
+// not an empty listing that reads as "no session did this".
+func TestReplyMatchesRejectsBadPattern(t *testing.T) {
+	for _, flag := range []string{"--reply-matches", "--not-reply-matches"} {
+		code, _, stderr := exec("list", flag, "a(b")
+		if code != exUsage {
+			t.Errorf("%s 'a(b': exit = %d, want %d (exUsage)", flag, code, exUsage)
+		}
+		if !strings.Contains(stderr, "a(b") {
+			t.Errorf("%s error does not name the pattern: %q", flag, stderr)
+		}
+		if !strings.Contains(stderr, flag) {
+			t.Errorf("%s error does not name the flag: %q", flag, stderr)
+		}
+	}
+}

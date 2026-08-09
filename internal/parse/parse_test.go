@@ -3,6 +3,7 @@ package parse
 import (
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -864,4 +865,50 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestSummarizeReplies pins the corpus --reply-matches tests: the main thread's
+// assistant text, and nothing else. Each exclusion here is a way the filter
+// would otherwise answer a question about the reply with something that was not
+// one.
+func TestSummarizeReplies(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "sample.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("text blocks are carried in order, one entry per block", func(t *testing.T) {
+		// One entry per block rather than one joined string, so a pattern's ^ and $
+		// anchor to a single reply.
+		want := []string{"here is an answer", "trying to read"}
+		if !equalStrings(s.Replies, want) {
+			t.Errorf("Replies = %q, want %q", s.Replies, want)
+		}
+	})
+
+	t.Run("thinking is not a reply", func(t *testing.T) {
+		// sample.jsonl's first assistant entry thinks "let me think" before
+		// answering. A rule about what a reply said must not be satisfied by a
+		// thought the user never saw.
+		for _, r := range s.Replies {
+			if strings.Contains(r, "let me think") {
+				t.Errorf("a thinking block was carried as a reply: %q", r)
+			}
+		}
+	})
+
+	t.Run("a subagent's reply is not the session's", func(t *testing.T) {
+		// Sidecars are opened only for the token tally. --reply-matches is a
+		// top-level filter like the --used* family, and this is the observable
+		// that keeps it one.
+		sub, err := Summarize(filepath.Join("testdata", "subagent-usage.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range sub.Replies {
+			if strings.Contains(r, "found it") {
+				t.Errorf("a sidecar reply was carried: %q", r)
+			}
+		}
+	})
 }
