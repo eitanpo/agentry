@@ -425,22 +425,121 @@ func crossProjectFixture(t *testing.T) string {
 
 	base := t.TempDir()
 	repo := filepath.Join(base, "repo")
-	for _, p := range []struct{ cwd, id string }{
-		{repo, "11111111-1111-1111-1111-111111111111"},
-		{filepath.Join(repo, ".claude", "worktrees", "feature"), "22222222-2222-2222-2222-222222222222"},
-		{filepath.Join(base, "unrelated"), "33333333-3333-3333-3333-333333333333"},
-	} {
-		dir := filepath.Join(root, locate.ProjectDirName(p.cwd))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		body := `{"type":"user","cwd":"` + p.cwd + `","timestamp":"2026-06-03T14:00:00Z","uuid":"u-` + p.id +
-			`","message":{"role":"user","content":"hello"}}` + "\n"
-		if err := os.WriteFile(filepath.Join(dir, p.id+".jsonl"), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	writeProject(t, root, repo, "11111111-1111-1111-1111-111111111111")
+	writeProject(t, root, filepath.Join(repo, ".claude", "worktrees", "feature"), "22222222-2222-2222-2222-222222222222")
+	writeProject(t, root, filepath.Join(base, "unrelated"), "33333333-3333-3333-3333-333333333333")
 	return repo
+}
+
+// writeProject creates the project folder cwd encodes to under root, holding one
+// session that records cwd on its entries. Shared by the scope fixtures so both
+// build their folders through the same encoder the lookup uses.
+func writeProject(t *testing.T, root, cwd, id string) {
+	t.Helper()
+	dir := filepath.Join(root, locate.ProjectDirName(cwd))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"type":"user","cwd":"` + cwd + `","timestamp":"2026-06-03T14:00:00Z","uuid":"u-` + id +
+		`","message":{"role":"user","content":"hello"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Session ids the nested fixture writes, one per project it builds.
+const (
+	ownID     = "11111111-1111-1111-1111-111111111111"
+	nestedID  = "22222222-2222-2222-2222-222222222222"
+	outsideID = "33333333-3333-3333-3333-333333333333"
+)
+
+// nestedFixture chdirs into a repo directory and builds three projects: the
+// repo's own, one for a worktree nested inside it, and one for an unrelated
+// sibling. Both scope tests run from inside the repo, which is what makes them
+// about the default scope rather than about a flag.
+func nestedFixture(t *testing.T) {
+	t.Helper()
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Join(base, "repo"))
+	// Read the repo path back rather than reusing the one just built: on darwin
+	// a temp dir is reached through a symlink, and the session cwd has to be the
+	// resolved path the running binary will compare against.
+	repo, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	orig := locate.ProjectsRoot
+	locate.ProjectsRoot = root
+	t.Cleanup(func() { locate.ProjectsRoot = orig })
+
+	writeProject(t, root, repo, ownID)
+	writeProject(t, root, filepath.Join(repo, ".claude", "worktrees", "feature"), nestedID)
+	writeProject(t, root, filepath.Join(filepath.Dir(repo), "unrelated"), outsideID)
+}
+
+// TestDefaultScopeIncludesNestedProjects pins the listing's default scope: the
+// current directory's project and every project nested under it. Claude Code
+// gives each git worktree its own project folder, so a listing confined to the
+// folder the repo's own path encodes to returns none of the repo's worktree
+// sessions — which is what standing in a main checkout used to give.
+func TestDefaultScopeIncludesNestedProjects(t *testing.T) {
+	nestedFixture(t)
+	out := captureStdout(t, func() { exec("list", "--limit", "0", "--format", "json") })
+	var got []struct {
+		Cwd string `json:"cwd"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2 (this directory and its nested worktree): %s", len(got), out)
+	}
+	if !strings.Contains(out, "worktrees/feature") {
+		t.Errorf("a bare listing missed the nested worktree's session: %s", out)
+	}
+	if strings.Contains(out, "unrelated") {
+		t.Errorf("a bare listing swept in a project outside this directory: %s", out)
+	}
+}
+
+// TestRenderResolvesNestedID pins the render path against the listing's scope.
+// The listing surfaces a nested project's ids, so rendering has to resolve them
+// from the same directory: otherwise every worktree row a listing prints is an
+// id that answers "session not found" where it was read.
+func TestRenderResolvesNestedID(t *testing.T) {
+	t.Run("an id from a nested project renders", func(t *testing.T) {
+		nestedFixture(t)
+		code, _, errOut := exec(nestedID, "--format", "json")
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr %q", code, errOut)
+		}
+	})
+
+	t.Run("an id outside the subtree is still not found", func(t *testing.T) {
+		// The widening stops where the listing's does. An unrelated project's
+		// session was never listed here, so resolving it would be a surprise, not
+		// a convenience.
+		nestedFixture(t)
+		code, _, _ := exec(outsideID, "--format", "json")
+		if code != exNoInput {
+			t.Errorf("exit = %d, want %d (exNoInput)", code, exNoInput)
+		}
+	})
+
+	t.Run("completion offers the nested project's ids", func(t *testing.T) {
+		// Completion feeds the render path, so an id it withholds is one the
+		// caller cannot Tab to despite it rendering fine.
+		nestedFixture(t)
+		got, _ := completeSessionIDs(newViewCmd(new(bool)), nil, "")
+		if !slices.ContainsFunc(got, func(s string) bool { return strings.HasPrefix(s, nestedID) }) {
+			t.Errorf("completion omitted the nested id: %v", got)
+		}
+	})
 }
 
 // TestScopeFlags pins the two ways a listing reaches past the current directory,

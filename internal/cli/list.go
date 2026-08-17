@@ -72,10 +72,16 @@ func addFromFlag(cmd *cobra.Command) {
 	_ = cmd.RegisterFlagCompletionFunc("from", fixedComp(entrypoint.Names))
 }
 
-// sessionPaths resolves which sessions the listing covers: this directory's by
-// default, one named subtree's under --project, or every project's under
-// --all-projects. The two scope flags are mutually exclusive — silently
+// sessionPaths resolves which sessions the listing covers: this directory's
+// subtree by default, another named subtree under --project, or every project
+// under --all-projects. The two scope flags are mutually exclusive — silently
 // preferring one would make the other look broken rather than rejected.
+//
+// The default is a subtree rather than the one project this directory's path
+// encodes to, because Claude Code gives every git worktree its own project
+// folder: an exact-folder listing in a main checkout showed none of the repo's
+// worktree sessions. --project moves that same rule's root; it does not turn it
+// on.
 func sessionPaths(cmd *cobra.Command) ([]string, error) {
 	allProjects, _ := cmd.Flags().GetBool("all-projects")
 	project, _ := cmd.Flags().GetString("project")
@@ -92,7 +98,7 @@ func sessionPaths(cmd *cobra.Command) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return locate.Sessions(cwd)
+	return locate.SessionsUnder(cwd)
 }
 
 // usageFilters is the single source for the what-a-session-did filter surface:

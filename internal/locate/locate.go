@@ -73,31 +73,50 @@ func ProjectDir(cwd string) (string, error) {
 	return dir, nil
 }
 
-// Session returns the JSONL path to render. With a non-empty id it resolves
-// <id>.jsonl in the project dir. With an empty id it picks the most recent
-// session: the newest *.jsonl by modification time (which may be one still in
-// progress).
+// Session returns the JSONL path to render, resolved in the scope a listing
+// covers: cwd's own project and every project nested under it (SessionsUnder).
+// With a non-empty id it resolves <id>.jsonl there, so an id read off a listing
+// opens from where it was read rather than only from the directory the session
+// ran in. With an empty id it picks the most recent session in that scope by
+// modification time (which may be one still in progress).
+//
+// cwd's own project is tried first and alone, because it answers nearly every
+// call and the subtree scan opens a file per project folder to read its recorded
+// cwd. It also settles a duplicate id in favor of the directory the caller is
+// standing in; ids are UUIDs, so that is a tie that does not arise in practice.
 func Session(cwd, id string) (string, error) {
-	dir, err := ProjectDir(cwd)
-	if err != nil {
-		return "", err
-	}
-	if id != "" {
-		path := filepath.Join(dir, id+".jsonl")
-		if _, err := os.Stat(path); err != nil {
-			return "", ErrNoSession
+	if id == "" {
+		paths, err := SessionsByRecency(cwd)
+		if err != nil {
+			return "", err
 		}
-		return path, nil
+		return paths[0], nil // non-empty: SessionsByRecency errors instead
 	}
-	return mostRecent(dir)
+	if dir, err := ProjectDir(cwd); err == nil {
+		path := filepath.Join(dir, id+".jsonl")
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	paths, err := SessionsUnder(cwd)
+	if err != nil {
+		return "", err // ErrNoProject when nothing sits at or under cwd
+	}
+	want := id + ".jsonl"
+	for _, p := range paths {
+		if filepath.Base(p) == want {
+			return p, nil
+		}
+	}
+	return "", ErrNoSession
 }
 
-// SessionsByRecency returns cwd's sessions newest-first by modification time —
-// the order Session's no-id case walks. Exported so the caller can apply its own
-// "which session counts" rule (skipping non-interactive runs) without this
-// package having to know what an entrypoint is.
+// SessionsByRecency returns the sessions in cwd's scope newest-first by
+// modification time — the order Session's no-id case walks. Exported so the
+// caller can apply its own "which session counts" rule (skipping non-interactive
+// runs) without this package having to know what an entrypoint is.
 func SessionsByRecency(cwd string) ([]string, error) {
-	paths, err := Sessions(cwd)
+	paths, err := SessionsUnder(cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -109,24 +128,6 @@ func SessionsByRecency(cwd string) ([]string, error) {
 	}
 	sort.SliceStable(paths, func(i, j int) bool { return mod[paths[i]] > mod[paths[j]] })
 	return paths, nil
-}
-
-// Sessions returns the paths of every session JSONL in cwd's project, in no
-// particular order. ErrNoProject if the directory maps to no project,
-// ErrNoSession if the project holds no sessions.
-func Sessions(cwd string) ([]string, error) {
-	dir, err := ProjectDir(cwd)
-	if err != nil {
-		return nil, err
-	}
-	matches, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
-	if err != nil {
-		return nil, err
-	}
-	if len(matches) == 0 {
-		return nil, ErrNoSession
-	}
-	return matches, nil
 }
 
 // ProjectDirs returns every project folder under ProjectsRoot, sorted. An
@@ -217,9 +218,17 @@ func SessionsAll() ([]string, error) {
 // SessionsUnder returns every session JSONL belonging to a project at or under
 // root — root itself plus anything nested inside it, which is how a repo picks
 // up the worktrees Claude Code creates under <repo>/.claude/worktrees/ and how
-// a parent directory picks up every repo beneath it. Selection is by each
-// project's recorded cwd, not by its folder name, because the name is lossy.
+// a parent directory picks up every repo beneath it. It backs both the listing's
+// default scope (root = the working directory) and --project.
 // ErrNoProject when no project matches.
+//
+// Nested projects are selected by each project's recorded cwd rather than by its
+// folder name, because the name is lossy. Root's own folder is taken by name as
+// well, and unconditionally: widening a scope must never drop what the narrow
+// lookup found, and the two disagree whenever a folder's sessions record a path
+// other than the one its name encodes — a session relocated into the folder, or
+// one predating the cwd field. Taking the root by name is exactly what the narrow
+// lookup did before the default widened, so standing in a project always lists it.
 func SessionsUnder(root string) ([]string, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -230,7 +239,16 @@ func SessionsUnder(root string) ([]string, error) {
 		return nil, err
 	}
 	var matched []string
+	// rootDir is "" when root has no folder of its own, and no folder name is
+	// ever empty, so the skip below needs no second test.
+	rootDir, rootErr := ProjectDir(abs)
+	if rootErr == nil {
+		matched = append(matched, rootDir)
+	}
 	for _, dir := range dirs {
+		if dir == rootDir {
+			continue // already taken by name
+		}
 		cwd, err := ProjectCwd(dir)
 		if err != nil || cwd == "" {
 			continue
@@ -270,26 +288,4 @@ func sessionsIn(dirs []string) ([]string, error) {
 		return nil, ErrNoSession
 	}
 	return out, nil
-}
-
-func mostRecent(dir string) (string, error) {
-	matches, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
-	if err != nil {
-		return "", err
-	}
-	var newest string
-	var newestMod int64
-	for _, path := range matches {
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
-		}
-		if mod := info.ModTime().UnixNano(); newest == "" || mod > newestMod {
-			newest, newestMod = path, mod
-		}
-	}
-	if newest == "" {
-		return "", ErrNoSession
-	}
-	return newest, nil
 }

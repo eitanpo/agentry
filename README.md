@@ -38,7 +38,7 @@ agentry view --from sdk     # render the most recent headless run (a hook, `clau
 agentry <uuid> --format json | jq  # the full session model as JSON, for piping
 ```
 
-With no id, `agentry` lists this project's sessions (below); with a full-UUID id it renders that one, mapping the current directory to its Claude project folder under `~/.claude/projects/`. `agentry view` with no id picks the most recent session you actually worked in, skipping headless runs — an id you name is always rendered as asked. `--from` changes which kind it picks: `--from sdk` for the last headless run, `--from all` for the last session of any kind. Asking for a kind this project has none of is an error, not a quiet fall back to another kind. The first token is a verb (`view`, `list`) when it names one, otherwise a session id — they can't collide, since ids are hex and verbs are words. Flags may go before or after operands, and a mistyped verb, flag, or value is met with a "did you mean" suggestion rather than full help.
+With no id, `agentry` lists this directory's sessions and those of any project nested under it (below); with a full-UUID id it renders that one, looked up in the same set of projects, under `~/.claude/projects/`. `agentry view` with no id picks the most recent session you actually worked in, skipping headless runs — an id you name is always rendered as asked. `--from` changes which kind it picks: `--from sdk` for the last headless run, `--from all` for the last session of any kind. Asking for a kind this project has none of is an error, not a quiet fall back to another kind. The first token is a verb (`view`, `list`) when it names one, otherwise a session id — they can't collide, since ids are hex and verbs are words. Flags may go before or after operands, and a mistyped verb, flag, or value is met with a "did you mean" suggestion rather than full help.
 
 To find a session, list them — bare `agentry` does this, and `agentry list` is its explicit form:
 
@@ -73,6 +73,7 @@ agentry list --all-projects --from all --limit 0 --format json \
   | jq -r 'group_by(.model)[] | "\(.[0].model) \(map(.usage.output) | add)"'   # output tokens per model, everywhere
 agentry list --all-projects --limit 0 --format json \
   | jq -r '.[] | select(.prs) | "\(.id) \(.prs | map(.url) | join(" "))"'   # every session that opened any PR
+agentry list                               # this directory and every project nested under it
 agentry list --all-projects                # every project, not just this directory
 agentry list --project ~/Projects/me/app   # that repo and every worktree nested in it
 agentry list --project ~/Projects/me       # every repo under that directory
@@ -93,13 +94,16 @@ did; `--from sdk` shows only those, `--from all` shows everything. When a listin
 one kind, each row gains a 3-letter tag: `cli` (terminal), `app` (desktop), `sdk` (headless), and
 `cli+` for a session that started in one and was resumed in another.
 
-`--project PATH` lists PATH's sessions **and everything nested under it**. That matters because
-Claude Code gives every git worktree its own project folder, so a repo's sessions are split
-across them and `agentry list` in the main checkout shows none of the worktree ones — naming the
-repo sweeps them back in. Both scope flags also reach projects whose directory you have since
-deleted or renamed, which walking directories yourself cannot. When a listing spans more than one
-project, each row gains a project column before the title; `--format json` carries the full path
-as `cwd` on every session.
+**A listing covers this directory and everything nested under it.** That matters because Claude
+Code gives every git worktree its own project folder, so a repo's sessions are split across them —
+standing in the main checkout lists the worktrees' sessions too. `--project PATH` applies the same
+subtree rule from a root you name instead, and `--all-projects` covers every project there is. All
+three reach projects whose directory you have since deleted or renamed, which walking directories
+yourself cannot. When a listing spans more than one project, each row gains a project column before
+the title; `--format json` carries the full path as `cwd` on every session. Rendering follows the
+same scope, so an id copied off a listing opens where you read it — no `cd` into the worktree
+first — and `agentry view` with no id reaches the whole subtree too, picking the most recently
+written session file rather than the current directory's.
 
 Sessions print oldest-to-newest, so the most recent is at the bottom, next to your prompt. Each row shows the last-activity time (when the session's most recent turn ended — the same recency the list is ordered by), duration, turn count, a title (a name you chose if set — from renaming the session, or from `--name` / `/rename`, whichever the log records last — else Claude Code's own `ai-title` summary, falling back to the first prompt, skipping a leading `/clear`), and the full id — copy an id and pass it to `agentry <id>` to render that session. A forked session (Claude Code's `--fork-session` / `/branch`) is grouped under the original it was forked from and its title indented with `└─`; while it still carries the original's inherited title it is shown by its first new prompt instead, so the two are distinguishable.
 
@@ -123,7 +127,7 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--model NAME` | `list` | — | Only sessions that ran on a matching model (case-insensitive substring, so `opus` covers `claude-opus-5` and `claude-opus-4-8` while `claude-opus-5` picks one). Matches any model the session carried, so one that switched mid-way matches both. |
 | `--effort LEVEL` | `list` | — | Only sessions run at that reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Case-insensitive and **exact**, unlike the substring filters — the levels nest, so `high` must not quietly include `xhigh`. Unknown levels return nothing rather than erroring, since the set grows. |
 | `--all-projects` | `list` | — | Every project under `~/.claude/projects/`, not just this directory's. Mutually exclusive with `--project`. |
-| `--project PATH` | `list` | — | PATH's sessions instead of this directory's, including every project nested under PATH — which is how naming a repo picks up its git worktrees. |
+| `--project PATH` | `list` | — | PATH's sessions instead of this directory's, including every project nested under PATH. It moves the root, not the depth — a listing already covers what is nested under the current directory, which is how standing in a repo picks up its git worktrees. |
 | `--from cli\|app\|sdk\|all` | `list`, `view` | `cli`+`app` | Where the session was run. `sdk` is anything non-interactive (`claude -p`, a hook, CI) and is **hidden by default**; `all` restores it. On `view` (no id) it picks which kind the most-recent lookup walks back to; it cannot be combined with a session id. |
 | `--format json\|text` | render, `list` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color), with `meta.effort` beside `meta.model`, `meta.prs` and `meta.artifacts` carrying what the session produced, and each tool call carrying the `identity` that `list --include tools` groups by plus the `model` an `Agent` call delegated to; on `list` it's a JSON array of per-session summaries, each carrying its `cwd`, the `files` it modified as absolute paths, its `denials`, its `model` and `effort`, its `usage` — the token tally over the main thread and every subagent, the same number the render path reports as `meta.usage`, which is what makes a cross-project cost tally one call instead of one render per session — and its outputs, `prs` (`{repository, number, url}`) and `artifacts` (`{title, url, path}`) (ignoring `--include` and color), and stdout is always a valid array — a directory with no project, or a project with no sessions, prints `[]` while still reporting the error on stderr and exiting non-zero, so you can pipe into `jq` without a guard. |
 | `--no-color` | global | — | Disable color (also honors the `NO_COLOR` env var). |

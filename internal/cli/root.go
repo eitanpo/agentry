@@ -193,7 +193,7 @@ func completeSessionIDs(cmd *cobra.Command, args []string, toComplete string) ([
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	paths, err := locate.Sessions(cwd)
+	paths, err := locate.SessionsUnder(cwd)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

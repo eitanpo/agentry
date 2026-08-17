@@ -177,6 +177,20 @@ func TestSessionsUnderAndAll(t *testing.T) {
 		}
 	})
 
+	t.Run("a folder matching both ways is listed once", func(t *testing.T) {
+		got, err := SessionsUnder("/w/repo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[string]bool{}
+		for _, p := range got {
+			if seen[p] {
+				t.Errorf("%s listed twice: %v", p, got)
+			}
+			seen[p] = true
+		}
+	})
+
 	t.Run("SessionsAll spans every project", func(t *testing.T) {
 		got, err := SessionsAll()
 		if err != nil {
@@ -193,6 +207,93 @@ func TestSessionsUnderAndAll(t *testing.T) {
 		t.Cleanup(func() { ProjectsRoot = root })
 		if _, err := SessionsAll(); !errors.Is(err, ErrNoSession) {
 			t.Errorf("got %v, want ErrNoSession", err)
+		}
+	})
+}
+
+// TestSessionsUnderTakesRootByName pins the half of SessionsUnder that does not
+// read recorded cwds: a folder whose sessions record some other path — one
+// relocated into it, or one written before the cwd field existed — is
+// unreachable by the subtree rule, yet it is the folder the root path resolves
+// to by name. The listing's default scope runs through here, so dropping it
+// would make a project invisible from inside its own directory.
+func TestSessionsUnderTakesRootByName(t *testing.T) {
+	root := t.TempDir()
+	old := ProjectsRoot
+	ProjectsRoot = root
+	t.Cleanup(func() { ProjectsRoot = old })
+
+	dir := filepath.Join(root, ProjectDirName("/w/stale"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"type":"user","cwd":"/somewhere/else"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "stale.jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SessionsUnder("/w/stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || filepath.Base(got[0]) != "stale.jsonl" {
+		t.Errorf("got %v, want the folder's own session", got)
+	}
+}
+
+// TestSessionResolvesNestedID pins the render path's scope: an id belonging to a
+// project nested under the working directory resolves from the working
+// directory, so an id read off a listing opens where it was read. The
+// directory's own project still wins the lookup.
+func TestSessionResolvesNestedID(t *testing.T) {
+	root := t.TempDir()
+	old := ProjectsRoot
+	ProjectsRoot = root
+	t.Cleanup(func() { ProjectsRoot = old })
+
+	own := writeSession(t, root, "/w/repo", "mine")
+	nested := writeSession(t, root, "/w/repo/.claude/worktrees/feature", "theirs")
+	writeSession(t, root, "/elsewhere/other", "outside")
+
+	t.Run("an id in a nested project resolves", func(t *testing.T) {
+		got, err := Session("/w/repo", "theirs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nested {
+			t.Errorf("got %q, want %q", got, nested)
+		}
+	})
+
+	t.Run("the directory's own project still resolves", func(t *testing.T) {
+		got, err := Session("/w/repo", "mine")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != own {
+			t.Errorf("got %q, want %q", got, own)
+		}
+	})
+
+	t.Run("an id outside the subtree is ErrNoSession", func(t *testing.T) {
+		// The scope has to stop somewhere, and it stops where the listing's does:
+		// a session from an unrelated project is not reachable by id from here.
+		if _, err := Session("/w/repo", "outside"); !errors.Is(err, ErrNoSession) {
+			t.Errorf("got %v, want ErrNoSession", err)
+		}
+	})
+
+	t.Run("no id picks the newest in the whole subtree", func(t *testing.T) {
+		// `view` reaches every project a listing covers, so standing in a repo
+		// whose latest work happened in a worktree renders that work.
+		base := time.Now().Add(-time.Hour)
+		mustChtime(t, own, base)
+		mustChtime(t, nested, base.Add(time.Minute))
+		got, err := Session("/w/repo", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nested {
+			t.Errorf("got %q, want the nested project's newer session %q", got, nested)
 		}
 	})
 }
@@ -252,7 +353,9 @@ func TestSession(t *testing.T) {
 	})
 }
 
-func TestSessions(t *testing.T) {
+// TestSessionsUnderRootOnly pins the degenerate subtree — a project with nothing
+// nested under it — where the scope is just the one folder the path encodes to.
+func TestSessionsUnderRootOnly(t *testing.T) {
 	root := t.TempDir()
 	old := ProjectsRoot
 	ProjectsRoot = root
@@ -265,7 +368,7 @@ func TestSessions(t *testing.T) {
 	}
 
 	t.Run("empty project is ErrNoSession", func(t *testing.T) {
-		if _, err := Sessions(cwd); !errors.Is(err, ErrNoSession) {
+		if _, err := SessionsUnder(cwd); !errors.Is(err, ErrNoSession) {
 			t.Errorf("got %v, want ErrNoSession", err)
 		}
 	})
@@ -277,7 +380,7 @@ func TestSessions(t *testing.T) {
 	}
 
 	t.Run("lists every session jsonl", func(t *testing.T) {
-		got, err := Sessions(cwd)
+		got, err := SessionsUnder(cwd)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -287,7 +390,7 @@ func TestSessions(t *testing.T) {
 	})
 
 	t.Run("unknown project is ErrNoProject", func(t *testing.T) {
-		if _, err := Sessions("/no/such/project"); !errors.Is(err, ErrNoProject) {
+		if _, err := SessionsUnder("/no/such/project"); !errors.Is(err, ErrNoProject) {
 			t.Errorf("got %v, want ErrNoProject", err)
 		}
 	})

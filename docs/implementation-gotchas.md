@@ -128,6 +128,16 @@ projects finds fewer than half of them.
 listing. Compare against `root + separator`, and keep a same-prefix sibling in the fixture — the
 naive version passes every test that lacks one.
 
+**A folder's name and its sessions' recorded `cwd` can disagree, so a scope keyed on the
+recorded value alone loses the folder you are standing in.** Selecting projects by recorded `cwd`
+is what makes subtree matching work, but a folder holding a session that records some other path
+is then unreachable from its own directory — the widened scope returns less than the narrow
+name lookup it replaced. `locate.SessionsUnder` takes the subtree's root by name and everything
+nested by recorded `cwd`, and dedupes. The symptom when this was missed was four unrelated CLI
+tests failing: their fixtures copy a shared sample log, whose recorded `cwd` is not the temp
+directory its folder name encodes. Widening any lookup, check it is a superset of what it
+replaced, and treat a fixture that disagrees as the case rather than as fixture noise.
+
 **A test that builds a fixture path with its own copy of an encoding rule pins the copy.** The
 project-folder name was open-coded in the CLI test helpers; when the real encoder was corrected
 the helpers kept producing the old name and the tests failed for the wrong reason. `ProjectDirName`
