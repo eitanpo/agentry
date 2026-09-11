@@ -16,7 +16,8 @@
 # added upstream is visible there a release before any session here writes one.
 #
 # Usage: scripts/schema-scan.sh [--root DIR] [--doc FILE] [--kind KIND] [--new] [--binary FILE]
-#   --root DIR     log root to scan          (default ~/.claude/projects)
+#   --root DIR     log root to scan          (default ~/.claude/projects, or
+#                                            $CLAUDE_CONFIG_DIR/projects when set)
 #   --doc FILE     doc to diff against       (default docs/session-format.md)
 #   --kind KIND    restrict to one of: key type subtype block entrypoint
 #   --new          list only elements the doc never mentions
@@ -26,7 +27,14 @@
 # Exit codes: 0 scan completed · 2 the scan could not run (missing jq, no logs).
 set -uo pipefail
 
+# The log root follows Claude Code's own config home, the way internal/locate
+# resolves it: CLAUDE_CONFIG_DIR when it names an absolute directory, else
+# ~/.claude. A relative value is ignored in both places because Claude Code
+# refuses to start on one, so nothing was ever written under it.
 root="$HOME/.claude/projects"
+case "${CLAUDE_CONFIG_DIR:-}" in
+	/*) root="${CLAUDE_CONFIG_DIR}/projects" ;;
+esac
 doc="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/docs/session-format.md"
 kind_filter=""
 new_only=0

@@ -472,3 +472,63 @@ func TestSessionByPrefix(t *testing.T) {
 		}
 	})
 }
+
+// TestDefaultProjectsRootHonorsConfigDir pins the resolution of Claude Code's
+// config home. Before agentry read CLAUDE_CONFIG_DIR, a machine that set it had
+// every session reported as "no Claude project for this directory" — an absent
+// project rather than a root agentry had not looked in.
+//
+// Unset needs no case of its own: os.Getenv returns "" for it, so the empty
+// value below exercises the same branch.
+func TestDefaultProjectsRootHonorsConfigDir(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory: %v", err)
+	}
+	homeRoot := filepath.Join(home, ".claude", "projects")
+
+	tests := []struct {
+		name   string
+		envVar string
+		want   string
+	}{
+		{"absolute directory is used", "/tmp/cfg", filepath.Join("/tmp/cfg", "projects")},
+		{"empty value counts as unset", "", homeRoot},
+		// Claude Code refuses to start on a relative value, so nothing was ever
+		// written under it and the home default is the only path worth reading.
+		{"relative value is ignored", "relative/cfg", homeRoot},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", tt.envVar)
+			if got := defaultProjectsRoot(); got != tt.want {
+				t.Errorf("defaultProjectsRoot() with CLAUDE_CONFIG_DIR=%q = %q, want %q",
+					tt.envVar, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestConfigDirProjectResolves is the end-to-end half: a project folder under
+// the config home resolves, which TestDefaultProjectsRootHonorsConfigDir alone
+// does not show, since ProjectsRoot is resolved once at package load.
+func TestConfigDirProjectResolves(t *testing.T) {
+	cfg := t.TempDir()
+	cwd := "/Users/me/Projects/via-config-dir"
+	dir := filepath.Join(cfg, "projects", ProjectDirName(cwd))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	old := ProjectsRoot
+	ProjectsRoot = defaultProjectsRoot()
+	t.Cleanup(func() { ProjectsRoot = old })
+
+	got, err := ProjectDir(cwd)
+	if err != nil {
+		t.Fatalf("ProjectDir(%q) = %v, want the folder under the config home", cwd, err)
+	}
+	if got != dir {
+		t.Errorf("ProjectDir(%q) = %q, want %q", cwd, got, dir)
+	}
+}

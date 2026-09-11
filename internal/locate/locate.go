@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-// ErrNoProject means $PWD has no matching folder under ~/.claude/projects.
+// ErrNoProject means $PWD has no matching folder under the projects root.
 var ErrNoProject = errors.New("no Claude project for this directory")
 
 // ErrNoSession means the project folder holds no selectable session.
@@ -35,7 +35,22 @@ func (e *AmbiguousIDError) Error() string {
 // for tests.
 var ProjectsRoot = defaultProjectsRoot()
 
+// defaultProjectsRoot returns the projects directory of Claude Code's config
+// home: CLAUDE_CONFIG_DIR when it names one, else ~/.claude.
+//
+// Claude Code's own resolution, read out of the 2.1.268 binary, is what the two
+// branches match. It takes the variable as one absolute directory and never as a
+// list, and it falls back to the home default when the value is empty — so an
+// empty string has to count as unset here too, or agentry reads "/projects".
+// filepath.IsAbs covers both rejections at once, since it is false for "".
+//
+// A relative value is ignored rather than reported: that build refuses to start
+// on one, so no session exists under either path and an error from agentry would
+// name a cause the caller cannot act on.
 func defaultProjectsRoot() string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); filepath.IsAbs(dir) {
+		return filepath.Join(dir, "projects")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".claude/projects"
