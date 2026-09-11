@@ -134,14 +134,19 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 		return noInputErr(err)
 	}
 
-	var sums []model.Summary
-	for _, p := range paths {
-		s, err := parse.Summarize(p)
-		if err != nil {
-			continue // skip a session that won't parse, as the listing does
-		}
-		sums = append(sums, s)
-	}
+	// SummarizeAll, not a loop over Summarize: it skips a session that won't
+	// parse on the same rule and keeps the input order, so the selection is
+	// unchanged, but it reads the corpus across every core the way the listing and
+	// the three-scope summary already do.
+	//
+	// The two paths reading at the same speed is what keeps them comparable. A
+	// session log is appended to while agentry reads it, so a path that takes
+	// seconds longer over the same corpus prices entries the faster path never
+	// saw: sequentially this verb took 3.2s against a 1.3GB tree the summary
+	// crossed in 0.5s, and `agentry cost` against `agentry cost --all-projects
+	// --from all --since 30d` reported totals differing by cents — read as an
+	// accumulation bug, when the two had simply read the log 2.7s apart.
+	sums := parse.SummarizeAll(paths)
 	// Headless runs are excluded by the same default the listing applies: a
 	// machine using hooks accumulates hundreds of them, and a total that quietly
 	// counted them would answer a different question than the listing beside it.

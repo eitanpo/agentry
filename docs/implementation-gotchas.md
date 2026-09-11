@@ -152,3 +152,23 @@ output through `captureStdout` and reads messages through `exec`'s returned stri
 them up yields an empty string rather than a failure that names the cause. The same split bites
 production code: a diagnostic written to `os.Stderr` directly bypasses wherever the caller routed
 diagnostics, which is why the listing's hidden-sessions note uses `cmd.ErrOrStderr()`.
+
+## Reading a log that is still being written
+
+**Two code paths over the same corpus are only comparable if they read it at the same speed.**
+Claude Code appends to a session log while agentry reads it, so wall-clock duration is part of
+what a total measures: a path that takes seconds longer prices entries the faster path never
+saw. `agentry cost` (parallel `parse.SummarizeAll`) and `agentry cost --all-projects --from all
+--since 30d` (a sequential loop over `parse.Summarize`) crossed a 1.3GB tree in 0.5s and 3.2s
+respectively and reported totals differing by cents over an identical 305 sessions. The
+difference reads exactly like an accumulation bug — same session count, dollars apart,
+reproducible, and the slower path always higher — and two investigations chased the arithmetic.
+Any bulk scan uses `parse.SummarizeAll`; a sequential loop over `Summarize` is for resolving a
+single named session.
+
+**Before comparing any two figures from this tool, freeze the input.** `CLAUDE_CONFIG_DIR` is the
+seam — it names a config directory whose `projects` subdirectory `locate.ProjectsRoot` reads (see
+`locate.defaultProjectsRoot`), so `cp -a ~/.claude/projects <scratch>/projects` and
+`CLAUDE_CONFIG_DIR=<scratch>` compare two runs over a corpus that cannot move. Repeated runs
+against a frozen tree are byte-identical; unfrozen runs minutes or milliseconds apart are not,
+and no in-package fixture reproduces the difference, because the moving input is the cause.

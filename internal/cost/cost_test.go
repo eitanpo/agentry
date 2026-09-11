@@ -307,6 +307,92 @@ func TestBuildOverviewWithoutAProjectPricesTheMachineAlone(t *testing.T) {
 	}
 }
 
+// bigFixture is a wider corpus than fixture(): five sessions spread over four
+// days and three priced models plus one unpriced model, so a rollup on any axis
+// has more than one bucket and the total is not trivially one number repeated.
+// It exists to pin the invariant TestMachineTotalAgreesWithDirectTotal checks:
+// a coincidental match on a two-session fixture would not catch a real
+// accumulation bug the way a wider corpus does.
+func bigFixture() []model.Summary {
+	const (
+		d1 = "2026-08-12"
+		d2 = "2026-08-20"
+		d3 = "2026-09-01"
+		d4 = "2026-09-10"
+	)
+	return []model.Summary{
+		{
+			ID: "s1", Start: day(d1), End: day(d1),
+			DailyUsage: []model.DailyUsage{out(d1, "claude-sonnet-5", 3*million)},
+		},
+		{
+			ID: "s2", Start: day(d2), End: day(d2),
+			DailyUsage: []model.DailyUsage{
+				out(d2, "claude-opus-5", 2*million),
+				out(d2, "claude-sonnet-5", million),
+			},
+		},
+		{
+			ID: "s3", Start: day(d2), End: day(d3),
+			DailyUsage: []model.DailyUsage{
+				out(d2, "claude-haiku-4-5", 5*million),
+				out(d3, "claude-sonnet-5", 4*million),
+			},
+		},
+		{
+			ID: "s4", Start: day(d3), End: day(d3),
+			DailyUsage: []model.DailyUsage{out(d3, "claude-nope-9", million)}, // unpriced
+		},
+		{
+			ID: "s5", Start: day(d4), End: day(d4),
+			DailyUsage: []model.DailyUsage{out(d4, "claude-opus-5", 7*million)},
+		},
+	}
+}
+
+// TestMachineTotalAgreesWithDirectTotal pins the guarantee cost.go's own
+// BuildOverview doc comment claims: "a figure read off the summary and one read
+// off `--by total` over the same sessions cannot differ." It holds on the
+// current code and is kept to pin that guarantee against a future change to
+// BuildOverview's machine scope — not as a reproduction of anything: a report
+// of `agentry cost` and `agentry cost --all-projects --from all --since 30d`
+// disagreeing by cents over the same 305 sessions was the two paths reading a
+// live log seconds apart, and no in-package fixture can express that.
+// Also pins that the total does not depend on which axis it was
+// rolled up by, since every --by value shares the one accumulation loop in
+// Build: a day, week, month, model, or session rollup of the same sessions
+// must sum to the same total as ByTotal.
+func TestMachineTotalAgreesWithDirectTotal(t *testing.T) {
+	sums := bigFixture()
+	since := day("2026-08-12")
+
+	direct := Build(sums, ByTotal, since, time.Time{}).Total
+	o := BuildOverview(nil, nil, sums, since)
+	if len(o.Scopes) != 1 || o.Scopes[0].Scope != ScopeMachine {
+		t.Fatalf("Scopes = %+v, want the machine row alone", o.Scopes)
+	}
+	machine := o.Scopes[0]
+
+	if !nearly(machine.CostUSD, direct.CostUSD) {
+		t.Errorf("machine row $%.6f, direct total $%.6f: the two must agree on the same sessions",
+			machine.CostUSD, direct.CostUSD)
+	}
+	if machine.Sessions != direct.Sessions {
+		t.Errorf("machine row %d session(s), direct total %d: the two must agree", machine.Sessions, direct.Sessions)
+	}
+	if machine.Usage != direct.Usage {
+		t.Errorf("machine row usage %+v, direct total usage %+v: the two must agree", machine.Usage, direct.Usage)
+	}
+
+	for _, by := range Axes {
+		got := Build(sums, by, since, time.Time{}).Total.CostUSD
+		if !nearly(got, direct.CostUSD) {
+			t.Errorf("--by %s: Total.CostUSD = %.6f, want %.6f (the same as --by total): "+
+				"a rollup's total must not depend on the axis it groups by", by, got, direct.CostUSD)
+		}
+	}
+}
+
 // TestRenderOverviewNamesEachWindow pins the text form: each row says which
 // window it counted, so the three reading differently is stated rather than
 // left to be discovered.
