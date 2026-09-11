@@ -13,8 +13,9 @@ types by. Use it for the question a corpus sweep cannot answer: whether a type m
 local logs was removed or was simply never written on this machine. Two mechanics: give the
 pattern a window on one side only, because a two-sided window exceeds the complexity limit
 of the `grep` on this machine and errors instead of matching; and label every fact drawn
-this way with the build it came from, since the next release rewrites the bundle. Facts
-below marked 2.1.263 come from that build's binary rather than from a log.
+this way with the build it came from, since the next release rewrites the bundle. A fact
+below naming a build — 2.1.263 or 2.1.268 — comes from that build's binary rather than from a
+log, and the builds differ because the file was extended at two different times.
 
 Re-verify with `scripts/schema-scan.sh` (see [DEVELOPMENT.md](../DEVELOPMENT.md)). It reports
 every field, entry type, `system` subtype, content-block type and `entrypoint` value in the
@@ -400,11 +401,21 @@ against the turns around them by their own content.
   final two carry a value. A reader that takes the last entry unconditionally finds no figure
   on that session.
 
-  **`startTime` can postdate the session's own first entry, and the totals then cover only
-  from that instant.** The record appears to reset when a session is resumed in a new
-  process, so a long-lived session reports its last leg rather than itself. True of 6 of the
-  69 local records; the starkest reports 5.35 USD for a session whose own messages price at
-  over 100 USD, its `startTime` falling seven days after the session's first entry. Compare
+  **`startTime` is when the ledger behind this record was last reset, so the totals cover
+  only from that instant.** The binary (2.1.268) holds a cost ledger whose reset zeroes every
+  total and stamps the reset time as the new start:
+
+  ```js
+  reset(e){this.#c=e,this.#e=0,this.#t=0,this.#n=0,this.#o=0,this.#r=Date.now(),
+           this.anchorLogicalStart(void 0),this.#d=0,this.#s=0,this.#a=!1,this.#l=Q()}
+  ```
+
+  The ledger is owned by a session id and carries `claim`, `scopeTo`, `belongsTo` and
+  `restoreSnapshot`, so a resumed session restores a saved snapshot where one exists and is
+  otherwise only re-scoped — a fresh process with no snapshot therefore starts from zero and
+  the earlier legs' spend is **zeroed rather than merely unwritten**. True of 6 of the 69
+  local records; the starkest reports 5.35 USD for a session whose own messages price at over
+  100 USD, its `startTime` falling seven days after the session's first entry. Compare
   `startTime` against the first timestamped entry before reading the figure as the session's.
 
   **No assistant entry carries a cost of its own.** All 155 local lines holding a `costUSD`
@@ -415,9 +426,44 @@ against the turns around them by their own content.
   **`modelUsage` counts API requests the transcript does not hold**, so a cost computed from
   assistant entries is a floor and not a match. One local record reports 2,115,847 Haiku
   input tokens where its own entries sum 122, and 1,304,777 Opus input tokens where they sum
-  5,594: Claude Code's background requests are billed and never written as entries. Priced
-  from published rates against the same 69 records, the message stream reaches 88.6% of what
-  they report.
+  5,594. The ledger prices every request the process makes while the transcript records only
+  conversation entries, so the gap is structural and no field closes it: Claude Code's
+  background requests are billed and never written as entries. Priced from published rates
+  against the same 69 records, the message stream reaches 88.6% of what they report.
+
+  **The figure is computed by Claude Code from a built-in table, not returned by the API**, and
+  which table it used is recorded. `costBasis` takes `list` (Claude Code's built-in list
+  prices), `managed` (the organization's `modelPricing` rates or multiplier from managed
+  settings) or `unknown`. **A managed organization's figure is therefore not list price**, and
+  a reader comparing it against published rates has to check the basis first. The built-in
+  table carries no above-threshold rates at all, so **long context is not priced at a premium**
+  — the only long-context strings in the binary are survey and telemetry names.
+
+  The table below is that build's list prices, in USD per million tokens. **Re-read the binary
+  rather than trusting these numbers**: they are the one thing in this file that changes with
+  no log change and no release of Claude Code's own, and the tier names are what the model
+  catalog points at.
+
+  | Tier | Input | Write 5m | Write 1h | Cache read | Output | Web search |
+  |---|---:|---:|---:|---:|---:|---:|
+  | `tier_2_10` | 2 | 2.5 | 4 | 0.2 | 10 | 0.01 |
+  | `tier_3_15` | 3 | 3.75 | 6 | 0.3 | 15 | 0.01 |
+  | `tier_5_25` | 5 | 6.25 | 10 | 0.5 | 25 | 0.01 |
+  | `tier_10_50` | 10 | 12.5 | 20 | 1 | 50 | 0.01 |
+  | `tier_10_50_cache_read_0_25` | 10 | 12.5 | 20 | 0.25 | 50 | 0.01 |
+  | `tier_15_75` | 15 | 18.75 | 30 | 1.5 | 75 | 0.01 |
+  | `haiku_45` | 1 | 1.25 | 2 | 0.1 | 5 | 0.01 |
+  | `haiku_35` | 0.8 | 1 | 1.6 | 0.08 | 4 | 0.01 |
+
+  Web search is priced per search rather than per million, so 0.01 there is one cent a search.
+  Every rate matches Anthropic's published pricing page as read on 2026-09-11.
+
+  **Three fields this build writes that no local log carries yet**: `canonicalModel` (the model
+  id the pricing lookup used, which may differ from the key `modelUsage` is stored under),
+  `provider` (`firstParty`, `bedrock`, `vertex`, `foundry`, `anthropicAws`, `mantle`, `gateway`)
+  and `costBasis`. All three are per-model and overwritten per request, and the binary's own
+  schema note says a consumer differencing the cumulative `costUSD` per turn gets that turn's
+  basis — so a future log may support per-turn cost attribution that today's cannot.
 
   `totalLinesAdded` / `totalLinesRemoved` are present on every local record, so their
   presence is the record's. Two things are settled about what they count. They **do** reach
