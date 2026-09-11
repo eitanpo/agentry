@@ -389,9 +389,9 @@ against the turns around them by their own content.
   `cacheCreationInputTokens`, `webSearchRequests` and `costUSD`. Since 2.1.241, in 42 local
   sessions. **It is cumulative, so read the last entry and never a sum of them** — the
   largest local value, 124.85 USD, is a session total and not one turn's cost. Whether it
-  counts a subagent's tokens is **settled: it does**. Priced from Anthropic's published rates
-  on 2026-09-11, the 69 local sessions carrying a record come to 2,241 USD from their main
-  logs alone against the 3,042 USD the records report, and to 2,695 USD once the subagent
+  counts a subagent's tokens is **settled: it does**. Priced by the build's own rates and
+  formula on 2026-09-11, the 71 local sessions carrying a record come to 2,200 USD from their
+  main logs alone against the 3,043 USD the records report, and to 3,159 USD once the subagent
   sidecars are added — so the record reaches delegated work, as `totalLinesAdded` does.
   agentry sums `usage` across the sidecars rather than reading this, which is what makes the
   two agree about one session's tokens.
@@ -424,7 +424,10 @@ against the turns around them by their own content.
   to computing from tokens without saying so.
 
   **`modelUsage` counts API requests the transcript does not hold**, so a cost computed from
-  assistant entries is a floor and not a match. One local record reports 2,115,847 Haiku
+  assistant entries misses part of what the ledger charged. It is not a floor, though: the
+  ledger's own resets push the other way, and the two effects roughly cancel across the corpus
+  — pricing all 71 records' transcripts comes to 3,159 USD against their 3,043 USD, 103.8%,
+  with a per-session median of 98.1% and 8 of the 68 non-zero records exceeded. One local record reports 2,115,847 Haiku
   input tokens where its own entries sum 122, and 1,304,777 Opus input tokens where they sum
   5,594. The ledger prices every request the process makes while the transcript records only
   conversation entries, so the gap is structural and no field closes it: Claude Code's
@@ -457,6 +460,26 @@ against the turns around them by their own content.
 
   Web search is priced per search rather than per million, so 0.01 there is one cent a search.
   Every rate matches Anthropic's published pricing page as read on 2026-09-11.
+
+  **How the build combines the two write rates**, since the top-level counter and the nested
+  split overlap and a reader has to decide which to trust. Read from 2.1.268 on 2026-09-11:
+
+  ```js
+  function vre(e,n){let r=n.cache_creation_input_tokens??0,o=e.promptCacheWrite1hTokens,
+    d=Math.min(n.cache_creation?.ephemeral_1h_input_tokens??0,r);
+    if(o===void 0||d<=0)return r/1e6*e.promptCacheWriteTokens;
+    return d/1e6*o+(r-d)/1e6*e.promptCacheWriteTokens}
+  var Rre=1.1;
+  function Cre(e){return e.inference_geo==="us"?Rre:1}
+  ```
+
+  Three rules follow. The flat counter is the quantity billed and the nested hour figure only
+  divides it — **clamped by `Math.min` to the flat counter**, so a log reporting a larger split
+  than the total it splits prices the whole total at the hour rate rather than going negative;
+  165 tokens across the local corpus do report that. An entry with no hour share, or a tier
+  with no hour rate, prices the whole counter at the five-minute rate. And **inference pinned to
+  the US multiplies the whole request by 1.1**; every local entry reads `not_available` or
+  `global`, so no local figure carries it.
 
   **Three fields this build writes that no local log carries yet**: `canonicalModel` (the model
   id the pricing lookup used, which may differ from the key `modelUsage` is stored under),
@@ -617,8 +640,11 @@ carry more, as below.
 
 `cache_creation` splits the creation count by cache lifetime, into
 `ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`. The two are billed at different
-rates, so anything converting tokens to money needs the split and not just the total; an
-entry omitting the nested object gives no split to read.
+rates — an hour costs twice the input rate where five minutes costs 1.25 times it — so
+anything converting tokens to money needs the split and not just the total; an entry omitting
+the nested object gives no split to read. The split is not a rounding: 59% of the local
+corpus's cache-creation tokens are hour writes, 500,674,493 of 851,676,548, so pricing the
+flat counter at the five-minute rate undercounts cache writes by close to a fifth.
 
 `iterations` is not decoration. An element whose type is `advisor_message` carries its own
 model and its own tokens, billed separately from the top-level usage rather than included in

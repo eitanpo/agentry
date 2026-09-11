@@ -1298,3 +1298,94 @@ func TestLineBoundsSelect(t *testing.T) {
 		t.Errorf("--max-lines 0 matched %d sessions, want 0 — no record is not a claim of no change", n)
 	}
 }
+
+// TestCostVerbPricesTheProject pins the verb end to end: a bare `cost` prints
+// the total and says what the figure is, and `--by day` adds a table whose rows
+// account for that total.
+func TestCostVerbPricesTheProject(t *testing.T) {
+	fixtureProject(t)
+	out := captureStdout(t, func() {
+		if code, _, stderr := exec("cost", "--no-color"); code != 0 {
+			t.Fatalf("exit = %d, stderr = %q", code, stderr)
+		}
+	})
+	for _, want := range []string{"Total", "an estimate, not a bill", "2026-09-11"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bare cost output is missing %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "$") {
+		t.Errorf("bare cost printed no dollar figure:\n%s", out)
+	}
+	if strings.Contains(out, "Day") {
+		t.Errorf("bare cost printed a table; the total is the whole answer:\n%s", out)
+	}
+
+	// The same fixture project, still the working directory: fixtureProject
+	// resolves its source relative to the package and cannot be called twice.
+	byDay := captureStdout(t, func() { exec("cost", "--by", "day", "--no-color") })
+	for _, want := range []string{"Day", "Sessions", "Tokens", "Cost", "Total"} {
+		if !strings.Contains(byDay, want) {
+			t.Errorf("cost --by day is missing %q:\n%s", want, byDay)
+		}
+	}
+}
+
+// TestCostJSONAlwaysEmitsObject is the roll-up's half of the output contract the
+// listing states with an array: under --format json stdout parses even when the
+// directory has no project, and the exit code is what reports the failure.
+func TestCostJSONAlwaysEmitsObject(t *testing.T) {
+	sessionlessProject(t, false)
+	var code int
+	out := captureStdout(t, func() { code, _, _ = exec("cost", "--format", "json") })
+	if code != exNoInput {
+		t.Errorf("exit = %d, want %d (exNoInput)", code, exNoInput)
+	}
+	var got struct {
+		By    string `json:"by"`
+		Total struct {
+			CostUSD float64 `json:"costUSD"`
+		} `json:"total"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+	}
+	if got.By != "total" || got.Total.CostUSD != 0 {
+		t.Errorf("stdout = %q, want the default axis and a zeroed total", out)
+	}
+}
+
+// TestCostRejectsAnUnknownAxis keeps --by in the enum-flag family: a typo is a
+// usage error naming the nearest value, not a silent fall back to the default.
+func TestCostRejectsAnUnknownAxis(t *testing.T) {
+	code, _, stderr := exec("cost", "--by", "dya")
+	if code != exUsage {
+		t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+	}
+	if !strings.Contains(stderr, `did you mean "day"`) {
+		t.Errorf("stderr = %q, want a nearest-value suggestion", stderr)
+	}
+}
+
+// TestCostReportsExcludedHeadlessSessions pins what the listing does not owe and
+// a total does: a figure that silently left sessions out is wrong by whatever
+// they cost, so the exclusion is named even when rows remain. Stdout carries the
+// total alone, so a piped figure is unaffected.
+func TestCostReportsExcludedHeadlessSessions(t *testing.T) {
+	entrypointFixture(t, "cli", "sdk-cli", "sdk-cli")
+	var stderr string
+	out := captureStdout(t, func() { _, _, stderr = exec("cost", "--no-color") })
+	if !strings.Contains(stderr, "2 headless session(s) not priced") {
+		t.Errorf("stderr = %q, want the count of excluded sessions", stderr)
+	}
+	if !strings.Contains(stderr, "--from all") {
+		t.Errorf("stderr = %q, want the flag that includes them", stderr)
+	}
+	if strings.Contains(out, "headless") {
+		t.Errorf("stdout carries the note:\n%s", out)
+	}
+
+	if _, _, stderr = exec("cost", "--from", "all", "--no-color"); strings.Contains(stderr, "headless") {
+		t.Errorf("--from all still warns: %q", stderr)
+	}
+}

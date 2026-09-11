@@ -24,7 +24,7 @@ source <(agentry completion bash)    # add to ~/.bashrc
 agentry completion fish | source     # or: > ~/.config/fish/completions/agentry.fish
 ```
 
-Completion covers the verbs and flags, the enum values of `--format`, `--level`, `--from` and `--effort`, and — the useful one — the current project's **session ids**, each shown with its title, so you tab a UUID instead of pasting it.
+Completion covers the verbs and flags, the enum values of `--format`, `--level`, `--from`, `--by` and `--effort`, and — the useful one — the current project's **session ids**, each shown with its title, so you tab a UUID instead of pasting it.
 
 ## Usage
 
@@ -35,10 +35,11 @@ agentry                     # list this project's sessions (see below)
 agentry <uuid>              # render a session by id, or any unambiguous prefix (agentry 489ce01)
 agentry view                # render the most recent session (no id needed)
 agentry view --from sdk     # render the most recent headless run (a hook, `claude -p`)
+agentry cost                # what these sessions cost, computed from their tokens
 agentry <uuid> --format json | jq  # the full session model as JSON, for piping
 ```
 
-With no id, `agentry` lists this directory's sessions and those of any project nested under it (below); with an id it renders that one, looked up in the same set of projects, under `~/.claude/projects/` — or under `$CLAUDE_CONFIG_DIR/projects/` when you set that variable, the same one Claude Code reads to choose where to write; the id may be a full UUID or any prefix that names one session, and a prefix matching several is an error saying how many. `agentry view` with no id picks the most recent session you actually worked in, skipping headless runs — an id you name is always rendered as asked. `--from` changes which kind it picks: `--from sdk` for the last headless run, `--from all` for the last session of any kind. Asking for a kind this project has none of is an error, not a quiet fall back to another kind. The first token is a verb (`view`, `list`) when it names one, otherwise a session id — they can't collide, since ids are hex and verbs are words. Flags may go before or after operands, and a mistyped verb, flag, or value is met with a "did you mean" suggestion rather than full help.
+With no id, `agentry` lists this directory's sessions and those of any project nested under it (below); with an id it renders that one, looked up in the same set of projects, under `~/.claude/projects/` — or under `$CLAUDE_CONFIG_DIR/projects/` when you set that variable, the same one Claude Code reads to choose where to write; the id may be a full UUID or any prefix that names one session, and a prefix matching several is an error saying how many. `agentry view` with no id picks the most recent session you actually worked in, skipping headless runs — an id you name is always rendered as asked. `--from` changes which kind it picks: `--from sdk` for the last headless run, `--from all` for the last session of any kind. Asking for a kind this project has none of is an error, not a quiet fall back to another kind. The first token is a verb (`view`, `list`, `cost`) when it names one, otherwise a session id — they can't collide, since ids are hex and verbs are words. Flags may go before or after operands, and a mistyped verb, flag, or value is met with a "did you mean" suggestion rather than full help.
 
 To find a session, list them — bare `agentry` does this, and `agentry list` is its explicit form:
 
@@ -84,6 +85,37 @@ agentry list --from app                    # only sessions started in the deskto
 agentry list --from all                    # include headless runs, hidden by default
 ```
 
+**What it cost.** `agentry cost` prices the tokens itself, so every session gets a dollar figure and
+the dollars add up over any window — which Claude Code's own per-session record cannot do, covering
+71 of 314 local sessions and holding one number per session that no day can be split out of:
+
+```
+agentry cost                              # one line: what this project's sessions cost
+agentry cost --by day                     # one row per day
+agentry cost --by week                    # one row per week, labelled by its Monday
+agentry cost --by month                   # one row per calendar month
+agentry cost --by model                   # what each model cost you
+agentry cost --by session                 # one row per session, priciest first
+agentry cost --since 30d                  # the last 30 days
+agentry cost --since today --by session   # today's sessions, priciest first
+agentry cost --all-projects --by month    # every project, month by month
+agentry cost --project ~/Projects/me --by model
+agentry cost --all-projects --by day --format json | jq   # machine-readable, for piping
+```
+
+The figure is **an estimate, not a bill**: it prices the responses the transcript records, at the
+same rates and by the same formula Claude Code uses. Over the 71 local sessions carrying both
+figures the totals agree within 4% ($3,159 computed against $3,043 recorded, median 98.1% per
+session), and a per-session gap runs both ways — low where Claude Code paid for a background request
+it wrote no entry for, high where its own record covers only part of the session. Rates come from one table stamped with the date it was verified against
+published prices, and `--format json` carries that date. Web search, geography-pinned inference, and
+an organization's negotiated rates are not priced — no local session used any of them. A model with
+no price is named rather than counted as free. Every row's tokens are attributed to the local
+calendar day of the response that spent them, so a session running past midnight splits across both
+days, and the rows always sum to the total — there is no `--limit` to make them not. Headless
+sessions are left out by the same default the listing applies, and `cost` says on stderr how many
+it did not price, since a total that quietly omitted them is just lower than your bill.
+
 **A rendered session ends with what it produced.** If the session opened a pull request or published
 an artifact, an `Outputs` section after the last turn lists each one, clickable on a terminal — a
 pull request as its URL, an artifact as its title. It is not gated on `--level`, so it shows even at
@@ -121,7 +153,7 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--level minimal\|standard\|detailed\|full` | render | `minimal` | Preset of channel defaults. `minimal` prompts+response; `standard` +thinking+metrics; `detailed` +tools+subagents (no output); `full` +tool-results. |
 | `--[no-]thinking\|tools\|tool-results\|subagents\|metrics` | render | — | Override a single channel on top of `--level` (adds or subtracts). `tools` = a tool fired; `tool-results` = its output. An `Agent` line also names what it delegated to: `Agent[Explore@haiku]` is the subagent type and the model, and the `@model` half is absent when the call left the subagent on the session's model. |
 | `--limit N` | `list` | `10` | Cap to N most-recent (`0` = no cap; lifted when any filter flag is set). |
-| `--since WHEN`, `--until WHEN` | `list` | — | Filter by last-activity time. WHEN: `today`/`yesterday`, `Nh`/`Nd`/`Nw`, or `YYYY-MM-DD`. |
+| `--since WHEN`, `--until WHEN` | `list`, `cost` | — | Filter by last-activity time. WHEN: `today`/`yesterday`, `Nh`/`Nd`/`Nw`, or `YYYY-MM-DD`. On `cost` the bounds are compared against each day of spend instead, so a session straddling the edge contributes only the days inside the window. |
 | `--include CHANNELS` | `list` | — | Add per-session detail. Comma-separated; channels: `prompts`, `tools`, `files`, `model`, `cost`, `outputs` (or `all`). `tools` breaks down a session's top-level tool calls grouped by identity — Bash by program, Skill by name, Agent by subagent type, Edit/Write by target file, everything else by tool name — and adds a `Denied` line naming the calls that were refused and by what (`permission-rule`, `automode-blocked`, `automode-unavailable`, `user-rejected`), which an error glyph alone cannot tell you. `files` lists every file the session modified by any means, from Claude Code's own file-history record rather than from tool arguments. `model` names what the session ran on — its model and reasoning effort, in the rendered header's phrasing — which is otherwise invisible in the text table. `cost` names what it amounted to — the token tally, then the dollar total and the lines added and removed that Claude Code recorded — in the rendered header's exact wording, and is the only place the text table states any of them; the recorded halves are absent on any session whose log carries no cost record, which is every session before Claude Code 2.1.241 and many since, and the line counters are dropped again on a session that changed nothing. `outputs` lists what the session produced beyond its transcript: one line per pull request it opened (its URL) and per artifact it published (title, then `claude.ai` URL), deduplicated, since Claude Code re-records both on later turns. |
 | `--used-tool NAME` | `list` | — | Only sessions where that tool fired, by tool-use name (case-insensitive, exact). The "which mechanism" axis. |
 | `--used-skill`, `--used-agent`, `--used-command` | `list` | — | Identity axis: a Skill's skill, an Agent's subagent type, a Bash command's text (case-insensitive substring). |
@@ -135,14 +167,15 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--effort LEVEL` | `list` | — | Only sessions run at that reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Case-insensitive and **exact**, unlike the substring filters — the levels nest, so `high` must not quietly include `xhigh`. Unknown levels return nothing rather than erroring, since the set grows. |
 | `--min-lines N` | `list` | — | Only sessions that changed at least N lines — additions plus removals, from Claude Code's own record. Inclusive. A session whose log carries no such record matches no bound, which is most sessions: the record exists only from Claude Code 2.1.241 and not on every session since. A negative value is a usage error. |
 | `--max-lines N` | `list` | — | Only sessions that changed at most N lines, on the same rule. `--max-lines 0` selects the sessions that recorded changing nothing — never the ones with no record. Combined with `--min-lines` it makes a range, and a floor above the ceiling is a usage error rather than an empty listing. |
-| `--all-projects` | `list` | — | Every project under the projects root (`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/` when set), not just this directory's. Mutually exclusive with `--project`. |
-| `--project PATH` | `list` | — | PATH's sessions instead of this directory's, including every project nested under PATH. It moves the root, not the depth — a listing already covers what is nested under the current directory, which is how standing in a repo picks up its git worktrees. |
-| `--from cli\|app\|sdk\|all` | `list`, `view` | `cli`+`app` | Where the session was run. `sdk` is anything non-interactive (`claude -p`, a hook, CI) and is **hidden by default**; `all` restores it. On `view` (no id) it picks which kind the most-recent lookup walks back to; it cannot be combined with a session id. |
-| `--format json\|text` | render, `list` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color), with `meta.effort` beside `meta.model`, `meta.prs` and `meta.artifacts` carrying what the session produced, and each tool call carrying the `identity` that `list --include tools` groups by plus the `model` an `Agent` call delegated to; on `list` it's a JSON array of per-session summaries, each carrying its `cwd`, the `files` it modified as absolute paths, its `denials`, its `model` and `effort`, its `usage`, `costUSD`, `linesAdded` and `linesRemoved` — the token tally over the main thread and every subagent, plus Claude Code's own dollar and line totals where the log recorded them, the same number the render path reports as `meta.usage`, which is what makes a cross-project cost tally one call instead of one render per session — and its outputs, `prs` (`{repository, number, url}`) and `artifacts` (`{title, url, path}`) (ignoring `--include` and color), and stdout is always a valid array — a directory with no project, or a project with no sessions, prints `[]` while still reporting the error on stderr and exiting non-zero, so you can pipe into `jq` without a guard. |
+| `--by total\|day\|week\|month\|model\|session` | `cost` | `total` | Which bucket the dollars are added up in. Time buckets print oldest first; `model` and `session` print priciest first. Days begin at local midnight and weeks at Monday. There is no `--limit`, so the rows always account for the total line. |
+| `--all-projects` | `list`, `cost` | — | Every project under the projects root (`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/` when set), not just this directory's. Mutually exclusive with `--project`. |
+| `--project PATH` | `list`, `cost` | — | PATH's sessions instead of this directory's, including every project nested under PATH. It moves the root, not the depth — a listing already covers what is nested under the current directory, which is how standing in a repo picks up its git worktrees. |
+| `--from cli\|app\|sdk\|all` | `list`, `view`, `cost` | `cli`+`app` | Where the session was run. `sdk` is anything non-interactive (`claude -p`, a hook, CI) and is **hidden by default**; `all` restores it. On `view` (no id) it picks which kind the most-recent lookup walks back to; it cannot be combined with a session id. |
+| `--format json\|text` | render, `list`, `cost` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color), with `meta.effort` beside `meta.model`, `meta.prs` and `meta.artifacts` carrying what the session produced, and each tool call carrying the `identity` that `list --include tools` groups by plus the `model` an `Agent` call delegated to; on `list` it's a JSON array of per-session summaries, each carrying its `cwd`, the `files` it modified as absolute paths, its `denials`, its `model` and `effort`, its `usage`, `dailyUsage` (that same tally split per model per local day, which is what `agentry cost` buckets), `costUSD`, `linesAdded` and `linesRemoved` — the token tally over the main thread and every subagent, plus Claude Code's own dollar and line totals where the log recorded them, the same number the render path reports as `meta.usage`, which is what makes a cross-project cost tally one call instead of one render per session — and its outputs, `prs` (`{repository, number, url}`) and `artifacts` (`{title, url, path}`) (ignoring `--include` and color), and stdout is always a valid array — a directory with no project, or a project with no sessions, prints `[]` while still reporting the error on stderr and exiting non-zero, so you can pipe into `jq` without a guard. On `cost` it is one object — `by`, `buckets`, `total`, `recorded`, `unpricedModels`, `pricesVerified` — emitted even when nothing matched. |
 | `--no-color` | global | — | Disable color (also honors the `NO_COLOR` env var). |
 | `--help`, `--version` | global | — | Per-verb `--help` lists only that mode's flags. |
 
-Bare `agentry` is the listing, so the "`list`" flags apply to it as well as to `agentry list`; the "render" flags apply to `agentry <uuid>` and `view`; "global" flags work anywhere.
+Bare `agentry` is the listing, so the "`list`" flags apply to it as well as to `agentry list`; `cost` takes the selection and scope flags marked for it and none of the detail ones; the "render" flags apply to `agentry <uuid>` and `view`; "global" flags work anywhere.
 
 Markdown-file export, content search, and an interactive browser are planned — see the roadmap in [PRODUCT.md](PRODUCT.md).
 

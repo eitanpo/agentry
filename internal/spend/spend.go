@@ -47,13 +47,27 @@ func deref(n *int) int {
 func USD(v float64) string { return fmt.Sprintf("$%.2f", v) }
 
 // Tokens abbreviates a token count to fit a column: exact below a thousand, then
-// thousands to one decimal place up to ten thousand and to none above it.
+// thousands, millions and billions, each to one decimal place for its first
+// order of magnitude and to none above it.
+//
+// Millions and billions are tiers of their own because a roll-up reaches them —
+// the local corpus prices 12B tokens — and a twelve-figure count written in
+// thousands is not read at a glance. One session reaches millions on its own:
+// the largest local one holds 3.1M output tokens.
 func Tokens(n int) string {
 	switch {
 	case n < 1000:
 		return fmt.Sprintf("%d", n)
 	case n < 10000:
 		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	case n < 1000000:
+		return fmt.Sprintf("%.0fk", float64(n)/1000)
+	case n < 10000000:
+		return fmt.Sprintf("%.1fM", float64(n)/1000000)
+	case n < 1000000000:
+		return fmt.Sprintf("%.0fM", float64(n)/1000000)
+	case n < 10000000000:
+		return fmt.Sprintf("%.1fB", float64(n)/1000000000)
 	}
-	return fmt.Sprintf("%.0fk", float64(n)/1000)
+	return fmt.Sprintf("%.0fB", float64(n)/1000000000)
 }

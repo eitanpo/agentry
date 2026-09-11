@@ -118,11 +118,12 @@ type Summary struct {
 	// lets a single cross-project listing answer what a model cost.
 	Usage Usage `json:"usage"`
 	// CostUSD is Claude Code's own running dollar total for the session, read from
-	// the log's last record of it rather than derived from Usage — agentry knows no
-	// prices. Nil on a session whose log carries none (anything before Claude Code
-	// 2.1.241), which is not a claim it was free. Whether Claude Code's total
-	// already counts a subagent's spend is not something the log states, so unlike
-	// Usage this covers the main log alone and makes no claim beyond it.
+	// the log's last record of it rather than derived from Usage. Nil on a session
+	// whose log carries none (anything before Claude Code 2.1.241), which is not a
+	// claim it was free — DailyUsage is what puts a figure on such a session, at
+	// agentry's own prices and as an estimate. Costs no sidecar read: Claude Code
+	// prices every request a session's process makes into one ledger, subagents
+	// included, so there is nothing here to add and adding would double count.
 	CostUSD *float64 `json:"costUSD,omitempty"`
 	// LinesAdded and LinesRemoved are how much code the session changed, from the
 	// same record CostUSD comes from — so all three are present together, and a
@@ -132,6 +133,12 @@ type Summary struct {
 	// recorded 22 lines added.
 	LinesAdded   *int `json:"linesAdded,omitempty"`
 	LinesRemoved *int `json:"linesRemoved,omitempty"`
+	// DailyUsage splits Usage by model and by the local day each response was
+	// spent on, so a cost roll-up can bucket a session's spend by day without
+	// re-reading its log. Summing every entry's Usage reproduces Usage exactly —
+	// same responses, same deduplication, only grouped — so the two cannot
+	// disagree about what one session spent.
+	DailyUsage []DailyUsage `json:"dailyUsage,omitempty"`
 	// PRs and Artifacts are what the session produced beyond its own transcript,
 	// each deduplicated in first-seen order (Claude Code re-records both on later
 	// turns). They come from entries Claude Code writes for the session as a whole,
@@ -227,6 +234,16 @@ type Usage struct {
 	Output      int `json:"output"`
 	CacheRead   int `json:"cacheRead"`
 	CacheCreate int `json:"cacheCreate"`
+	// CacheCreate1h is the share of CacheCreate bought for an hour rather than
+	// five minutes — a subset of it, not a fifth counter, so a caller summing the
+	// tally must not add this one in. It is tracked because the two cost different
+	// rates, an hour of cache being twice the input rate against 1.25 times it for
+	// five minutes, and the flat counter the log leads with hides which: 59% of the
+	// local corpus's cache-creation tokens were hour writes when measured
+	// 2026-09-11, so pricing all of them at the five-minute rate undercounts cache
+	// writes by close to a fifth.
+	// Zero on a log that carries no split, which prices as five-minute writes.
+	CacheCreate1h int `json:"cacheCreate1h"`
 }
 
 // Add accumulates another tally into this one.
@@ -235,6 +252,23 @@ func (u *Usage) Add(o Usage) {
 	u.Output += o.Output
 	u.CacheRead += o.CacheRead
 	u.CacheCreate += o.CacheCreate
+	u.CacheCreate1h += o.CacheCreate1h
+}
+
+// DailyUsage is one model's tokens on one local calendar day — the finest grain
+// a cost roll-up prices and buckets by. Day is a local date (2026-09-11) rather
+// than an instant: the bucket boundary is local midnight, and a date states that
+// where a timestamp would invite a second reading of it in another zone.
+//
+// The model belongs in the key because rates differ per model, and the day
+// because a session's spend is attributed to the day each response was spent on
+// rather than to the day the session ended — 29 of the 69 locally recorded
+// sessions run past a midnight, and Claude Code's own per-session record has no
+// form that could be split across one.
+type DailyUsage struct {
+	Day   string `json:"day"`
+	Model string `json:"model,omitempty"`
+	Usage Usage  `json:"usage"`
 }
 
 // Turn is one user prompt and the assistant activity that followed it.

@@ -100,6 +100,7 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 	ms := models(entries)
 	cwd := sessionCwd(entries)
 	cost, added, removed := recordedTotals(entries)
+	daily, usage := sessionSpend(jsonlPath, entries)
 	var prompts []string
 	for _, tn := range turns {
 		if !isClearCmd(tn.prompt) {
@@ -130,7 +131,8 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		Models:       manyOrNone(ms),
 		Effort:       lastOf(effs),
 		Efforts:      manyOrNone(effs),
-		Usage:        sessionUsage(jsonlPath, entries),
+		Usage:        usage,
+		DailyUsage:   daily,
 		CostUSD:      cost,
 		LinesAdded:   added,
 		LinesRemoved: removed,
@@ -148,19 +150,33 @@ func subagentDir(jsonlPath string) string {
 	return filepath.Join(filepath.Dir(jsonlPath), stem, "subagents")
 }
 
-// sessionUsage totals a session's tokens the way Load builds Meta.Usage: the
-// main thread plus every subagent sidecar. Summarize is otherwise deliberately
-// cheap, and this is the one place it opens files the main log does not name —
-// sidecars run to roughly 60% of a project tree's bytes. It is paid anyway,
-// because a tally that silently dropped delegated work would answer the cost
-// question wrong for exactly the sessions that cost the most.
-func sessionUsage(jsonlPath string, entries []entry) model.Usage {
-	u := sumUsage(entries)
+// sessionSpend totals a session's tokens the way Load builds Meta.Usage — the
+// main thread plus every subagent sidecar — and returns the same responses split
+// by model and local day. The total is the sum of the split rather than a second
+// reading of the log, so the two cannot drift apart.
+//
+// Summarize is otherwise deliberately cheap, and this is the one place it opens
+// files the main log does not name — sidecars run to roughly 60% of a project
+// tree's bytes. It is paid anyway, because a tally that silently dropped
+// delegated work would answer the cost question wrong for exactly the sessions
+// that cost the most. The split itself adds arithmetic and no file reads.
+//
+// One tally per file, not one for the session: a request id is unique to its own
+// log, and a shared tally would let a sidecar's response displace a main-thread
+// response that happened to key the same, dropping tokens the session spent.
+func sessionSpend(jsonlPath string, entries []entry) ([]model.DailyUsage, model.Usage) {
+	fallback := firstStamp(entries)
+	recs := mainTally(entries, fallback).records()
 	paths, _ := filepath.Glob(filepath.Join(subagentDir(jsonlPath), "agent-*.jsonl"))
 	for _, p := range paths {
-		u.Add(sidecarUsage(p))
+		recs = append(recs, sidecarTally(p, fallback).records()...)
 	}
-	return u
+	daily := groupDaily(recs)
+	var total model.Usage
+	for _, d := range daily {
+		total.Add(d.Usage)
+	}
+	return daily, total
 }
 
 // usageOnly is the slice of an entry a token tally needs. Sidecars are read
@@ -172,21 +188,26 @@ func sessionUsage(jsonlPath string, entries []entry) model.Usage {
 // session from the listing over a subagent's log.
 type usageOnly struct {
 	Type string `json:"type"`
+	// Timestamp and the message's model are what place a delegated response in a
+	// day bucket and at a rate. A subagent is priced by the model that answered
+	// inside it, which is not always the session's own.
+	Timestamp string `json:"timestamp"`
 	// RequestID and UUID are what usageKey groups by, so a sidecar's tokens are
 	// deduplicated on the same rule as the main log's rather than counting a
 	// delegated reply once per content block.
 	RequestID string `json:"requestId"`
 	UUID      string `json:"uuid"`
 	Message   struct {
+		Model string   `json:"model"`
 		Usage rawUsage `json:"usage"`
 	} `json:"message"`
 }
 
-func sidecarUsage(path string) model.Usage {
+func sidecarTally(path string, fallback time.Time) usageTally {
 	var t usageTally
 	f, err := os.Open(path)
 	if err != nil {
-		return t.sum()
+		return t
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -196,12 +217,12 @@ func sidecarUsage(path string) model.Usage {
 		if json.Unmarshal(sc.Bytes(), &re) != nil || re.Type != "assistant" {
 			continue
 		}
-		t.add(usageKey(re.RequestID, re.UUID), model.Usage{
-			Input: re.Message.Usage.Input, Output: re.Message.Usage.Output,
-			CacheRead: re.Message.Usage.CacheRead, CacheCreate: re.Message.Usage.CacheCreate,
+		ts, _ := time.Parse(time.RFC3339, re.Timestamp)
+		t.add(usageKey(re.RequestID, re.UUID), usageRecord{
+			day: dayOf(ts, fallback), model: re.Message.Model, usage: re.Message.Usage.tally(),
 		})
 	}
-	return t.sum()
+	return t
 }
 
 // entrypoints returns every distinct entrypoint the session carries, in
@@ -625,6 +646,25 @@ type rawUsage struct {
 	Output      int `json:"output_tokens"`
 	CacheRead   int `json:"cache_read_input_tokens"`
 	CacheCreate int `json:"cache_creation_input_tokens"`
+	// CacheCreation splits the flat counter above by how long the cache was
+	// bought for. Only the hour share is read: the five-minute share is the flat
+	// counter less that, which is also what an older log carrying no split reduces
+	// to. Absent on such a log, where the zero prices every write at the
+	// five-minute rate.
+	CacheCreation struct {
+		Ephemeral1h int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+}
+
+// tally is the usage object as the model carries it. Named once because three
+// readers decode it — the parser, the sidecar scan, and the tests — and a reader
+// that skipped a counter would report a different spend for the same session.
+func (u rawUsage) tally() model.Usage {
+	return model.Usage{
+		Input: u.Input, Output: u.Output,
+		CacheRead: u.CacheRead, CacheCreate: u.CacheCreate,
+		CacheCreate1h: u.CacheCreation.Ephemeral1h,
+	}
 }
 
 type rawBlock struct {
@@ -711,10 +751,7 @@ func loadEntries(path string) ([]entry, error) {
 			var msg rawMessage
 			if json.Unmarshal(re.Message, &msg) == nil {
 				e.model = msg.Model
-				e.usage = model.Usage{
-					Input: msg.Usage.Input, Output: msg.Usage.Output,
-					CacheRead: msg.Usage.CacheRead, CacheCreate: msg.Usage.CacheCreate,
-				}
+				e.usage = msg.Usage.tally()
 				e.contentStr, e.hasStr, e.blocks = decodeContent(msg.Content)
 			}
 		}
@@ -831,10 +868,22 @@ func models(entries []entry) []string {
 // 20.8% less output than highest ones — one session read 1,396,336 against
 // 3,108,698, where Claude Code's own record for it named 3,274,666.
 type usageTally struct {
-	// keyless holds the entries that name no response, summed as they arrive;
-	// best holds one entry per response, replaced when a higher output shows up.
-	keyless model.Usage
-	best    map[string]model.Usage
+	// keyless holds the entries that name no response, kept as they arrive; best
+	// holds one entry per response, replaced when a higher output shows up.
+	keyless []usageRecord
+	best    map[string]usageRecord
+}
+
+// usageRecord is one response's tokens beside the two facts a cost roll-up
+// groups them by: the model that answered, which sets the rate, and the local
+// day the response was spent on, which sets the bucket. The tally carries them
+// so the deduplication rule above is written once and serves both the session
+// total and the split — a second tally applying the rule again is a second
+// chance to apply it differently.
+type usageRecord struct {
+	day   string
+	model string
+	usage model.Usage
 }
 
 // add offers one assistant entry to the tally, keeping it when it is the highest
@@ -846,26 +895,38 @@ type usageTally struct {
 // The whole usage object of the winning entry is kept, not a per-counter
 // maximum, so the four counters stay as one response reported them; the three
 // that do not grow are identical across the group either way.
-func (t *usageTally) add(key string, u model.Usage) {
+func (t *usageTally) add(key string, r usageRecord) {
 	if key == "" {
-		t.keyless.Add(u)
+		t.keyless = append(t.keyless, r)
 		return
 	}
-	if prev, ok := t.best[key]; ok && prev.Output >= u.Output {
+	if prev, ok := t.best[key]; ok && prev.usage.Output >= r.usage.Output {
 		return
 	}
 	if t.best == nil {
-		t.best = map[string]model.Usage{}
+		t.best = map[string]usageRecord{}
 	}
-	t.best[key] = u
+	t.best[key] = r
 }
 
 // sum totals what the tally kept. Addition of the per-response entries is
 // commutative, so map iteration order does not reach the result.
-func (t *usageTally) sum() model.Usage {
-	out := t.keyless
-	for _, u := range t.best {
-		out.Add(u)
+func (t usageTally) sum() model.Usage {
+	var out model.Usage
+	for _, r := range t.records() {
+		out.Add(r.usage)
+	}
+	return out
+}
+
+// records is every response the tally kept, in no particular order — the input
+// to grouping, and what makes the split and the total the same set of responses
+// read two ways.
+func (t usageTally) records() []usageRecord {
+	out := make([]usageRecord, 0, len(t.keyless)+len(t.best))
+	out = append(out, t.keyless...)
+	for _, r := range t.best {
+		out = append(out, r)
 	}
 	return out
 }
@@ -884,13 +945,83 @@ func usageKey(requestID, uuid string) string {
 }
 
 func sumUsage(entries []entry) model.Usage {
+	return mainTally(entries, time.Time{}).sum()
+}
+
+// mainTally reads the main log's assistant entries into one tally. fallback is
+// the timestamp a record takes when its own entry carries none, so a response
+// still lands on a day; callers with no day to answer for pass the zero time.
+func mainTally(entries []entry, fallback time.Time) usageTally {
 	var t usageTally
 	for _, e := range entries {
-		if e.typ == "assistant" {
-			t.add(usageKey(e.requestID, e.uuid), e.usage)
+		if e.typ != "assistant" {
+			continue
+		}
+		t.add(usageKey(e.requestID, e.uuid), usageRecord{
+			day: dayOf(e.t, fallback), model: e.model, usage: e.usage,
+		})
+	}
+	return t
+}
+
+// dayOf is the local calendar date a response's tokens are attributed to. Local
+// rather than UTC because the question asked of a daily figure is what today
+// cost, and today is the caller's. Empty only for a response whose entry carries
+// no timestamp in a session that carries none either, which buckets as unknown
+// rather than being dropped — the tokens were spent whatever the log forgot.
+func dayOf(t, fallback time.Time) string {
+	if t.IsZero() {
+		t = fallback
+	}
+	if t.IsZero() {
+		return ""
+	}
+	return t.Local().Format("2006-01-02")
+}
+
+// firstStamp is the session's earliest known timestamp, standing in for an entry
+// that carries none.
+func firstStamp(entries []entry) time.Time {
+	for _, e := range entries {
+		if !e.t.IsZero() {
+			return e.t
 		}
 	}
-	return t.sum()
+	return time.Time{}
+}
+
+// groupDaily collapses responses into one entry per model per day, ordered by
+// day then model so one session's split is identical on every run — map
+// iteration reaches the records in no order, and a listing that reshuffled its
+// own output could not be diffed between runs.
+//
+// A response that spent no tokens is dropped rather than grouped: the entries
+// Claude Code composes itself carry a placeholder model and zero counters, and a
+// bucket for them would name a model the session never ran on. Dropping them
+// changes no total, since their tokens are zero.
+func groupDaily(recs []usageRecord) []model.DailyUsage {
+	idx := map[string]int{}
+	var out []model.DailyUsage
+	for _, r := range recs {
+		if r.usage == (model.Usage{}) {
+			continue
+		}
+		key := r.day + "\x00" + r.model
+		i, ok := idx[key]
+		if !ok {
+			i = len(out)
+			idx[key] = i
+			out = append(out, model.DailyUsage{Day: r.day, Model: r.model})
+		}
+		out[i].Usage.Add(r.usage)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Day != out[j].Day {
+			return out[i].Day < out[j].Day
+		}
+		return out[i].Model < out[j].Model
+	})
+	return out
 }
 
 // ── Tool results and agent stitching ─────────────────────────────────────
@@ -1414,7 +1545,9 @@ func turnMetrics(entries []entry, subs map[string]*subagent) (u model.Usage, too
 		if e.typ != "assistant" {
 			continue
 		}
-		t.add(usageKey(e.requestID, e.uuid), e.usage)
+		t.add(usageKey(e.requestID, e.uuid), usageRecord{
+			day: dayOf(e.t, time.Time{}), model: e.model, usage: e.usage,
+		})
 		for _, b := range e.blocks {
 			if b.typ != "tool_use" {
 				continue

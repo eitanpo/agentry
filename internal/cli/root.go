@@ -38,7 +38,8 @@ func newRootCmd(version string) *cobra.Command {
 			"  agentry <uuid>               render a specific session\n" +
 			"  agentry view                 render the most recent session\n" +
 			"  agentry view --level full    render the most recent in full detail\n" +
-			"  agentry list --since 7d      list sessions from the last 7 days",
+			"  agentry list --since 7d      list sessions from the last 7 days\n" +
+			"  agentry cost --by month      what each month cost",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// No id lists; a full id renders. renderSession handles the
 			// verb-vs-id did-you-mean for a non-id first token.
@@ -64,6 +65,7 @@ func newRootCmd(version string) *cobra.Command {
 
 	root.AddCommand(newViewCmd(&noColor))
 	root.AddCommand(newListCmd(&noColor))
+	root.AddCommand(newCostCmd(&noColor))
 	return root
 }
 

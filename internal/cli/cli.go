@@ -35,7 +35,7 @@ var levels = map[string]render.Channels{
 
 // Candidate sets for nearest(): valid verbs, --level values, --include channels.
 var (
-	verbNames    = []string{"view", "list"}
+	verbNames    = []string{"view", "list", "cost"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
 	includeNames = []string{"prompts", "tools", "files", "model", "cost", "outputs", "all"}
 	formatNames  = []string{"json", "text"}

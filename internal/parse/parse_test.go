@@ -1097,3 +1097,58 @@ func TestTurnCompanionIsNotAPrompt(t *testing.T) {
 		t.Errorf("Title = %q, want %q", s.Title, "the real prompt")
 	}
 }
+
+// TestDailyUsageSplitsByDayAndModel pins the grain a cost roll-up buckets by:
+// one entry per model per local day, over the main log and its sidecars, with
+// the response deduplication applied before the split rather than after.
+//
+// The expected days are derived from the fixture's own timestamps rather than
+// written out, because the boundary is local midnight and the test runs in
+// whatever zone the machine is set to. The two instants are two days apart, so
+// they stay distinct days in every zone.
+func TestDailyUsageSplitsByDayAndModel(t *testing.T) {
+	path := filepath.Join("testdata", "daily-usage.jsonl")
+	day := func(stamp string) string {
+		ts, err := time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ts.Local().Format("2006-01-02")
+	}
+	first, second := day("2026-03-01T12:00:00Z"), day("2026-03-03T12:00:00Z")
+	want := []model.DailyUsage{
+		// req_A streams 5 output then 50; the highest wins, and the hour share of
+		// its cache write survives into the bucket that prices it.
+		{Day: first, Model: "claude-opus-5", Usage: model.Usage{
+			Input: 10, Output: 50, CacheRead: 100, CacheCreate: 200, CacheCreate1h: 200}},
+		{Day: first, Model: "claude-sonnet-5", Usage: model.Usage{Input: 20, Output: 30}},
+		// The sidecar's own model, not the session's: a subagent is priced by what
+		// answered inside it.
+		{Day: second, Model: "claude-haiku-4-5-20251001", Usage: model.Usage{
+			Input: 100, Output: 200, CacheRead: 50, CacheCreate: 30}},
+		{Day: second, Model: "claude-opus-5", Usage: model.Usage{
+			Input: 1, Output: 2, CacheRead: 3, CacheCreate: 4}},
+	}
+
+	s, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(s.DailyUsage, want) {
+		t.Errorf("DailyUsage = %+v,\n          want %+v", s.DailyUsage, want)
+	}
+	// The fixture's <synthetic> entry spends nothing and names no model the
+	// session ran on, so it must not appear as a bucket of its own.
+	for _, d := range s.DailyUsage {
+		if d.Model == syntheticModel {
+			t.Errorf("DailyUsage carries a %s bucket: %+v", syntheticModel, d)
+		}
+	}
+	var total model.Usage
+	for _, d := range s.DailyUsage {
+		total.Add(d.Usage)
+	}
+	if total != s.Usage {
+		t.Errorf("the split sums to %+v but Usage is %+v; the two must be one set of responses read two ways", total, s.Usage)
+	}
+}

@@ -12,6 +12,11 @@ func TestTokens(t *testing.T) {
 		want string
 	}{
 		{0, "0"}, {999, "999"}, {1000, "1.0k"}, {1500, "1.5k"}, {9999, "10.0k"}, {15000, "15k"},
+		// Millions have a tier of their own: a roll-up over a month reaches nine
+		// figures, and 201000k is not read at a glance.
+		{999999, "1000k"}, {1000000, "1.0M"}, {3108698, "3.1M"}, {9999999, "10.0M"},
+		{15000000, "15M"}, {201000000, "201M"},
+		{999999999, "1000M"}, {1000000000, "1.0B"}, {1207500000, "1.2B"}, {12075000000, "12B"},
 	}
 	for _, tt := range tests {
 		if got := Tokens(tt.n); got != tt.want {
