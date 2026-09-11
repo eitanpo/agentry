@@ -1299,9 +1299,9 @@ func TestLineBoundsSelect(t *testing.T) {
 	}
 }
 
-// TestCostVerbPricesTheProject pins the verb end to end: a bare `cost` prints
-// the total and says what the figure is, and `--by day` adds a table whose rows
-// account for that total.
+// TestCostVerbPricesTheProject pins the verb end to end: a bare `cost` answers
+// the three scopes at once, and any selector switches it to the roll-up table
+// whose rows account for one total.
 func TestCostVerbPricesTheProject(t *testing.T) {
 	fixtureProject(t)
 	out := captureStdout(t, func() {
@@ -1309,7 +1309,10 @@ func TestCostVerbPricesTheProject(t *testing.T) {
 			t.Fatalf("exit = %d, stderr = %q", code, stderr)
 		}
 	})
-	for _, want := range []string{"Total", "an estimate, not a bill", "2026-09-11"} {
+	for _, want := range []string{
+		"This session", "This folder", "This machine",
+		"an estimate, not a bill", "2026-09-11",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("bare cost output is missing %q:\n%s", want, out)
 		}
@@ -1317,8 +1320,8 @@ func TestCostVerbPricesTheProject(t *testing.T) {
 	if !strings.Contains(out, "$") {
 		t.Errorf("bare cost printed no dollar figure:\n%s", out)
 	}
-	if strings.Contains(out, "Day") {
-		t.Errorf("bare cost printed a table; the total is the whole answer:\n%s", out)
+	if strings.Contains(out, "Sessions") {
+		t.Errorf("bare cost printed the roll-up's table; three scopes are the answer:\n%s", out)
 	}
 
 	// The same fixture project, still the working directory: fixtureProject
@@ -1331,9 +1334,9 @@ func TestCostVerbPricesTheProject(t *testing.T) {
 	}
 }
 
-// TestCostJSONAlwaysEmitsObject is the roll-up's half of the output contract the
-// listing states with an array: under --format json stdout parses even when the
-// directory has no project, and the exit code is what reports the failure.
+// TestCostJSONAlwaysEmitsObject is the cost verb's half of the output contract
+// the listing states with an array: under --format json stdout parses even when
+// the machine holds no session, and the exit code is what reports the failure.
 func TestCostJSONAlwaysEmitsObject(t *testing.T) {
 	sessionlessProject(t, false)
 	var code int
@@ -1342,16 +1345,34 @@ func TestCostJSONAlwaysEmitsObject(t *testing.T) {
 		t.Errorf("exit = %d, want %d (exNoInput)", code, exNoInput)
 	}
 	var got struct {
-		By    string `json:"by"`
-		Total struct {
+		Scopes []struct {
+			Scope   string  `json:"scope"`
 			CostUSD float64 `json:"costUSD"`
-		} `json:"total"`
+		} `json:"scopes"`
+		PricesVerified string `json:"pricesVerified"`
 	}
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
 	}
-	if got.By != "total" || got.Total.CostUSD != 0 {
-		t.Errorf("stdout = %q, want the default axis and a zeroed total", out)
+	if len(got.Scopes) != 1 || got.Scopes[0].Scope != "machine" || got.Scopes[0].CostUSD != 0 {
+		t.Errorf("stdout = %q, want a zeroed machine scope alone", out)
+	}
+	if got.PricesVerified == "" {
+		t.Errorf("stdout = %q, want the price table's date even with nothing to price", out)
+	}
+
+	// With a selector the roll-up's own object is the contract instead.
+	sessionlessProject(t, false)
+	out = captureStdout(t, func() { exec("cost", "--by", "day", "--format", "json") })
+	var roll struct {
+		By      string `json:"by"`
+		Buckets []any  `json:"buckets"`
+	}
+	if err := json.Unmarshal([]byte(out), &roll); err != nil {
+		t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+	}
+	if roll.By != "day" || len(roll.Buckets) != 0 {
+		t.Errorf("stdout = %q, want the day axis and an empty bucket array", out)
 	}
 }
 
@@ -1368,13 +1389,17 @@ func TestCostRejectsAnUnknownAxis(t *testing.T) {
 }
 
 // TestCostReportsExcludedHeadlessSessions pins what the listing does not owe and
-// a total does: a figure that silently left sessions out is wrong by whatever
-// they cost, so the exclusion is named even when rows remain. Stdout carries the
-// total alone, so a piped figure is unaffected.
+// a roll-up total does: a figure that silently left sessions out is wrong by
+// whatever they cost, so the exclusion is named even when rows remain. Stdout
+// carries the total alone, so a piped figure is unaffected.
+//
+// A selector is given because the exclusion belongs to the roll-up: the
+// three-scope summary counts every session of every kind in its folder and
+// machine rows, so it has nothing to report.
 func TestCostReportsExcludedHeadlessSessions(t *testing.T) {
 	entrypointFixture(t, "cli", "sdk-cli", "sdk-cli")
 	var stderr string
-	out := captureStdout(t, func() { _, _, stderr = exec("cost", "--no-color") })
+	out := captureStdout(t, func() { _, _, stderr = exec("cost", "--by", "total", "--no-color") })
 	if !strings.Contains(stderr, "2 headless session(s) not priced") {
 		t.Errorf("stderr = %q, want the count of excluded sessions", stderr)
 	}
@@ -1387,5 +1412,8 @@ func TestCostReportsExcludedHeadlessSessions(t *testing.T) {
 
 	if _, _, stderr = exec("cost", "--from", "all", "--no-color"); strings.Contains(stderr, "headless") {
 		t.Errorf("--from all still warns: %q", stderr)
+	}
+	if _, _, stderr = exec("cost", "--no-color"); strings.Contains(stderr, "headless") {
+		t.Errorf("the summary warns about sessions it counts: %q", stderr)
 	}
 }

@@ -4,13 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/eitanpo/agentry/internal/cost"
+	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/list"
+	"github.com/eitanpo/agentry/internal/locate"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/parse"
 )
@@ -22,13 +25,20 @@ import (
 func newCostCmd(noColor *bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cost",
-		Short: "what the sessions cost, priced from their tokens",
-		Args:  cobra.NoArgs,
-		Example: "  agentry cost\n" +
-			"  agentry cost --by day\n" +
+		Short: "what you are spending: this session, this folder, this machine",
+		Long: "agentry cost — price the sessions from their tokens\n\n" +
+			"With no flags it answers three scopes at once: the session this directory\n" +
+			"was last working in, the directory's whole history, and everything this\n" +
+			"machine ran in the last 30 days. Any selector below switches it to a\n" +
+			"single-scope roll-up on one axis.\n\n" +
+			"The figure is computed from the transcript at list prices — an estimate,\n" +
+			"not a bill.",
+		Args: cobra.NoArgs,
+		Example: "  agentry cost                       this session, this folder, this machine\n" +
+			"  agentry cost --by day              one row per day, this directory\n" +
 			"  agentry cost --since 30d --by week\n" +
 			"  agentry cost --all-projects --by model\n" +
-			"  agentry cost --by session",
+			"  agentry cost --by session          priciest session first",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCost(cmd, noColor)
 		},
@@ -62,6 +72,29 @@ func parseBy(cmd *cobra.Command) (string, error) {
 	return "", usageErr("--by: unknown axis %q (want: %s)", by, strings.Join(cost.Axes, ", "))
 }
 
+// costSelectors are the flags that choose what is counted. Any of them switches
+// the verb from its three-scope summary to the single-scope roll-up; --format and
+// --no-color are deliberately absent, since neither chooses what is counted, only
+// how it is written.
+var costSelectors = []string{"by", "since", "until", "all-projects", "project", "from"}
+
+// summaryMode reports whether the verb should answer with the three-scope
+// summary — the answer to being asked nothing.
+func summaryMode(cmd *cobra.Command) bool {
+	for _, f := range costSelectors {
+		if cmd.Flags().Changed(f) {
+			return false
+		}
+	}
+	return true
+}
+
+// machineWindow is how far back the summary's machine row counts. Thirty days is
+// the span a spend question is usually asked over, and the row prints the first
+// day it covers rather than the span, so a reader is never left converting one
+// into the other.
+const machineWindow = 30
+
 func runCost(cmd *cobra.Command, noColor *bool) error {
 	// Every value is validated before a file is opened, so a typo errors at once
 	// rather than after a scan of every project.
@@ -80,6 +113,9 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 	since, until, err := parseWindow(cmd)
 	if err != nil {
 		return err
+	}
+	if summaryMode(cmd) {
+		return runCostSummary(cmd, noColor, format)
 	}
 
 	paths, err := sessionPaths(cmd)
@@ -158,4 +194,78 @@ func parseWindow(cmd *cobra.Command) (since, until time.Time, err error) {
 		*b.set = t
 	}
 	return since, until, nil
+}
+
+// runCostSummary answers the three scopes at once: the session this directory was
+// last working in, the directory's whole history, and the machine's last thirty
+// days.
+//
+// One parse of every session on the machine serves all three, because the three
+// scopes nest — the machine's sessions contain the directory's, which contain the
+// one. Re-reading the narrow scopes would double the sweep that is already the
+// whole cost of the answer.
+func runCostSummary(cmd *cobra.Command, noColor *bool, format string) error {
+	since := time.Now().AddDate(0, 0, -machineWindow)
+	paths, err := locate.SessionsAll()
+	if err != nil {
+		// The machine holds no session at all. Under --format json the contract is
+		// one object whatever happened, so a summary of nothing still goes to stdout
+		// — built rather than zero-valued, so it carries the price table's date like
+		// every other summary — and the reason goes to stderr with the exit code.
+		if format == "json" {
+			_ = cost.RenderOverviewJSON(os.Stdout, cost.BuildOverview(nil, nil, nil, since))
+		}
+		return noInputErr(err)
+	}
+	machine := parse.SummarizeAll(paths)
+
+	var folder []model.Summary
+	var session *model.Summary
+	cwd, err := os.Getwd()
+	if err != nil {
+		return noInputErr(err)
+	}
+	// Recency order, so the first session in scope that was not headless is the
+	// one `agentry view` would render — the same resolution, from the same rule.
+	here, hereErr := locate.SessionsByRecency(cwd)
+	if hereErr != nil {
+		// A directory with no project has no session and no folder row. Saying so
+		// keeps their absence from reading as two scopes that spent nothing.
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"agentry: no Claude project for this directory — pricing this machine only\n")
+	} else {
+		parsed := make(map[string]*model.Summary, len(machine))
+		for i := range machine {
+			parsed[machine[i].ID] = &machine[i]
+		}
+		for _, p := range here {
+			s, ok := parsed[sessionID(p)]
+			if !ok {
+				continue // it would not parse, and the sweep already skipped it
+			}
+			folder = append(folder, *s)
+			if session == nil && entrypoint.Matches("", s.Entrypoint) {
+				session = s
+			}
+		}
+	}
+
+	o := cost.BuildOverview(session, folder, machine, since)
+	if format == "json" {
+		if err := cost.RenderOverviewJSON(os.Stdout, o); err != nil {
+			return &exitError{code: 1, err: err}
+		}
+		return nil
+	}
+	color, width := terminal(*noColor)
+	if err := cost.RenderOverview(os.Stdout, o, cost.Options{Width: width, Color: color}); err != nil {
+		return &exitError{code: 1, err: err}
+	}
+	return nil
+}
+
+// sessionID is the id a session log's path carries: its file stem, which is how
+// the parser names the session it read.
+func sessionID(path string) string {
+	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 }

@@ -182,7 +182,7 @@ Both bounds are inclusive and both count the two counters together, so a session
 
 **A session whose log recorded no line counters matches neither bound.** It makes no claim about how much it changed, so it can neither meet a floor nor be shown to respect a ceiling — the rule `--model` already follows for a session naming no model. That is most sessions, since Claude Code has only written the record since 2.1.241 and does not write it for every session even now, so a bounded listing is a listing of the sessions it kept a record for. `--max-lines 0` therefore means "recorded, and changed nothing", never "no record".
 
-Each summary also carries its **token tally**, as `usage` in `--format json` — input, output, the two cache counters, and `cacheCreate1h`, the share of the cache writes bought for an hour rather than five minutes, summed over the main thread and every subagent the session spawned, each API response counted once (see Output). That is the same number the render path reports as `meta.usage`, so a spend read off a listing and one read off a rendered session agree rather than differing by whatever the subagents spent. Pairing it with `model` is what answers "how much did this model cost me across every project" from a single `--all-projects --format json` call, where before it took one render per session. Two limits on that answer: a session that switched model carries one tally and no split between the models, so `models` is what marks the sessions an exact attribution has to set aside (13 of 250 locally); and the tally is tokens rather than dollars, which `agentry cost` is what converts (see Rolling up cost). Reading the subagent sidecars is the listing's one non-trivial cost, since they run to roughly 60% of a project tree's bytes, and it is paid on every listing because the field is unconditional: over 250 local sessions the widest possible listing went from 2.40s to 2.96s. The text table shows the tally only under `--include cost`, since it is a number to aggregate rather than one to scan a row by.
+Each summary also carries its **token tally**, as `usage` in `--format json` — input, output, the two cache counters, and `cacheCreate1h`, the share of the cache writes bought for an hour rather than five minutes, summed over the main thread and every subagent the session spawned, each API response counted once (see Output). That is the same number the render path reports as `meta.usage`, so a spend read off a listing and one read off a rendered session agree rather than differing by whatever the subagents spent. Pairing it with `model` is what answers "how much did this model cost me across every project" from a single `--all-projects --format json` call, where before it took one render per session. Two limits on that answer: a session that switched model carries one tally and no split between the models, so `models` is what marks the sessions an exact attribution has to set aside (13 of 250 locally); and the tally is tokens rather than dollars, which `agentry cost` is what converts (see Rolling up cost). Reading the subagent sidecars is the listing's one non-trivial cost, since they run to roughly 60% of a project tree's bytes, and it is paid on every listing because the field is unconditional: over 250 local sessions the widest possible listing went from 2.40s to 2.96s when each session was read in turn. **Sessions are now read in parallel**, which is what keeps the widest answer affordable as a machine fills up: the same listing over 647 sessions takes 0.54s. The text table shows the tally only under `--include cost`, since it is a number to aggregate rather than one to scan a row by.
 
 Beside it each summary carries **what the session cost in dollars**, as `costUSD` — Claude Code's own running total, read from the log's last such record rather than derived from the token tally. It is the field a currency answer comes from, and it is absent on a session whose log carries none, so a caller aggregating it must decide what to do about the gap rather than being handed a zero that looks like a measurement. Unlike `usage` it is main-log-only and costs no extra file reads: Claude Code's total **already counts a subagent's spend** (see Output), so a caller has nothing to add to it and adding a separately derived subagent figure would double count. Beside it, `linesAdded` and `linesRemoved` say how much code the session changed. They come from the same record, so all three keys appear together and a caller can test one to know it has the others; a zero there is a session that changed nothing, which is a different fact from the key being absent.
 
@@ -216,6 +216,27 @@ Three charges are **left out**, and each one's absence is a documented gap rathe
 
 A model agentry holds no price for is **named rather than priced at zero**. Its tokens count in the token totals, its dollars count in nothing, and the report names the model and how many sessions used it. Models appear without notice, and a zero would read as a session that cost nothing rather than one nothing is known about.
 
+**`agentry cost` with no flags answers three questions at once**, because the question a person asks is "what am I spending" and not "what did this directory spend all time": the session they were just in, this directory's whole history, and the machine's last thirty days. A flag combination is not an interface for the commonest question, and requiring `--all-projects --from all --since 30d` to reach the machine's figure made the widest answer the hardest to type.
+
+```
+This session  Cost calculation per session          100M       $65.70
+This folder   8 sessions, all time                  512M      $349.62
+This machine  301 sessions since 2026-08-12         8.1B     $6049.13
+
+computed from the transcript at 2026-09-11 list prices — an estimate, not a bill
+Claude Code recorded $3043.02 for the 71 sessions it kept a record for
+```
+
+Every session on the machine is read **once, in parallel**, and the three rows are taken from that one sweep — the scopes nest, so re-reading the narrow ones would double the only real cost of the answer. Measured over 647 local sessions the summary takes 1.5s against the 4.1s the same sweep took one session at a time.
+
+Each row **names its own window**, so the three reading differently is a stated fact rather than a trap. The machine row prints the first day it counts rather than the words "last thirty days": a day is the finest bucket a response is attributed to, so a thirty-day bound counts thirty-one calendar days, and naming the date keeps that out of the reader's head.
+
+**This session** is the most recent session in this directory's scope that was not a headless run — the same resolution `agentry view` makes with no id, and for the same reason: on a machine using hooks the newest log is usually a two-second hook run, so a panel that took the newest log outright would price a hook and label it your work. It is the one panel that skips them. **This folder** and **this machine** count every session of every kind, headless included, because those two are meant to be the bill and a hook costs real money.
+
+A directory with no Claude project has no session and no folder row: the machine row is printed alone, and a note on stderr says the two are missing rather than showing them as zero. Nothing about the machine row depends on where it was run from.
+
+**Any selector turns the summary back into the roll-up.** `--by`, `--since`, `--until`, `--all-projects`, `--project` and `--from` each switch the output to the single-scope table below; `--no-color` and `--format` do not, since neither chooses what is counted. One rule, and the three-row report is what the verb prints for being asked nothing.
+
 `--by` chooses the bucket, and the rows always sum to the total:
 
 - `--by total` (the default) — one line for the whole selection.
@@ -247,12 +268,14 @@ Day               Sessions      Tokens        Cost
 
 Total                   10       15.6M      $49.56
 computed from the transcript at 2026-09-11 list prices — an estimate, not a bill
-Claude Code recorded $54.02 for the 4 of these sessions it kept a record for
+Claude Code recorded $54.02 for the 4 sessions it kept a record for
 ```
 
 The last line appears only when a session **wholly inside the window** carries Claude Code's own record, and it names how many, because that is the only comparison that is exact: a record is one number for a whole session, so a session straddling the window's edge cannot contribute a share of it. Where no session in the window carries one, the line is absent rather than reading zero.
 
-`--format json` emits an object rather than a table: `by`, the bucket axis; `buckets`, each with its `key`, `label` (a session's title, absent on every other axis), `sessions`, `usage` and `costUSD`; `total`, the same shape with no key; `recorded`, the `sessions` count and `costUSD` sum described above, absent when no session qualifies; `unpricedModels`, one entry per model with no price as `{model, sessions, usage}`; and `pricesVerified`, the date the rate table was checked. Like every other JSON form it ignores color, and an empty selection still emits a well-formed object with a zeroed total — a caller piping into `jq` reads the exit code to tell "nothing matched" from "nothing to look in", the rule `list --format json` already follows.
+`--format json` on the three-row summary emits `scopes`, one entry per panel as `{scope, label, since, sessions, usage, costUSD}` — `scope` being `session`, `folder` or `machine`, and `since` present on the machine panel alone — beside the same `recorded`, `unpricedModels` and `pricesVerified` the roll-up carries.
+
+With a selector, `--format json` emits the roll-up object rather than a table: `by`, the bucket axis; `buckets`, each with its `key`, `label` (a session's title, absent on every other axis), `sessions`, `usage` and `costUSD`; `total`, the same shape with no key; `recorded`, the `sessions` count and `costUSD` sum described above, absent when no session qualifies; `unpricedModels`, one entry per model with no price as `{model, sessions, usage}`; and `pricesVerified`, the date the rate table was checked. Like every other JSON form it ignores color, and an empty selection still emits a well-formed object with a zeroed total — a caller piping into `jq` reads the exit code to tell "nothing matched" from "nothing to look in", the rule `list --format json` already follows.
 
 ## Verbosity
 

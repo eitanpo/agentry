@@ -440,7 +440,7 @@ func totalRow(r Report, keyW, labelW int) string {
 	tokens := spend.Tokens(t.Usage.Input + t.Usage.Output + t.Usage.CacheRead + t.Usage.CacheCreate)
 	if r.By == BySession {
 		return padRight("Total", keyW) + strings.Repeat(" ", gap) +
-			padRight(cut(fmt.Sprintf("%d session(s)", t.Sessions), labelW), labelW) + strings.Repeat(" ", gap) +
+			padRight(cut(sessionCount(t.Sessions), labelW), labelW) + strings.Repeat(" ", gap) +
 			padLeft(tokens, tokensW) + strings.Repeat(" ", gap) + padLeft(spend.USD(t.CostUSD), costW)
 	}
 	return padRight("Total", keyW) + strings.Repeat(" ", gap) +
@@ -456,12 +456,12 @@ func notes(r Report) []string {
 	out := []string{fmt.Sprintf(
 		"computed from the transcript at %s list prices — an estimate, not a bill", r.PricesVerified)}
 	if r.Recorded != nil {
-		out = append(out, fmt.Sprintf("Claude Code recorded %s for the %d of these sessions it kept a record for",
-			spend.USD(r.Recorded.CostUSD), r.Recorded.Sessions))
+		out = append(out, fmt.Sprintf("Claude Code recorded %s for the %s it kept a record for",
+			spend.USD(r.Recorded.CostUSD), sessionCount(r.Recorded.Sessions)))
 	}
 	for _, m := range r.UnpricedModels {
-		out = append(out, fmt.Sprintf("%s has no price here: its %s tokens over %d session(s) are in the tokens above and in no dollar figure",
-			m.Model, spend.Tokens(m.Usage.Input+m.Usage.Output+m.Usage.CacheRead+m.Usage.CacheCreate), m.Sessions))
+		out = append(out, fmt.Sprintf("%s has no price here: its %s tokens over %s are in the tokens above and in no dollar figure",
+			m.Model, spend.Tokens(m.Usage.Input+m.Usage.Output+m.Usage.CacheRead+m.Usage.CacheCreate), sessionCount(m.Sessions)))
 	}
 	return out
 }
@@ -513,4 +513,170 @@ func cut(s string, w int) string {
 		return string(r[:w])
 	}
 	return string(r[:w-1]) + "…"
+}
+
+// The three scopes the no-flag summary answers at once. A person asks what they
+// are spending, not what one directory spent over all time, so the verb answers
+// the session they were just in, this directory's whole history, and the
+// machine's recent window together.
+const (
+	ScopeSession = "session"
+	ScopeFolder  = "folder"
+	ScopeMachine = "machine"
+)
+
+// Scope is one row of that summary: what a scope spent, and the window it
+// counted.
+type Scope struct {
+	Scope string `json:"scope"`
+	// Label is the session's title, and is carried for that scope alone — the
+	// other two are named by their session count and their window, which the two
+	// fields below already hold.
+	Label string `json:"label,omitempty"`
+	// Since is the first day the scope counts, on the machine scope alone. It is a
+	// date rather than the words "last thirty days" because a day is the finest
+	// bucket a response is attributed to, so a thirty-day bound counts thirty-one
+	// calendar days; naming the day keeps that out of a reader's head.
+	Since    string      `json:"since,omitempty"`
+	Sessions int         `json:"sessions"`
+	Usage    model.Usage `json:"usage"`
+	CostUSD  float64     `json:"costUSD"`
+}
+
+// Overview is the whole summary: the scopes, and the same notes the roll-up
+// carries so a reader of either knows what the figure is not.
+type Overview struct {
+	Scopes         []Scope    `json:"scopes"`
+	Recorded       *Recorded  `json:"recorded,omitempty"`
+	UnpricedModels []Unpriced `json:"unpricedModels,omitempty"`
+	PricesVerified string     `json:"pricesVerified"`
+}
+
+// BuildOverview prices the three scopes through Build, so a figure read off the
+// summary and one read off `--by total` over the same sessions cannot differ.
+//
+// session is nil and folder empty when this directory has no Claude project;
+// those rows are then absent rather than zero, since no session is a different
+// fact from no spend. The notes come from the machine scope, the widest of the
+// three — a model with no price or a session carrying Claude Code's own record
+// is worth naming once, against the largest set that holds it.
+func BuildOverview(session *model.Summary, folder, machine []model.Summary, since time.Time) Overview {
+	wide := Build(machine, ByTotal, since, time.Time{})
+	out := Overview{
+		Recorded:       wide.Recorded,
+		UnpricedModels: wide.UnpricedModels,
+		PricesVerified: price.VerifiedOn,
+	}
+	if session != nil {
+		one := Build([]model.Summary{*session}, ByTotal, time.Time{}, time.Time{}).Total
+		out.Scopes = append(out.Scopes, Scope{
+			Scope: ScopeSession, Label: displayTitle(session.Title),
+			Sessions: one.Sessions, Usage: one.Usage, CostUSD: one.CostUSD,
+		})
+	}
+	if len(folder) > 0 {
+		all := Build(folder, ByTotal, time.Time{}, time.Time{}).Total
+		out.Scopes = append(out.Scopes, Scope{
+			Scope: ScopeFolder, Sessions: all.Sessions, Usage: all.Usage, CostUSD: all.CostUSD,
+		})
+	}
+	out.Scopes = append(out.Scopes, Scope{
+		Scope: ScopeMachine, Since: dayString(since),
+		Sessions: wide.Total.Sessions, Usage: wide.Total.Usage, CostUSD: wide.Total.CostUSD,
+	})
+	return out
+}
+
+// scopeName heads a summary row, in the second person: the reader is asking what
+// they spent, and "This session" answers that where "session" alone reads as a
+// column header.
+func scopeName(scope string) string {
+	switch scope {
+	case ScopeSession:
+		return "This session"
+	case ScopeFolder:
+		return "This folder"
+	}
+	return "This machine"
+}
+
+// scopeWindow describes what a row counted, for the two rows whose key does not
+// say: a folder's whole history, and the machine's window named by its first day.
+func scopeWindow(s Scope) string {
+	switch s.Scope {
+	case ScopeSession:
+		return s.Label
+	case ScopeFolder:
+		return fmt.Sprintf("%s, all time", sessionCount(s.Sessions))
+	}
+	if s.Since == "" {
+		return fmt.Sprintf("%s, all time", sessionCount(s.Sessions))
+	}
+	return fmt.Sprintf("%s since %s", sessionCount(s.Sessions), s.Since)
+}
+
+func sessionCount(n int) string {
+	if n == 1 {
+		return "1 session"
+	}
+	return fmt.Sprintf("%d sessions", n)
+}
+
+// RenderOverview writes the three-row summary and the notes beneath it.
+func RenderOverview(w io.Writer, o Overview, opts Options) error {
+	if !opts.Color {
+		lipgloss.SetColorProfile(termenv.Ascii)
+	}
+	head := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	note := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+
+	nameW := 0
+	for _, s := range o.Scopes {
+		if n := utf8.RuneCountInString(scopeName(s.Scope)); n > nameW {
+			nameW = n
+		}
+	}
+	// The window column is sized to its own contents rather than given the rest of
+	// the line: three rows of text followed by a run of spaces would push the two
+	// figures — the reason the summary is printed — to the far right of a wide
+	// terminal, where they read as belonging to nothing.
+	windowW := 0
+	for _, s := range o.Scopes {
+		if n := utf8.RuneCountInString(scopeWindow(s)); n > windowW {
+			windowW = n
+		}
+	}
+	if max := labelCap(opts.Width, nameW); windowW > max {
+		windowW = max
+	}
+	var out strings.Builder
+	for _, s := range o.Scopes {
+		tokens := spend.Tokens(s.Usage.Input + s.Usage.Output + s.Usage.CacheRead + s.Usage.CacheCreate)
+		out.WriteString(head.Render(padRight(scopeName(s.Scope), nameW)) + strings.Repeat(" ", gap) +
+			padRight(cut(scopeWindow(s), windowW), windowW) + strings.Repeat(" ", gap) +
+			padLeft(tokens, tokensW) + strings.Repeat(" ", gap) +
+			padLeft(spend.USD(s.CostUSD), costW) + "\n")
+	}
+	out.WriteString("\n")
+	for _, line := range notes(Report{
+		PricesVerified: o.PricesVerified, Recorded: o.Recorded, UnpricedModels: o.UnpricedModels,
+	}) {
+		out.WriteString(note.Render(line) + "\n")
+	}
+	_, err := io.WriteString(w, out.String())
+	return err
+}
+
+// RenderOverviewJSON writes the summary as an indented object, the machine-
+// readable form of the same three rows.
+func RenderOverviewJSON(w io.Writer, o Overview) error {
+	if o.Scopes == nil {
+		o.Scopes = []Scope{}
+	}
+	b, err := json.MarshalIndent(o, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
 }

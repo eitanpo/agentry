@@ -13,7 +13,6 @@ import (
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/list"
 	"github.com/eitanpo/agentry/internal/locate"
-	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/parse"
 )
 
@@ -311,14 +310,9 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		return noInputErr(err)
 	}
 
-	var sums []model.Summary
-	for _, p := range paths {
-		s, err := parse.Summarize(p)
-		if err != nil {
-			continue // skip a session that won't parse, like a malformed line
-		}
-		sums = append(sums, s)
-	}
+	// Skips a session that won't parse, like a malformed line, and reads the rest
+	// in parallel — the sweep is what a cross-project listing spends its time on.
+	sums := parse.SummarizeAll(paths)
 
 	// The entrypoint filter runs before the rest so --limit counts sessions the
 	// caller will actually see: capping first and filtering after would return

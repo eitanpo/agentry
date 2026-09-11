@@ -1152,3 +1152,45 @@ func TestDailyUsageSplitsByDayAndModel(t *testing.T) {
 		t.Errorf("the split sums to %+v but Usage is %+v; the two must be one set of responses read two ways", total, s.Usage)
 	}
 }
+
+// TestSummarizeAllKeepsOrderAndSkipsBadFiles pins what the parallel sweep owes
+// its caller: the order it was given, whatever order the workers finish in, and
+// a skip rather than a failure for a log that will not parse — one unreadable
+// file must not cost the caller the rest.
+func TestSummarizeAllKeepsOrderAndSkipsBadFiles(t *testing.T) {
+	if got := SummarizeAll(nil); got != nil {
+		t.Errorf("SummarizeAll(nil) = %+v, want nil", got)
+	}
+
+	// Three real fixtures with a missing file between each pair, so a sweep that
+	// dropped a slot or filled one out of order shows up as a wrong id.
+	want := []string{"sample", "cost-state", "daily-usage"}
+	paths := []string{
+		filepath.Join("testdata", "sample.jsonl"),
+		filepath.Join("testdata", "no-such-session.jsonl"),
+		filepath.Join("testdata", "cost-state.jsonl"),
+		filepath.Join("testdata", "also-missing.jsonl"),
+		filepath.Join("testdata", "daily-usage.jsonl"),
+	}
+	got := SummarizeAll(paths)
+	if len(got) != len(want) {
+		t.Fatalf("SummarizeAll returned %d summaries, want %d: %+v", len(got), len(want), got)
+	}
+	for i, id := range want {
+		if got[i].ID != id {
+			t.Errorf("summary %d = %q, want %q — the caller's order is what it reads back by", i, got[i].ID, id)
+		}
+	}
+
+	// The same sessions read one at a time must give the same answer, since the
+	// only thing the sweep changes is how many are read at once.
+	for i, p := range []string{paths[0], paths[2], paths[4]} {
+		one, err := Summarize(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if one.Usage != got[i].Usage {
+			t.Errorf("%s: parallel Usage = %+v, serial = %+v", p, got[i].Usage, one.Usage)
+		}
+	}
+}

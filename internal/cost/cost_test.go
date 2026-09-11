@@ -219,7 +219,7 @@ func TestRenderWritesRowsATotalAndItsNotes(t *testing.T) {
 		"$10.00", "$45.00",
 		"Total", "$55.00",
 		"an estimate, not a bill",
-		"Claude Code recorded $7.50 for the 1 of these sessions it kept a record for",
+		"Claude Code recorded $7.50 for the 1 session it kept a record for",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output is missing %q:\n%s", want, got)
@@ -236,7 +236,7 @@ func TestRenderBySessionShowsTitles(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := buf.String()
-	for _, want := range []string{"Session", "Title", "aaaaaaaa", "First session", "2 session(s)", "$35.00"} {
+	for _, want := range []string{"Session", "Title", "aaaaaaaa", "First session", "2 sessions", "$35.00"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output is missing %q:\n%s", want, got)
 		}
@@ -258,5 +258,76 @@ func TestRenderJSONEmitsAnObjectWhenNothingMatched(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("output is missing %s:\n%s", want, got)
 		}
+	}
+}
+
+// TestBuildOverviewPricesThreeScopes pins the summary bare `agentry cost`
+// prints: the session row named by its title, the folder row over its whole
+// history, and the machine row over its window, with the window's first day
+// carried on that row alone.
+func TestBuildOverviewPricesThreeScopes(t *testing.T) {
+	sums := fixture()
+	o := BuildOverview(&sums[0], sums, sums, day(tuesday))
+	if len(o.Scopes) != 3 {
+		t.Fatalf("Scopes = %+v, want three", o.Scopes)
+	}
+	one, all, machine := o.Scopes[0], o.Scopes[1], o.Scopes[2]
+	if one.Scope != ScopeSession || one.Label != "First session" || !nearly(one.CostUSD, 35) {
+		t.Errorf("session row = %+v, want the first session at $35.00 under its title", one)
+	}
+	if one.Since != "" {
+		t.Errorf("session row carries a window (%q); it counts the whole session", one.Since)
+	}
+	if all.Scope != ScopeFolder || all.Sessions != 2 || !nearly(all.CostUSD, 55) {
+		t.Errorf("folder row = %+v, want 2 sessions at $55.00 over all time", all)
+	}
+	if all.Since != "" {
+		t.Errorf("folder row carries a window (%q); it counts all time", all.Since)
+	}
+	// The machine row's window cuts the first day, so it prices less than the
+	// folder row over the same two sessions — which is the point of naming the day.
+	if machine.Scope != ScopeMachine || machine.Since != tuesday || !nearly(machine.CostUSD, 45) {
+		t.Errorf("machine row = %+v, want $45.00 since %s", machine, tuesday)
+	}
+	if o.PricesVerified == "" {
+		t.Error("PricesVerified is empty; a caller cannot tell how old the rates are")
+	}
+}
+
+// TestBuildOverviewWithoutAProjectPricesTheMachineAlone pins the answer from a
+// directory Claude Code has never run in: two rows absent rather than two rows
+// of zero, since no session is a different fact from no spend.
+func TestBuildOverviewWithoutAProjectPricesTheMachineAlone(t *testing.T) {
+	o := BuildOverview(nil, nil, fixture(), time.Time{})
+	if len(o.Scopes) != 1 || o.Scopes[0].Scope != ScopeMachine {
+		t.Fatalf("Scopes = %+v, want the machine row alone", o.Scopes)
+	}
+	if !nearly(o.Scopes[0].CostUSD, 55) {
+		t.Errorf("machine row = $%.2f, want $55.00 — an unbounded window counts every day", o.Scopes[0].CostUSD)
+	}
+}
+
+// TestRenderOverviewNamesEachWindow pins the text form: each row says which
+// window it counted, so the three reading differently is stated rather than
+// left to be discovered.
+func TestRenderOverviewNamesEachWindow(t *testing.T) {
+	sums := fixture()
+	var buf bytes.Buffer
+	if err := RenderOverview(&buf, BuildOverview(&sums[0], sums, sums, day(tuesday)), Options{Width: 100}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"This session", "First session", "$35.00",
+		"This folder", "2 sessions, all time", "$55.00",
+		"This machine", "2 sessions since " + tuesday, "$45.00",
+		"an estimate, not a bill",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary is missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Sessions") {
+		t.Errorf("summary printed the roll-up's header row:\n%s", got)
 	}
 }

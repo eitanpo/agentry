@@ -90,7 +90,7 @@ the dollars add up over any window — which Claude Code's own per-session recor
 71 of 314 local sessions and holding one number per session that no day can be split out of:
 
 ```
-agentry cost                              # one line: what this project's sessions cost
+agentry cost                              # this session, this folder, this machine's last 30 days
 agentry cost --by day                     # one row per day
 agentry cost --by week                    # one row per week, labelled by its Monday
 agentry cost --by month                   # one row per calendar month
@@ -103,6 +103,21 @@ agentry cost --project ~/Projects/me --by model
 agentry cost --all-projects --by day --format json | jq   # machine-readable, for piping
 ```
 
+**Bare `agentry cost` answers three questions at once** — the session you were just in, this
+folder's whole history, and everything this machine ran in the last thirty days — so the commonest
+question needs no flags:
+
+```
+This session  Cost calculation per session          100M       $65.70
+This folder   8 sessions, all time                  512M      $349.62
+This machine  301 sessions since 2026-08-12         8.1B     $6049.13
+```
+
+Each row names its own window. "This session" is the newest session here that was not a headless
+run, the same one `agentry view` shows; the other two count every session of every kind, because a
+hook costs real money. Give any selector — `--by`, `--since`, `--until`, `--all-projects`,
+`--project`, `--from` — and you get the single-scope table instead.
+
 The figure is **an estimate, not a bill**: it prices the responses the transcript records, at the
 same rates and by the same formula Claude Code uses. Over the 71 local sessions carrying both
 figures the totals agree within 4% ($3,159 computed against $3,043 recorded, median 98.1% per
@@ -112,9 +127,10 @@ published prices, and `--format json` carries that date. Web search, geography-p
 an organization's negotiated rates are not priced — no local session used any of them. A model with
 no price is named rather than counted as free. Every row's tokens are attributed to the local
 calendar day of the response that spent them, so a session running past midnight splits across both
-days, and the rows always sum to the total — there is no `--limit` to make them not. Headless
-sessions are left out by the same default the listing applies, and `cost` says on stderr how many
-it did not price, since a total that quietly omitted them is just lower than your bill.
+days, and the rows always sum to the total — there is no `--limit` to make them not. In the
+single-scope table, headless sessions are left out by the same default the listing applies and
+`cost` says on stderr how many it did not price, since a total that quietly omitted them is just
+lower than your bill; the three-row summary counts them in its folder and machine figures.
 
 **A rendered session ends with what it produced.** If the session opened a pull request or published
 an artifact, an `Outputs` section after the last turn lists each one, clickable on a terminal — a

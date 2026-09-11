@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eitanpo/agentry/internal/model"
@@ -139,6 +141,54 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		PRs:          sessionPRs(entries),
 		Artifacts:    sessionArtifacts(entries),
 	}, nil
+}
+
+// SummarizeAll summarizes every named session in the order given, skipping any
+// that will not parse — the same skip a caller makes on a malformed line, and the
+// reason this returns no error: one unreadable log must not cost the caller the
+// other six hundred.
+//
+// Parallel because the sweep is where a cross-project answer spends its time.
+// Each session is an independent read of its own files, Summarize shares no state
+// between calls, and every goroutine writes one slot of its own — so the only
+// ordering this has to preserve is the caller's, which it does by index rather
+// than by arrival.
+func SummarizeAll(paths []string) []model.Summary {
+	if len(paths) == 0 {
+		return nil
+	}
+	got := make([]model.Summary, len(paths))
+	parsed := make([]bool, len(paths))
+	workers := runtime.NumCPU()
+	if workers > len(paths) {
+		workers = len(paths)
+	}
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if s, err := Summarize(paths[i]); err == nil {
+					got[i], parsed[i] = s, true
+				}
+			}
+		}()
+	}
+	for i := range paths {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	out := make([]model.Summary, 0, len(paths))
+	for i, ok := range parsed {
+		if ok {
+			out = append(out, got[i])
+		}
+	}
+	return out
 }
 
 // subagentDir is where a session's subagent sidecars live, next to its own log.
