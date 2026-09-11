@@ -16,9 +16,12 @@ Design docs under `design/` are ephemeral planning artifacts, not authority (see
 
 Any change that alters observable behavior starts in the docs, not the code:
 
-1. Edit the PRODUCT.md section that specifies the behavior. If none exists, add it.
-2. If the user-facing surface (commands, flags, output) changed, update README.md.
-3. Change the code to match.
+1. If the change adds a command, verb, or flag, write the invocation — see **Writing the invocation** below.
+2. Edit the PRODUCT.md section that specifies the behavior. If none exists, add it.
+3. If the user-facing surface (commands, flags, output) changed, update README.md.
+4. Change the code to match.
+
+**Writing the invocation** means listing the literal line a caller types for each question the request names, then naming the commonest question of that set. Either the bare command answers it, or the change says why not. Two reasons hold: the verb has no single commonest question; or every question the request named is secondary to one the bare command already answers. Step 2 cannot stand in for this — specifying a behavior does not choose an invocation, and a flag matrix satisfies the spec completely while still leaving the widest answer the hardest to type. PRODUCT.md's CLI conventions section owns what a bare form owes and why; do not restate it here. Carry the lines into the report.
 
 In your change, name the PRODUCT.md section that specifies the new behavior. If you cannot point to one, the docs step was skipped — do it first.
 
