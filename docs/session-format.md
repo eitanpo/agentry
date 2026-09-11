@@ -28,7 +28,14 @@ under [Entry types](#entry-types).
 
 ## Location and naming
 
-- Root: `~/.claude/projects/`.
+- Root: `<config home>/projects/`, where the config home is `~/.claude` unless
+  `CLAUDE_CONFIG_DIR` names another directory. The binary (2.1.268) reports
+  "CLAUDE_CONFIG_DIR) is not an absolute path" for a relative value, and resolves it to a
+  single directory rather than a list. The fallback covers two cases, not one: the binary
+  reads the variable and, when it holds any value at all, returns that value **or**
+  `homedir()/.claude` when the value is empty — so an empty string behaves as unset. There is
+  no second default to search: `.config/claude` appears nowhere in that build, though
+  third-party tools document it as an alternate root.
 - One folder per project (working directory). The folder name is the project's
   absolute path with **every non-alphanumeric character replaced by `-`** — the leading `/`
   included, which is why the name starts with one. E.g. `/Users/me/Projects/dotfiles` →
@@ -150,13 +157,22 @@ since the initial observation, with their meaning:
   single reply and nothing wider — it is never a running count over the session. The binary
   (2.1.263) sets it from the streaming block's own index.
 
-  **Every entry of one response repeats that response's whole `usage` object**, identically —
-  input, output and both cache counters. Summing `usage` across assistant entries therefore
+  **Every entry of one response repeats that response's whole `usage` object** — input,
+  output and both cache counters. Summing `usage` across assistant entries therefore
   multiplies a reply's tokens by how many blocks it held: measured over 22 local sessions the
   inflation ran 1.75x to 3.11x, averaging 2.34x, and it varies per turn, so it distorts a
-  comparison between turns as well as a total. Group by `requestId` and take one entry per
-  group. Verified across 277 multi-entry groups in two sessions: all four counters were
-  identical within every group, so which entry you take does not matter. Group by `requestId`
+  comparison between turns as well as a total. Group by `requestId` and take **the entry
+  whose `output_tokens` is largest**, which is the last of the group in file order.
+
+  **The repeats are not identical, and an earlier revision of this file said they were.**
+  `input_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens` are identical
+  within every group, but `output_tokens` **grows** across a group: Claude Code writes the
+  entry as the reply streams, so an early entry carries a partial count and the last carries
+  the final one — one local group reads 3, then 771, then 771. Measured 2026-09-11 over all
+  71,556 request groups in every local log, 11,535 of them (16%) hold differing counters,
+  every difference in `output_tokens` alone, and taking an arbitrary entry rather than the
+  largest undercounts the corpus's output tokens by 20.8%. The earlier claim rested on 277
+  groups in two sessions, which is how a sample misses a one-in-six case. Group by `requestId`
   rather than by `apiBlockIndex`: the duplication is older than the index field, measurable
   back to 2.1.206, while `requestId` is on every assistant entry of the oldest local log
   (2.1.205). What `requestId` does not cover is the `<synthetic>` entries Claude Code composes
@@ -372,8 +388,36 @@ against the turns around them by their own content.
   `cacheCreationInputTokens`, `webSearchRequests` and `costUSD`. Since 2.1.241, in 42 local
   sessions. **It is cumulative, so read the last entry and never a sum of them** — the
   largest local value, 124.85 USD, is a session total and not one turn's cost. Whether it
-  counts a subagent's tokens is **unverified**; agentry sums `usage` across the sidecars
-  instead of reading this.
+  counts a subagent's tokens is **settled: it does**. Priced from Anthropic's published rates
+  on 2026-09-11, the 69 local sessions carrying a record come to 2,241 USD from their main
+  logs alone against the 3,042 USD the records report, and to 2,695 USD once the subagent
+  sidecars are added — so the record reaches delegated work, as `totalLinesAdded` does.
+  agentry sums `usage` across the sidecars rather than reading this, which is what makes the
+  two agree about one session's tokens.
+
+  **Read the last entry whose `totalCostUSD` is non-null, not the last entry.** The field is
+  frequently null on a `cost-state` entry: one local session holds 91 of them and only its
+  final two carry a value. A reader that takes the last entry unconditionally finds no figure
+  on that session.
+
+  **`startTime` can postdate the session's own first entry, and the totals then cover only
+  from that instant.** The record appears to reset when a session is resumed in a new
+  process, so a long-lived session reports its last leg rather than itself. True of 6 of the
+  69 local records; the starkest reports 5.35 USD for a session whose own messages price at
+  over 100 USD, its `startTime` falling seven days after the session's first entry. Compare
+  `startTime` against the first timestamped entry before reading the figure as the session's.
+
+  **No assistant entry carries a cost of its own.** All 155 local lines holding a `costUSD`
+  key are `cost-state` entries, so a reader wanting Claude Code's own accounting has only this
+  session-level record — a tool written to prefer a per-entry figure finds none and falls back
+  to computing from tokens without saying so.
+
+  **`modelUsage` counts API requests the transcript does not hold**, so a cost computed from
+  assistant entries is a floor and not a match. One local record reports 2,115,847 Haiku
+  input tokens where its own entries sum 122, and 1,304,777 Opus input tokens where they sum
+  5,594: Claude Code's background requests are billed and never written as entries. Priced
+  from published rates against the same 69 records, the message stream reaches 88.6% of what
+  they report.
 
   `totalLinesAdded` / `totalLinesRemoved` are present on every local record, so their
   presence is the record's. Two things are settled about what they count. They **do** reach
@@ -521,8 +565,19 @@ easy to get wrong (measured 2026-08-08 over 250 local sessions):
 
 `input_tokens`, `output_tokens`, `cache_read_input_tokens`,
 `cache_creation_input_tokens` (plus nested `cache_creation`, `iterations`,
-`server_tool_use`, and metadata `service_tier`, `speed`, `inference_geo` — none needed
-for token totals).
+`server_tool_use`, and metadata `service_tier`, `speed`, `inference_geo`). The four
+top-level counters are all a token total needs; the nested `cache_creation` and `iterations`
+carry more, as below.
+
+`cache_creation` splits the creation count by cache lifetime, into
+`ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`. The two are billed at different
+rates, so anything converting tokens to money needs the split and not just the total; an
+entry omitting the nested object gives no split to read.
+
+`iterations` is not decoration. An element whose type is `advisor_message` carries its own
+model and its own tokens, billed separately from the top-level usage rather than included in
+it. One local log holds any, so it is rare here and still a case a token total has to decide
+about rather than meet by accident.
 
 ## User entries: typed vs injected
 
