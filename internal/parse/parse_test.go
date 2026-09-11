@@ -953,6 +953,58 @@ func TestUsageCountsEachResponseOnce(t *testing.T) {
 	}
 }
 
+// TestUsageTakesHighestOutputOfAResponse pins the rule that a response's entries
+// are not identical: Claude Code writes each one as the reply streams, so output
+// grows across the group while the other three counters hold. Counting the first
+// entry read 20.8% less output than the highest across the local logs, and 55%
+// less on the worst single session, so this is the difference between a tally
+// that matches Claude Code's own record and one that halves it.
+func TestUsageTakesHighestOutputOfAResponse(t *testing.T) {
+	path := filepath.Join("testdata", "streaming-usage.jsonl")
+	// One response, three entries reading 3, 771, 771. The other counters are the
+	// same on every entry, so they are counted once as they always were.
+	want := model.Usage{Input: 10, Output: 771, CacheRead: 40, CacheCreate: 4}
+
+	s, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Usage != want {
+		t.Errorf("Usage = %+v, want %+v; the first entry of the group holds only 3 output", s.Usage, want)
+	}
+
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Meta.Usage != want {
+		t.Errorf("Meta.Usage = %+v, want %+v; the render path must pick the same entry a listing does", sess.Meta.Usage, want)
+	}
+	if len(sess.Turns) != 1 {
+		t.Fatalf("Turns = %d, want 1", len(sess.Turns))
+	}
+	if sess.Turns[0].Usage != want {
+		t.Errorf("turn Usage = %+v, want %+v; the summary orders turns by this figure", sess.Turns[0].Usage, want)
+	}
+}
+
+// TestUsageHighestWinsRegardlessOfOrder covers what a fixture cannot: the partial
+// entry arriving last. File order happens to be ascending in every local log, so
+// a rule that took the last entry would pass there and undercount the first time
+// Claude Code writes them in another order.
+func TestUsageHighestWinsRegardlessOfOrder(t *testing.T) {
+	descending := []entry{
+		{typ: "assistant", requestID: "req_X", uuid: "x1", usage: model.Usage{Input: 5, Output: 900}},
+		{typ: "assistant", requestID: "req_X", uuid: "x2", usage: model.Usage{Input: 5, Output: 2}},
+	}
+	if got := sumUsage(descending); got.Output != 900 {
+		t.Errorf("Output = %d, want 900; the highest entry wins whichever way the group is written", got.Output)
+	}
+	if got := sumUsage(descending); got.Input != 5 {
+		t.Errorf("Input = %d, want 5; the winning entry's whole usage object is kept, counted once", got.Input)
+	}
+}
+
 // TestUsageKeylessEntriesEachCount covers the case the fixtures cannot reach: an
 // assistant entry naming neither a response nor itself. Deduplicating on an empty
 // key would collapse every such entry into the first, silently undercounting a

@@ -186,7 +186,7 @@ func sidecarUsage(path string) model.Usage {
 	var t usageTally
 	f, err := os.Open(path)
 	if err != nil {
-		return t.total
+		return t.sum()
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -201,7 +201,7 @@ func sidecarUsage(path string) model.Usage {
 			CacheRead: re.Message.Usage.CacheRead, CacheCreate: re.Message.Usage.CacheCreate,
 		})
 	}
-	return t.total
+	return t.sum()
 }
 
 // entrypoints returns every distinct entrypoint the session carries, in
@@ -821,26 +821,53 @@ func models(entries []entry) []string {
 // up multiplies a reply's tokens by how many blocks it held — 1.75x to 3.11x
 // across local sessions, and enough of a per-turn variable to reorder the
 // summary as well as inflate the totals.
+//
+// The repeats are not identical, which is why one entry per response is picked
+// by its output count rather than by arriving first. Claude Code writes each
+// entry as the reply streams: input and both cache counts match across a
+// response's entries, while output grows, so the first entry can hold a partial
+// figure. Measured 2026-09-11 over all 71,556 local response groups, 11,535
+// (16%) disagreed, every disagreement in output alone, and first entries totaled
+// 20.8% less output than highest ones — one session read 1,396,336 against
+// 3,108,698, where Claude Code's own record for it named 3,274,666.
 type usageTally struct {
-	total model.Usage
-	seen  map[string]bool
+	// keyless holds the entries that name no response, summed as they arrive;
+	// best holds one entry per response, replaced when a higher output shows up.
+	keyless model.Usage
+	best    map[string]model.Usage
 }
 
-// add counts one assistant entry unless its response is already counted. An
-// entry naming neither a response nor itself is counted every time: with no
-// identity there is nothing to compare against, so such an entry keeps the
-// undeduplicated behavior rather than collapsing into whichever came first.
+// add offers one assistant entry to the tally, keeping it when it is the highest
+// output seen for its response. An entry naming neither a response nor itself is
+// counted every time: with no identity there is nothing to compare against, so
+// such an entry keeps the undeduplicated behavior rather than collapsing into
+// whichever came first.
+//
+// The whole usage object of the winning entry is kept, not a per-counter
+// maximum, so the four counters stay as one response reported them; the three
+// that do not grow are identical across the group either way.
 func (t *usageTally) add(key string, u model.Usage) {
-	if key != "" {
-		if t.seen[key] {
-			return
-		}
-		if t.seen == nil {
-			t.seen = map[string]bool{}
-		}
-		t.seen[key] = true
+	if key == "" {
+		t.keyless.Add(u)
+		return
 	}
-	t.total.Add(u)
+	if prev, ok := t.best[key]; ok && prev.Output >= u.Output {
+		return
+	}
+	if t.best == nil {
+		t.best = map[string]model.Usage{}
+	}
+	t.best[key] = u
+}
+
+// sum totals what the tally kept. Addition of the per-response entries is
+// commutative, so map iteration order does not reach the result.
+func (t *usageTally) sum() model.Usage {
+	out := t.keyless
+	for _, u := range t.best {
+		out.Add(u)
+	}
+	return out
 }
 
 // usageKey identifies the response an assistant entry belongs to. Claude Code
@@ -863,7 +890,7 @@ func sumUsage(entries []entry) model.Usage {
 			t.add(usageKey(e.requestID, e.uuid), e.usage)
 		}
 	}
-	return t.total
+	return t.sum()
 }
 
 // ── Tool results and agent stitching ─────────────────────────────────────
@@ -1406,7 +1433,7 @@ func turnMetrics(entries []entry, subs map[string]*subagent) (u model.Usage, too
 			}
 		}
 	}
-	u.Add(t.total)
+	u.Add(t.sum())
 	return u, tools, errs
 }
 
