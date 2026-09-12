@@ -41,7 +41,8 @@ func newCostCmd(noColor *bool) *cobra.Command {
 			"  agentry cost --since 30d --by week\n" +
 			"  agentry cost --all-projects --by model\n" +
 			"  agentry cost --by project          which repo costs the most\n" +
-			"  agentry cost --by day --chart calendar\n" +
+			"  agentry cost --by day              a calendar above one row per day\n" +
+			"  agentry cost --by day --chart line\n" +
 			"  agentry cost --by session          priciest session first",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCost(cmd, noColor)
@@ -49,7 +50,12 @@ func newCostCmd(noColor *bool) *cobra.Command {
 	}
 	cmd.Flags().String("by", cost.ByTotal, "bucket the dollars by: "+strings.Join(cost.Axes, ", "))
 	_ = cmd.RegisterFlagCompletionFunc("by", fixedComp(cost.Axes))
-	cmd.Flags().String("chart", cost.ChartNone, "draw the time buckets instead of listing them: "+strings.Join(cost.Charts, ", "))
+	cmd.Flags().String("chart", cost.ChartAuto, "which picture is drawn above the rows: "+strings.Join(cost.Charts, ", "))
+	// The summary's default is the whole answer rather than the three figures it
+	// rests on, which is why this default differs from the render path's: asking
+	// what you are spending is asking for the picture, not for a second command.
+	cmd.Flags().String("level", "standard", "how much the summary shows: minimal|standard")
+	_ = cmd.RegisterFlagCompletionFunc("level", fixedComp([]string{cost.LevelMinimal, "standard"}))
 	_ = cmd.RegisterFlagCompletionFunc("chart", fixedComp(cost.Charts))
 	cmd.Flags().String("since", "", "only spend on or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
 	cmd.Flags().String("until", "", "only spend on or before WHEN")
@@ -87,10 +93,10 @@ var timeAxes = []string{cost.ByDay, cost.ByWeek, cost.ByMonth}
 // parseChart validates --chart against the axis and the format it was asked
 // with. Each rejection names both flags rather than the value alone: the value
 // is fine on its own, and it is the pair that cannot be honoured.
-func parseChart(cmd *cobra.Command, by, format string) (string, error) {
+func parseChart(cmd *cobra.Command, by, format string, summary bool) (string, error) {
 	chart, _ := cmd.Flags().GetString("chart")
 	if chart == "" {
-		chart = cost.ChartNone
+		chart = cost.ChartAuto
 	}
 	known := false
 	for _, c := range cost.Charts {
@@ -104,11 +110,19 @@ func parseChart(cmd *cobra.Command, by, format string) (string, error) {
 		}
 		return "", usageErr("--chart: unknown chart %q (want: %s)", chart, strings.Join(cost.Charts, ", "))
 	}
-	if chart == cost.ChartNone {
+	// auto and none are honoured on every axis: one asks for whatever the buckets
+	// can carry, the other for nothing. Only a named shape can contradict a
+	// selection, so only a named shape is rejected.
+	if chart == cost.ChartAuto || chart == cost.ChartNone {
 		return chart, nil
 	}
 	if format == "json" {
 		return "", usageErr("--chart %s cannot be combined with --format json — the object is the same either way", chart)
+	}
+	// The summary's machine row is a span of days whatever else was asked, so both
+	// shapes can be drawn of it and neither needs an axis.
+	if summary {
+		return chart, nil
 	}
 	timed := false
 	for _, a := range timeAxes {
@@ -126,6 +140,28 @@ func parseChart(cmd *cobra.Command, by, format string) (string, error) {
 	return chart, nil
 }
 
+// costLevels are what --level means on this verb. The roll-up has one shape and
+// the flag says nothing about it, so only two values are offered rather than the
+// render path's four — a name that changed nothing would read as a setting that
+// failed.
+var costLevels = []string{cost.LevelMinimal, "standard"}
+
+func parseCostLevel(cmd *cobra.Command) (string, error) {
+	level, _ := cmd.Flags().GetString("level")
+	if level == "" {
+		return "standard", nil
+	}
+	for _, l := range costLevels {
+		if level == l {
+			return level, nil
+		}
+	}
+	if g := nearest(level, costLevels); g != "" {
+		return "", usageErr("--level: unknown level %q on cost — did you mean %q?", level, g)
+	}
+	return "", usageErr("--level: unknown level %q on cost (want: %s)", level, strings.Join(costLevels, ", "))
+}
+
 // costShapers are the flags that replace the three-scope summary rather than
 // narrow it. --by asks for a different shape entirely, and the two scope flags
 // contradict the summary's own rows, which are scopes.
@@ -136,7 +172,7 @@ func parseChart(cmd *cobra.Command, by, format string) (string, error) {
 // not one number whose line does not even say which scope it covers. --format
 // and --no-color are absent for a different reason — neither chooses what is
 // counted, only how it is written.
-var costShapers = []string{"by", "all-projects", "project", "chart"}
+var costShapers = []string{"by", "all-projects", "project"}
 
 // summaryMode reports whether the verb should answer with the three-scope
 // summary — the answer to being asked nothing, and to being asked only to narrow
@@ -175,12 +211,16 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 	if err != nil {
 		return err
 	}
-	chart, err := parseChart(cmd, by, format)
+	chart, err := parseChart(cmd, by, format, summaryMode(cmd))
+	if err != nil {
+		return err
+	}
+	level, err := parseCostLevel(cmd)
 	if err != nil {
 		return err
 	}
 	if summaryMode(cmd) {
-		return runCostSummary(cmd, noColor, format, from, cost.Window{
+		return runCostSummary(cmd, noColor, format, from, chart, level, cost.Window{
 			Since: since, Until: until,
 			MachineSince: time.Now().AddDate(0, 0, -machineWindow),
 		})
@@ -280,7 +320,7 @@ func parseWindow(cmd *cobra.Command) (since, until time.Time, err error) {
 // scopes nest — the machine's sessions contain the directory's, which contain the
 // one. Re-reading the narrow scopes would double the sweep that is already the
 // whole cost of the answer.
-func runCostSummary(cmd *cobra.Command, noColor *bool, format, from string, w cost.Window) error {
+func runCostSummary(cmd *cobra.Command, noColor *bool, format, from, chart, level string, w cost.Window) error {
 	paths, err := locate.SessionsAll()
 	if err != nil {
 		// The machine holds no session at all. Under --format json the contract is
@@ -346,7 +386,7 @@ func runCostSummary(cmd *cobra.Command, noColor *bool, format, from string, w co
 		return nil
 	}
 	color, width := terminal(*noColor)
-	if err := cost.RenderOverview(os.Stdout, o, cost.Options{Width: width, Color: color}); err != nil {
+	if err := cost.RenderOverview(os.Stdout, o, cost.Options{Width: width, Color: color, Chart: chart, Level: level}); err != nil {
 		return &exitError{code: 1, err: err}
 	}
 	return nil

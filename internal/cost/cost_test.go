@@ -2,6 +2,7 @@ package cost
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -689,7 +690,9 @@ func TestRenderDrawsAShareBarOnEveryRowThatSpent(t *testing.T) {
 		{ID: "dddddddd-2222", DailyUsage: []model.DailyUsage{out(tuesday, "claude-opus-5", million / 100)}},
 	}
 	var buf bytes.Buffer
-	if err := Render(&buf, Build(sums, ByDay, time.Time{}, time.Time{}), Options{Width: 120}); err != nil {
+	// No picture, so the assertions below are about the bars alone; the default
+	// calendar is pinned by its own test.
+	if err := Render(&buf, Build(sums, ByDay, time.Time{}, time.Time{}), Options{Width: 120, Chart: ChartNone}); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(buf.String(), "\n")
@@ -712,7 +715,9 @@ func TestRenderDrawsAShareBarOnEveryRowThatSpent(t *testing.T) {
 // terminal too narrow for everything loses the bar, never a number.
 func TestRenderDropsTheShareBarBeforeAnyFigure(t *testing.T) {
 	var buf bytes.Buffer
-	if err := Render(&buf, Build(fixture(), ByDay, time.Time{}, time.Time{}), Options{Width: 46}); err != nil {
+	// No picture, so a shaded calendar square cannot be mistaken for a bar: the
+	// two vocabularies share the full block.
+	if err := Render(&buf, Build(fixture(), ByDay, time.Time{}, time.Time{}), Options{Width: 46, Chart: ChartNone}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -724,24 +729,74 @@ func TestRenderDropsTheShareBarBeforeAnyFigure(t *testing.T) {
 	}
 }
 
-// TestRenderCalendarReplacesTheRowsAndKeepsTheNotes pins what a chart does and
-// does not take the place of: the rows go, and the total and its notes stay,
-// because those say what the picture is of.
-func TestRenderCalendarReplacesTheRowsAndKeepsTheNotes(t *testing.T) {
+// TestPictureIsAddedToTheRowsNotPutInPlaceOfThem pins the whole point of the
+// default: a caller who asked for the buckets asked for the buckets, so a
+// picture heads them and nothing a caller could read before becomes unreachable.
+func TestPictureIsAddedToTheRowsNotPutInPlaceOfThem(t *testing.T) {
 	var buf bytes.Buffer
 	r := Build(fixture(), ByDay, time.Time{}, time.Time{})
 	if err := Render(&buf, r, Options{Width: 100, Chart: ChartCalendar}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
-	if strings.Contains(got, monday) {
-		t.Errorf("calendar render = %q, want the day rows replaced", got)
+	if !strings.Contains(got, monday) {
+		t.Errorf("calendar render = %q, want the day rows kept beneath the picture", got)
 	}
 	if !strings.Contains(got, "Mon") || !strings.ContainsAny(got, string(calendarShades)) {
 		t.Errorf("calendar render = %q, want a weekday grid with shaded days", got)
 	}
 	if !strings.Contains(got, "Total") || !strings.Contains(got, "estimate, not a bill") {
 		t.Errorf("calendar render = %q, want the total and its notes kept", got)
+	}
+	// The picture heads the rows rather than trailing them, so it reads as their
+	// summary and the total keeps its notes beside it.
+	if strings.Index(got, "Mon") > strings.Index(got, monday) {
+		t.Errorf("calendar render = %q, want the picture above the rows", got)
+	}
+}
+
+// TestEachAxisPicksItsOwnPicture pins the default the caller never names: days
+// carry a calendar, coarser time buckets a sparkline, and an axis with no order
+// along the bottom of a plot carries none, its share bars saying what a drawing
+// would.
+func TestEachAxisPicksItsOwnPicture(t *testing.T) {
+	for _, tt := range []struct{ by, want string }{
+		{ByDay, ChartCalendar},
+		{ByWeek, ChartSpark},
+		{ByMonth, ChartSpark},
+		{ByModel, ChartNone},
+		{ByAgent, ChartNone},
+		{ByProject, ChartNone},
+		{BySession, ChartNone},
+		{ByTotal, ChartNone},
+	} {
+		if got := chartFor(ChartAuto, tt.by); got != tt.want {
+			t.Errorf("chartFor(auto, %q) = %q, want %q", tt.by, got, tt.want)
+		}
+		// An empty value counts as auto, so a caller predating the flag still gets
+		// the default picture rather than none.
+		if got := chartFor("", tt.by); got != tt.want {
+			t.Errorf("chartFor(\"\", %q) = %q, want %q", tt.by, got, tt.want)
+		}
+	}
+}
+
+// TestChartNonePrintsTheTableAlone pins the escape hatch, which is what every
+// version before the default existed did.
+func TestChartNonePrintsTheTableAlone(t *testing.T) {
+	var buf bytes.Buffer
+	r := Build(fixture(), ByDay, time.Time{}, time.Time{})
+	if err := Render(&buf, r, Options{Width: 100, Chart: ChartNone}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	// The weekday labels, not the shades: a share bar is drawn from the same full
+	// block a heavy calendar square uses, so a shade test would fail on the bars.
+	if strings.Contains(got, "Mon") || strings.Contains(got, "none  ") {
+		t.Errorf("--chart none = %q, want no picture", got)
+	}
+	if !strings.Contains(got, monday) {
+		t.Errorf("--chart none = %q, want the rows", got)
 	}
 }
 
@@ -754,10 +809,13 @@ func TestChartFallsBackToTheTableWhenItCannotBeDrawn(t *testing.T) {
 	if err := Render(&buf, Build(sums, ByDay, time.Time{}, time.Time{}), Options{Width: 100, Chart: ChartLine}); err != nil {
 		t.Fatal(err)
 	}
-	// The header, not the day: the plot labels its own span with that same day,
-	// so a test looking for the date passes whether or not the table was printed.
+	// The braille block, not the date: the rows are printed either way now, and
+	// the plot would label its own span with that same day.
+	if strings.ContainsAny(buf.String(), "⠀⡀⠁⠈⢀⠄") {
+		t.Errorf("one-bucket line chart = %q, want no picture at all", buf.String())
+	}
 	if !strings.Contains(buf.String(), "Sessions") {
-		t.Errorf("one-bucket line chart = %q, want the table instead", buf.String())
+		t.Errorf("one-bucket line chart = %q, want the table", buf.String())
 	}
 }
 
@@ -771,5 +829,143 @@ func TestLineChartPlotsOldestLeft(t *testing.T) {
 	got := buf.String()
 	if !strings.Contains(got, monday+" → "+tuesday) {
 		t.Errorf("line chart = %q, want the span labelled oldest first", got)
+	}
+}
+
+// wednesday is the day after the fixture's two, used where a series needs a gap
+// in the middle of its span.
+const wednesday = "2026-03-04"
+
+// TestSummaryDrawsASparklineUnderTheMachineRow pins the line onto the row it
+// belongs to and the peak beside it. Eight heights with no stated maximum say
+// which day was busiest and nothing about how busy that was.
+func TestSummaryDrawsASparklineUnderTheMachineRow(t *testing.T) {
+	o := BuildOverview(nil, nil, fixture(), Window{})
+	var buf bytes.Buffer
+	if err := RenderOverview(&buf, o, Options{Width: 100, Chart: ChartSpark}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.ContainsAny(got, string(sparkGlyphs)) {
+		t.Errorf("summary = %q, want a sparkline under the machine row", got)
+	}
+	if !strings.Contains(got, "per day, peak $") {
+		t.Errorf("summary = %q, want the peak named beside the line", got)
+	}
+}
+
+// TestSummaryDrawsTheCalendarUnasked pins the summary's own default, which is
+// not the one the day axis picks for a roll-up: the summary has no table for a
+// picture to head, so it draws the shape that carries the most.
+func TestSummaryDrawsTheCalendarUnasked(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderOverview(&buf, BuildOverview(nil, nil, fixture(), Window{}), Options{Width: 100}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "Mon") || !strings.Contains(got, dayTitle) {
+		t.Errorf("summary = %q, want a titled calendar", got)
+	}
+}
+
+// TestSummaryBreaksTheWindowDownByDefault pins the sections a caller never asked
+// for, and the line that keeps a capped list honest: the rows shown plus the
+// remainder account for the machine's total.
+func TestSummaryBreaksTheWindowDownByDefault(t *testing.T) {
+	var sums []model.Summary
+	for i := 0; i < summaryRows+2; i++ {
+		sums = append(sums, model.Summary{
+			ID:         fmt.Sprintf("11111111-%04d", i),
+			Cwd:        fmt.Sprintf("/home/u/Projects/p%d", i),
+			DailyUsage: []model.DailyUsage{out(monday, "claude-sonnet-5", (i+1)*million)},
+		})
+	}
+	var buf bytes.Buffer
+	if err := RenderOverview(&buf, BuildOverview(nil, nil, sums, Window{}), Options{Width: 100}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{"Where it went", "What ran it", "On which model"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary is missing the %q section:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "2 more") {
+		t.Errorf("summary = %q, want the rows past the cap named as a remainder", got)
+	}
+}
+
+// TestMinimalLevelPrintsTheScopesAlone pins the way back to the answer this
+// summary used to give, for a caller who wants the figures and nothing drawn
+// from them.
+func TestMinimalLevelPrintsTheScopesAlone(t *testing.T) {
+	var buf bytes.Buffer
+	o := BuildOverview(nil, nil, fixture(), Window{})
+	if err := RenderOverview(&buf, o, Options{Width: 100, Level: LevelMinimal}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "This machine") {
+		t.Errorf("minimal summary = %q, want the scope rows", got)
+	}
+	for _, unwanted := range []string{dayTitle, "Where it went", "What ran it", "On which model", "against a median day"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("minimal summary kept %q:\n%s", unwanted, got)
+		}
+	}
+}
+
+// TestSparklineFillsIdleDaysRatherThanClosingThem pins the series against the
+// calendar rather than against the days that happened to spend. Closing the gaps
+// would put two marks side by side that are days apart, drawing a month that
+// never ran.
+func TestSparklineFillsIdleDaysRatherThanClosingThem(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "ffffffff-1111", DailyUsage: []model.DailyUsage{out(monday, "claude-opus-5", million)}},
+		{ID: "ffffffff-2222", DailyUsage: []model.DailyUsage{out(wednesday, "claude-opus-5", million)}},
+	}
+	series := dailySeries(sums, time.Time{}, time.Time{})
+	if len(series) != 3 {
+		t.Fatalf("dailySeries spans %d days %v, want 3 — Monday, the idle Tuesday, and Wednesday", len(series), series)
+	}
+	if series[1].CostUSD != 0 {
+		t.Errorf("the idle day = %v, want 0", series[1].CostUSD)
+	}
+	line, _ := sparkline(costsOf(series), 40)
+	if []rune(line)[1] != ' ' {
+		t.Errorf("sparkline = %q, want a blank for the idle day — any day that spent draws a mark, so the lowest glyph must stay available to days that did", line)
+	}
+}
+
+// TestSparklineIsDroppedNotSqueezed pins the degradation: a terminal too narrow
+// to hold the line loses it whole, rather than averaging a month into a handful
+// of cells that show a shape nothing had.
+func TestSparklineIsDroppedNotSqueezed(t *testing.T) {
+	o := BuildOverview(nil, nil, fixture(), Window{})
+	var buf bytes.Buffer
+	if err := RenderOverview(&buf, o, Options{Width: 40, Chart: ChartSpark}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	// Every glyph but the full block: a breakdown's share bar is drawn from that
+	// same block, so testing the whole ramp would fail on the bars instead.
+	if strings.ContainsAny(got, "▁▂▃▄▅▆▇") || strings.Contains(got, "per day") {
+		t.Errorf("narrow summary = %q, want no sparkline", got)
+	}
+	if !strings.Contains(got, "This machine") {
+		t.Errorf("narrow summary = %q, want the rows kept", got)
+	}
+}
+
+// TestSummaryJSONCarriesNoSeries pins the series out of the machine-readable
+// form. A caller wanting it asks --by day; carrying it in both places would be
+// one fact with two spellings that can disagree.
+func TestSummaryJSONCarriesNoSeries(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderOverviewJSON(&buf, BuildOverview(nil, nil, fixture(), Window{})); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(buf.String()), "daily") {
+		t.Errorf("summary JSON = %q, want no day series", buf.String())
 	}
 }

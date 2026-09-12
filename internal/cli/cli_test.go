@@ -1465,7 +1465,6 @@ func TestChartIsRejectedWhereItCannotMeanAnything(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no axis at all", []string{"cost", "--chart", "line"}, "--by"},
 		{"an axis with no order", []string{"cost", "--by", "agent", "--chart", "line"}, "--by"},
 		{"a calendar of weeks", []string{"cost", "--by", "week", "--chart", "calendar"}, "--by day"},
 		{"a picture of an object", []string{"cost", "--by", "day", "--chart", "line", "--format", "json"}, "--format json"},
@@ -1501,24 +1500,51 @@ func secondDay(t *testing.T) {
 	}
 }
 
-// TestChartDrawsInPlaceOfTheRows is the accepted half: the day rows give way to
-// a picture, and the total line and its notes stay, since those say what the
-// picture is of.
-func TestChartDrawsInPlaceOfTheRows(t *testing.T) {
+// TestDayAxisDrawsACalendarWithoutBeingAsked is the default reaching the command
+// line: a caller who selected days did not have to name a second flag to see the
+// shape of the days they selected, and the rows are still there.
+func TestDayAxisDrawsACalendarWithoutBeingAsked(t *testing.T) {
 	fixtureProject(t)
 	secondDay(t)
 	out := captureStdout(t, func() {
-		if code, _, stderr := exec("cost", "--by", "day", "--chart", "calendar", "--no-color"); code != 0 {
+		if code, _, stderr := exec("cost", "--by", "day", "--no-color"); code != 0 {
 			t.Fatalf("exit = %d, stderr = %q", code, stderr)
 		}
 	})
-	if strings.Contains(out, "Sessions") {
-		t.Errorf("--chart calendar kept the table:\n%s", out)
-	}
-	for _, want := range []string{"Mon", "Total", "an estimate, not a bill"} {
+	for _, want := range []string{"Mon", "Sessions", "Total", "an estimate, not a bill"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("--chart calendar output is missing %q:\n%s", want, out)
+			t.Errorf("cost --by day is missing %q:\n%s", want, out)
 		}
+	}
+
+	// The same selection with the picture turned off, which is what every version
+	// before the default existed printed.
+	off := captureStdout(t, func() { exec("cost", "--by", "day", "--chart", "none", "--no-color") })
+	if strings.Contains(off, "Mon") {
+		t.Errorf("--chart none drew a picture:\n%s", off)
+	}
+	if !strings.Contains(off, "Sessions") {
+		t.Errorf("--chart none dropped the table:\n%s", off)
+	}
+}
+
+// TestChartDoesNotReplaceTheSummary pins --chart as a flag that says how the
+// answer is written rather than what is counted: like --format and --no-color it
+// leaves the three scopes standing, where --by and the scope flags do not.
+func TestChartDoesNotReplaceTheSummary(t *testing.T) {
+	fixtureProject(t)
+	out := captureStdout(t, func() {
+		if code, _, stderr := exec("cost", "--chart", "none", "--no-color"); code != 0 {
+			t.Fatalf("exit = %d, stderr = %q", code, stderr)
+		}
+	})
+	for _, want := range []string{"This session", "This folder", "This machine"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("cost --chart none dropped the %q row:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Sessions") {
+		t.Errorf("cost --chart none switched to the roll-up table:\n%s", out)
 	}
 }
 
@@ -1534,5 +1560,50 @@ func TestProjectAxisNamesTheDirectory(t *testing.T) {
 	})
 	if !strings.Contains(out, "Project") {
 		t.Errorf("cost --by project did not head its column with Project:\n%s", out)
+	}
+}
+
+// TestCostSummaryShowsMoreThanTheScopes pins the richer default reaching the
+// command line, and the way back to the three figures it rests on.
+func TestCostSummaryShowsMoreThanTheScopes(t *testing.T) {
+	fixtureProject(t)
+	secondDay(t)
+	// A bound old enough to keep the fixture's sessions: the machine row's own
+	// default counts thirty days, and these logs are older than that, which would
+	// leave every breakdown empty and the sections absent for the right reason.
+	full := captureStdout(t, func() {
+		if code, _, stderr := exec("cost", "--since", "2020-01-01", "--no-color"); code != 0 {
+			t.Fatalf("exit = %d, stderr = %q", code, stderr)
+		}
+	})
+	for _, want := range []string{"This machine", "Day by day", "Where it went", "What ran it", "On which model"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("bare cost is missing %q:\n%s", want, full)
+		}
+	}
+
+	minimal := captureStdout(t, func() { exec("cost", "--since", "2020-01-01", "--level", "minimal", "--no-color") })
+	if !strings.Contains(minimal, "This machine") {
+		t.Errorf("cost --level minimal dropped the scope rows:\n%s", minimal)
+	}
+	for _, unwanted := range []string{"Day by day", "Where it went", "What ran it"} {
+		if strings.Contains(minimal, unwanted) {
+			t.Errorf("cost --level minimal kept %q:\n%s", unwanted, minimal)
+		}
+	}
+}
+
+// TestCostLevelRejectsTheRenderOnlyValues pins the two the roll-up has no
+// meaning for: a value that changed nothing would read as a setting that failed.
+func TestCostLevelRejectsTheRenderOnlyValues(t *testing.T) {
+	fixtureProject(t)
+	for _, v := range []string{"detailed", "full"} {
+		code, _, stderr := exec("cost", "--level", v)
+		if code != exUsage {
+			t.Errorf("cost --level %s: exit = %d, want %d (exUsage)", v, code, exUsage)
+		}
+		if !strings.Contains(stderr, "--level") {
+			t.Errorf("cost --level %s: stderr = %q, want the flag named", v, stderr)
+		}
 	}
 }

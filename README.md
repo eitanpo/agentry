@@ -90,22 +90,30 @@ the dollars add up over any window — which Claude Code's own per-session recor
 71 of 314 local sessions and holding one number per session that no day can be split out of:
 
 ```
-agentry cost                              # this session, this folder, this machine's last 30 days
-agentry cost --by day                     # one row per day
+agentry cost                              # the three scopes, a calendar, and where the money went
+agentry cost --level minimal              # the three scope rows and the notes alone
+agentry cost --chart spark                # a compact daily line instead of the calendar
+agentry cost --by day                     # a shaded calendar above one row per day
 agentry cost --by week                    # one row per week, labelled by its Monday
 agentry cost --by month                   # one row per calendar month
 agentry cost --by model                   # what each model cost you
 agentry cost --by agent                   # what each skill and subagent cost you
 agentry cost --by project                 # what each repo cost you, worktrees folded in
 agentry cost --by session                 # one row per session, priciest first
-agentry cost --by day --chart calendar    # the month as a shaded week-by-week grid
-agentry cost --by day --chart line        # the same days as a braille line plot
+agentry cost --by day --chart line        # a braille line plot instead of the calendar
+agentry cost --by week --chart none       # the table alone, no picture
 agentry cost --since 30d                  # the last 30 days
 agentry cost --since today --by session   # today's sessions, priciest first
 agentry cost --all-projects --by month    # every project, month by month
 agentry cost --project ~/Projects/me --by model
 agentry cost --all-projects --by day --format json | jq   # machine-readable, for piping
 ```
+
+Bare `agentry cost` answers more than the three scopes, because the sweep that finds them has already
+read everything else: a **Day by day** calendar of the machine window, then **Where it went** (project
+directories), **What ran it** (delegations) and **On which model**, each showing its five largest rows
+and naming the remainder, and a closing line placing the last day against the window's median and top
+decile. `--level minimal` prints the three scopes and the notes alone.
 
 **Bare `agentry cost` answers three questions at once** — the session you were just in, this
 folder's whole history, and everything this machine ran in the last thirty days — so the commonest
@@ -183,7 +191,7 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 
 | Flag | Mode | Default | Description |
 |---|---|---|---|
-| `--level minimal\|standard\|detailed\|full` | render | `minimal` | Preset of channel defaults. `minimal` prompts+response; `standard` +thinking+metrics; `detailed` +tools+subagents (no output); `full` +tool-results. |
+| `--level minimal\|standard\|detailed\|full` | render | `minimal` | Preset of channel defaults. `minimal` prompts+response; `standard` +thinking+metrics; `detailed` +tools+subagents (no output); `full` +tool-results. On `cost` the flag takes `minimal` or `standard` only, and defaults to `standard`: `minimal` prints the three scope rows and the notes alone, `standard` adds the calendar and the three breakdowns. The default differs by verb because the commonest question does. |
 | `--[no-]thinking\|tools\|tool-results\|subagents\|metrics` | render | — | Override a single channel on top of `--level` (adds or subtracts). `tools` = a tool fired; `tool-results` = its output. An `Agent` line also names what it delegated to: `Agent[Explore@haiku]` is the subagent type and the model, and the `@model` half is absent when the call left the subagent on the session's model. |
 | `--limit N` | `list` | `10` | Cap to N most-recent (`0` = no cap; lifted when any filter flag is set). |
 | `--since WHEN`, `--until WHEN` | `list`, `cost` | — | Filter by last-activity time. WHEN: `today`/`yesterday`, `Nh`/`Nd`/`Nw`, or `YYYY-MM-DD`. On `cost` the bounds are compared against each day of spend instead, so a session straddling the edge contributes only the days inside the window. |
@@ -201,7 +209,7 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--min-lines N` | `list` | — | Only sessions that changed at least N lines — additions plus removals, from Claude Code's own record. Inclusive. A session whose log carries no such record matches no bound, which is most sessions: the record exists only from Claude Code 2.1.241 and not on every session since. A negative value is a usage error. |
 | `--max-lines N` | `list` | — | Only sessions that changed at most N lines, on the same rule. `--max-lines 0` selects the sessions that recorded changing nothing — never the ones with no record. Combined with `--min-lines` it makes a range, and a floor above the ceiling is a usage error rather than an empty listing. |
 | `--by total\|day\|week\|month\|model\|agent\|project\|session` | `cost` | `total` | Which bucket the dollars are added up in. Time buckets print oldest first; `model`, `agent`, `project` and `session` print priciest first. Days begin at local midnight and weeks at Monday. `agent` groups by what the tokens were delegated to — a subagent type, a forked skill with its leading slash, or `(main thread)`; a delegation that delegates again is charged to the call you made, so a skill's row is what invoking it cost in full. `project` groups by the directory each session ran in, read from the log, cut at its first hidden segment — so a repo's worktrees under `.claude-worktrees` count with the repo while a sibling repo does not. Every row carries a bar for its share of the total, drawn from block characters so it survives `NO_COLOR` and a pipe; it is the last column and the first one dropped on a narrow terminal. There is no `--limit`, so the rows always account for the total line. |
-| `--chart line\|calendar\|none` | `cost` | `none` | Replace the rows with a picture of them, keeping the total line and the notes. `line` is a braille plot, four times the horizontal resolution of block characters; `calendar` is a week-by-week grid, each square in one of four steps by which quarter of the spending days it falls in, and needs `--by day`. A chart with too few buckets to draw falls back to the table. Rejected, naming both flags, on a non-time axis and alongside `--format json`. |
+| `--chart auto\|none\|spark\|line\|calendar` | `cost` | `auto` | Which picture is drawn above the rows. `auto` draws one wherever the buckets are a span of time — a calendar for `--by day`, a sparkline for `--by week` and `--by month`, none for the axes with no time order — and a calendar in the summary's Day by day section, where `spark` asks for the compact line under the machine row instead. The rows, total and notes are always kept; `none` prints the table alone. `line` is a braille plot at four times the horizontal resolution of block characters; `calendar` shades each square by which quarter of the spending days it falls in, and on a roll-up needs `--by day`. A picture with too few buckets, or a terminal too narrow for it, is simply absent. Rejected, naming both flags, for an explicit picture on an axis with no time order and alongside `--format json`. |
 | `--all-projects` | `list`, `cost` | — | Every project under the projects root (`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/` when set), not just this directory's. Mutually exclusive with `--project`. |
 | `--project PATH` | `list`, `cost` | — | PATH's sessions instead of this directory's, including every project nested under PATH. It moves the root, not the depth — a listing already covers what is nested under the current directory, which is how standing in a repo picks up its git worktrees. |
 | `--from cli\|app\|sdk\|all` | `list`, `view`, `cost` | `cli`+`app` | Where the session was run. `sdk` is anything non-interactive (`claude -p`, a hook, CI) and is **hidden by default**; `all` restores it. On `view` (no id) it picks which kind the most-recent lookup walks back to; it cannot be combined with a session id. |

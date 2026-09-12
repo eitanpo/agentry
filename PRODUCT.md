@@ -222,10 +222,31 @@ A model agentry holds no price for is **named rather than priced at zero**. Its 
 This session  Cost calculation per session          100M       $65.70
 This folder   8 sessions, all time                  512M      $349.62
 This machine  301 sessions since 2026-08-12         8.1B     $6049.13
+              ▁▂▃▂▂▂▂▃▁▂▁▃▂▂▃▂▃▃▃▁▃▃▂▁▄▃▄▁▁▁  per day, peak $435.37
 
 computed from the transcript at 2026-09-11 list prices — an estimate, not a bill
 Claude Code recorded $3043.02 for the 71 sessions it kept a record for
 ```
+
+**The summary answers more than the three scopes, because the sweep that finds them has already read everything else.** Pricing the machine's window means parsing every session on the machine; the three figures are a fraction of what that parse holds, and a caller who paid for the read gets the rest of it. Four sections follow the scopes, each answering one question the three rows raise and cannot settle:
+
+- **Day by day** — a calendar of the machine row's days, since the summary has no table for a picture to head and can therefore carry the shape that says the most;
+- **Where it went** — the priciest project directories over that window;
+- **What ran it** — the priciest delegations;
+- **On which model** — the models those dollars ran on;
+- a closing line placing the window's last day against its median and top-decile day, so "is today normal" is answered rather than left to arithmetic.
+
+Each breakdown counts the machine's window, the widest of the three scopes, since the question the sections answer is where the money goes rather than where this directory's money goes. Each shows its five largest rows and then **names the remainder as one line** — how many rows were left and what they came to — so the visible rows plus that line account for the total. A capped list that did not name its remainder would be the failure `--limit` is refused for on the roll-up: a figure a reader cannot reconstruct.
+
+`--level minimal` prints the three scopes and the notes alone, which is what every version before this one printed. The flag is the render path's, and **its default differs by verb because the commonest question does**: rendering a session opens on the transcript and adds detail on request, while asking what you are spending is asking for the picture rather than for three figures and a second command. Only `minimal` and `standard` are offered here — the other two name no further detail this verb has, and a value that changed nothing would read as a setting that failed.
+
+`--chart` chooses the picture in the **Day by day** section as it does above a roll-up's rows, with one difference: the summary's own default is the **calendar**, not the sparkline the day axis picks for a table. A picture above a table heads rows that already carry the detail, where the summary's picture is the only place its days appear at all. `--chart spark` asks for the compact line under the machine row instead, `--chart line` for the braille plot, and `--chart none` for no picture.
+
+**A sparkline under the machine row shows the shape of its window**, one cell per day from the day the row names to the last day that spent, with the peak named beside it so the marks have a scale. The three rows answer what you are spending; the sparkline answers whether it is climbing, which is the nearest question and the one a column of three figures cannot reach. The sweep that builds the machine row already prices every day, so the series costs no extra reading.
+
+**A day that ran no session at all is a blank rather than the lowest mark.** Any day that spent draws a mark, so a day that cost real money is never rendered as a day that cost nothing. A sparkline has only those two states — its span is exactly the days it draws, so there is no third state for "outside the window" the way a calendar grid has.
+
+The sparkline is dropped, not squeezed, when the terminal is too narrow to hold it beside the row it belongs to, and a window holding fewer than two days does not draw one: a single mark has no shape. **A share bar is deliberately not offered on these three rows.** The folder row reads all time while the machine row reads thirty days, so their lengths would compare spans nobody chose to compare; and under a named window, where all three share a span, the rows nest rather than divide — the machine contains the folder, which contains the session — so three bars would read as parts of a total the rows do not sum to.
 
 Every session on the machine is read **once, in parallel**, and the three rows are taken from that one sweep — the scopes nest, so re-reading the narrow ones would double the only real cost of the answer. Measured over 647 local sessions the summary takes 1.5s against the 4.1s the same sweep took one session at a time.
 
@@ -307,15 +328,24 @@ Claude Code recorded $54.02 for the 4 sessions it kept a record for
 
 The last line appears only when a session **wholly inside the window** carries Claude Code's own record, and it names how many, because that is the only comparison that is exact: a record is one number for a whole session, so a session straddling the window's edge cannot contribute a share of it. Where no session in the window carries one, the line is absent rather than reading zero.
 
-**`--chart` replaces the rows with a picture of them**, keeping the total line and every note beneath it, because those say what the picture is of. It takes `line`, `calendar` or `none`, and `none` is the default that prints the table.
+**A picture is drawn by default wherever the buckets are a span of time**, above the rows it summarizes. A caller who asked for thirty days asked to see thirty days, and making them name a second flag to see the shape of what they already selected is the same mistake as making them name three flags to reach the machine's total. The rows, the total and the notes are all kept — a picture is added to the answer, never put in place of it, so nothing a caller could read before becomes unreachable by default.
 
-`--chart line` draws the buckets as a braille line plot, joining the points rather than leaving them as dots: a braille cell is two dots wide and four tall, so the plot fits four times as many points across a terminal as block characters do, and separate dots at that resolution read as scatter. The value axis is labelled down the left edge and the span named beneath, oldest at the left.
+**The axis chooses the picture**, since what makes a drawing legible is the bucket, not a preference:
 
-`--chart calendar` lays the days out as a week per column and a weekday per row, each square shaded in one of four steps by which quarter of the spending days it falls in. Quarters by count rather than by dollars, since a month holding one very large day would otherwise shade every other day alike. A day inside the span that spent nothing is a dot, so an idle day and a day outside the window never read the same.
+- `--by day` draws a **calendar** — a week per column, a weekday per row. Days are the only bucket whose squares a calendar can hold, and it is the only shape that shows the week's structure rather than only the trend.
+- `--by week` and `--by month` draw a **sparkline**, one cell per bucket. Too few points for a calendar and too few for a plot with its own axis, but enough to show direction.
+- `--by model`, `--by agent`, `--by project` and `--by session` draw **no picture**. Their rows have no order along the bottom of a plot, and the share bar on every row already says what a drawing would.
+- The three-scope summary draws the **sparkline beneath its machine row**, described above.
 
-**A chart that cannot be drawn falls back to the table.** One bucket is not a line and not a calendar, and an empty frame would say less than the row it replaced.
+`--chart` overrides that choice rather than enabling it. It takes `auto` — the default just described — plus `none`, `line` and `calendar`. `--chart none` prints the table alone, which is what every version before this one did.
 
-The flag is rejected at parse time where it cannot mean anything, naming both flags rather than the value alone: `--chart` on an axis that is not time, `--chart calendar` on any axis but `--by day`, and `--chart` together with `--format json`, whose object is the same whether or not a picture was asked for.
+`--chart line` draws a braille line plot, joining the points rather than leaving them as dots: a braille cell is two dots wide and four tall, so the plot fits four times as many points across a terminal as block characters do, and separate dots at that resolution read as scatter. The value axis is labelled down the left edge and the span named beneath, oldest at the left.
+
+`--chart calendar` shades each square in one of four steps by which quarter of the spending days it falls in. Quarters by count rather than by dollars, since a month holding one very large day would otherwise shade every other day alike. A day inside the span that spent nothing is a dot, so an idle day and a day outside the window never read the same.
+
+**A picture that cannot be drawn is simply absent.** One bucket is not a line and not a calendar, and a terminal too narrow for the drawing keeps the rows. Nothing is reported, because nothing was lost: the rows the picture summarizes are still on the screen.
+
+`--chart` says how the answer is written rather than what is counted, so like `--format` and `--no-color` it leaves the three-scope summary standing instead of switching to the roll-up. The flag is rejected at parse time only where it cannot mean anything, naming both flags rather than the value alone: an explicit `line` or `calendar` on an axis that is not time, `calendar` on any roll-up axis but `--by day`, and any picture alongside `--format json`, whose object is the same either way.
 
 `--format json` on the three-row summary emits `scopes`, one entry per panel as `{scope, label, since, sessions, usage, costUSD}` — `scope` being `session`, `folder` or `machine`, and `since` present on the machine panel alone — beside the same `recorded`, `unpricedModels` and `pricesVerified` the roll-up carries.
 

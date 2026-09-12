@@ -523,6 +523,10 @@ func recordedOf(sums []model.Summary, sinceDay, untilDay string) *Recorded {
 type Options struct {
 	Width int
 	Color bool
+	// Level is the summary's detail preset. Empty and anything but LevelMinimal
+	// print every section, so a caller that never heard of the flag gets the
+	// answer rather than the three figures it is drawn from.
+	Level string
 	// Chart replaces the rows with a picture of them. Empty and ChartNone both
 	// print the table, so a caller that never heard of charts gets one.
 	Chart string
@@ -714,17 +718,18 @@ func Render(w io.Writer, r Report, opts Options) error {
 
 	var out strings.Builder
 	if len(r.Buckets) > 0 {
-		// A chart that cannot be drawn from these rows falls back to the table and
-		// says why on the notes beneath it, rather than printing an empty frame.
-		if chart, ok := renderChart(opts.Chart, r.Buckets, opts); ok {
+		// Above the rows, never in place of them: a picture summarizes the table it
+		// heads, and a caller who asked for the buckets asked for the buckets. One
+		// that cannot be drawn is simply absent — nothing was lost, since the rows it
+		// would have summarized are still on the screen.
+		if chart, ok := renderChart(chartFor(opts.Chart, r.By), r.Buckets, opts); ok {
 			out.WriteString(chart + "\n")
-		} else {
-			out.WriteString(head.Render(headerRow(r.By, keyW, labelW, showTurns, barW)) + "\n")
-			for _, b := range r.Buckets {
-				out.WriteString(row(r.By, b, keyW, labelW, showTurns, barW, maxCost) + "\n")
-			}
-			out.WriteString("\n")
 		}
+		out.WriteString(head.Render(headerRow(r.By, keyW, labelW, showTurns, barW)) + "\n")
+		for _, b := range r.Buckets {
+			out.WriteString(row(r.By, b, keyW, labelW, showTurns, barW, maxCost) + "\n")
+		}
+		out.WriteString("\n")
 	}
 	out.WriteString(totalRow(r, keyW, labelW, showTurns) + "\n")
 	for _, line := range notes(r) {
@@ -1005,7 +1010,25 @@ type Overview struct {
 	Recorded       *Recorded  `json:"recorded,omitempty"`
 	UnpricedModels []Unpriced `json:"unpricedModels,omitempty"`
 	PricesVerified string     `json:"pricesVerified"`
+	// daily is one entry per day of the machine row's window, in order, for the
+	// picture drawn beneath that row. The three breakdowns beside it are that same
+	// window cut on its other axes.
+	//
+	// All four are unexported, so they stay out of the JSON form: a caller wanting
+	// any of them asks `--by day`, `--by project`, `--by agent` or `--by model`,
+	// and carrying a series in both places would be one fact with two spellings
+	// that can disagree.
+	daily    []Bucket
+	projects []Bucket
+	agents   []Bucket
+	models   []Bucket
 }
+
+// summaryRows is how many rows of a breakdown the summary prints before naming
+// the remainder. Five is what fits beside three other sections on one screen,
+// and the line beneath them keeps the arithmetic whole: the rows shown plus the
+// rows counted come to the machine's total.
+const summaryRows = 5
 
 // BuildOverview prices the three scopes through Build, so a figure read off the
 // summary and one read off `--by total` over the same sessions cannot differ.
@@ -1028,6 +1051,10 @@ func BuildOverview(session *model.Summary, folder, machine []model.Summary, w Wi
 		Recorded:       wide.Recorded,
 		UnpricedModels: wide.UnpricedModels,
 		PricesVerified: price.VerifiedOn,
+		daily:          dailySeries(machine, machineSince, w.Until),
+		projects:       Build(machine, ByProject, machineSince, w.Until).Buckets,
+		agents:         Build(machine, ByAgent, machineSince, w.Until).Buckets,
+		models:         Build(machine, ByModel, machineSince, w.Until).Buckets,
 	}
 	narrowSince, narrowUntil := dayString(w.Since), dayString(w.Until)
 	// A row is dropped when the window leaves it holding no session at all. The
@@ -1130,12 +1157,59 @@ func RenderOverview(w io.Writer, o Overview, opts Options) error {
 		windowW = max
 	}
 	var out strings.Builder
+	machineRow := false
 	for _, s := range o.Scopes {
+		if s.Scope == ScopeMachine {
+			machineRow = true
+		}
 		tokens := spend.Tokens(s.Usage.Input + s.Usage.Output + s.Usage.CacheRead + s.Usage.CacheCreate)
 		out.WriteString(head.Render(padRight(scopeName(s.Scope), nameW)) + strings.Repeat(" ", gap) +
 			padRight(cut(scopeWindow(s), windowW), windowW) + strings.Repeat(" ", gap) +
 			padLeft(tokens, tokensW) + strings.Repeat(" ", gap) +
 			padLeft(spend.USD(s.CostUSD), costW) + "\n")
+	}
+	// Under the machine row alone: it is the only one of the three whose window is
+	// a span of days rather than a session or a whole history, so it is the only
+	// one a day-by-day line is a picture of.
+	// The summary's picture is of the machine row's window, the only one of the
+	// three that is a span of days. Under --level minimal there is none: that level
+	// is the three figures and nothing drawn from them.
+	if machineRow && opts.Level != LevelMinimal {
+		kind := opts.Chart
+		if kind == "" || kind == ChartAuto {
+			kind = ChartCalendar
+		}
+		switch kind {
+		case ChartSpark:
+			indent := nameW + gap
+			if line, peak := sparkline(costsOf(o.daily), sparkWidth(opts.Width, indent)); line != "" {
+				out.WriteString(strings.Repeat(" ", indent) +
+					lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "31", Dark: "80"}).Render(line) +
+					note.Render(fmt.Sprintf("  per day, peak %s", spend.USD(peak))) + "\n")
+			}
+		case ChartCalendar:
+			if cal, ok := calendarChart(o.daily, opts); ok {
+				out.WriteString("\n" + head.Render(dayTitle) + "\n" + cal)
+			}
+		case ChartLine:
+			if plot, ok := lineChart(o.daily, opts); ok {
+				out.WriteString("\n" + head.Render(dayTitle) + "\n" + plot)
+			}
+		}
+	}
+	if opts.Level != LevelMinimal {
+		for _, section := range []string{
+			breakdown("Where it went", o.projects, opts, head, note),
+			breakdown("What ran it", o.agents, opts, head, note),
+			breakdown("On which model", o.models, opts, head, note),
+		} {
+			if section != "" {
+				out.WriteString("\n" + section)
+			}
+		}
+		if line := todayLine(o.daily); line != "" {
+			out.WriteString("\n" + note.Render(line) + "\n")
+		}
 	}
 	out.WriteString("\n")
 	for _, line := range notes(Report{
@@ -1159,4 +1233,21 @@ func RenderOverviewJSON(w io.Writer, o Overview) error {
 	}
 	_, err = w.Write(append(b, '\n'))
 	return err
+}
+
+// dayTitle heads the picture of the machine row's days. The row above already
+// names the window, so the title says what the picture is rather than repeating
+// which days it covers.
+const dayTitle = "Day by day"
+
+// machineScope is the widest of the summary's rows, which the picture beneath
+// them is of. A zero value where the row is absent, so a caller printing its
+// window gets an empty heading rather than a wrong one.
+func machineScope(o Overview) Scope {
+	for _, s := range o.Scopes {
+		if s.Scope == ScopeMachine {
+			return s
+		}
+	}
+	return Scope{}
 }
