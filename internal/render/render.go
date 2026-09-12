@@ -724,11 +724,9 @@ func fmtDuration(start, end time.Time) string {
 	if secs < 0 {
 		return ""
 	}
-	h, m := secs/3600, (secs%3600)/60
-	if h > 0 {
-		return fmt.Sprintf("%dh%02dm", h, m)
-	}
-	return fmt.Sprintf("%dm", m)
+	// The shape is shared with the cost roll-up's elapsed column; an absent or
+	// backwards span stays blank here, which that column has no case for.
+	return spend.Duration(secs)
 }
 
 func fmtToolDuration(start, end time.Time) string {

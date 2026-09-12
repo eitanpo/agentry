@@ -139,6 +139,11 @@ type Summary struct {
 	// same responses, same deduplication, only grouped — so the two cannot
 	// disagree about what one session spent.
 	DailyUsage []DailyUsage `json:"dailyUsage,omitempty"`
+	// DailyActivity splits the session's turns and the time they ran for by the
+	// local day each turn started on, so a cost roll-up can divide a bucket's
+	// dollars by the work done in that same bucket. Summing every entry's Turns
+	// reproduces NumTurns exactly.
+	DailyActivity []DailyActivity `json:"dailyActivity,omitempty"`
 	// PRs and Artifacts are what the session produced beyond its own transcript,
 	// each deduplicated in first-seen order (Claude Code re-records both on later
 	// turns). They come from entries Claude Code writes for the session as a whole,
@@ -268,7 +273,32 @@ func (u *Usage) Add(o Usage) {
 type DailyUsage struct {
 	Day   string `json:"day"`
 	Model string `json:"model,omitempty"`
+	// Agent is what the tokens were delegated to — a subagent type, or a forked
+	// skill written with its leading slash. Empty for the main thread, which is
+	// the majority of every session and is named rather than labelled so the
+	// agent axis sums to the session's total instead of to its delegated part.
+	Agent string `json:"agent,omitempty"`
 	Usage Usage  `json:"usage"`
+}
+
+// DailyActivity is how much a session did on one local calendar day: the turns
+// that started that day, and the seconds those turns ran for.
+//
+// Turns are bucketed by the day each one started rather than by the session's
+// own day, which is what lets a day bucket divide that day's cost by that day's
+// turns. Nothing here is per model or per agent — one turn can run on two models
+// and delegate to two agents — so those two axes carry no turn count at all.
+//
+// ActiveSeconds sums each turn's span, from the prompt to the last entry that
+// turn wrote. It excludes the gap between turns, which is what separates it from
+// a session's wall span: the local corpus holds 5,324 session-hours inside a
+// 720-hour month, because a session sits open across days. It does count a turn
+// that waited on a slow tool or on a permission prompt, since the log cannot
+// tell waiting from working.
+type DailyActivity struct {
+	Day           string `json:"day"`
+	Turns         int    `json:"turns"`
+	ActiveSeconds int    `json:"activeSeconds"`
 }
 
 // Turn is one user prompt and the assistant activity that followed it.

@@ -31,13 +31,21 @@ const (
 	ByWeek    = "week"
 	ByMonth   = "month"
 	ByModel   = "model"
+	ByAgent   = "agent"
 	BySession = "session"
 )
 
 // Axes is every --by value, in the order help and completion offer them:
-// the default first, then the time buckets coarsening, then the two axes that
+// the default first, then the time buckets coarsening, then the three axes that
 // are not time.
-var Axes = []string{ByTotal, ByDay, ByWeek, ByMonth, ByModel, BySession}
+var Axes = []string{ByTotal, ByDay, ByWeek, ByMonth, ByModel, ByAgent, BySession}
+
+// mainThreadAgent names the tokens a session spent itself, on the axis that
+// groups the rest by what they were delegated to. It is a row rather than an
+// omission so the rows sum to the total and each one's share can be read off
+// them; in the local corpus the main thread is the large majority of every
+// session, which a delegated-only table would hide.
+const mainThreadAgent = "(main thread)"
 
 // unknownDay labels the bucket of a response whose entry carries no timestamp in
 // a session that carries none either. The tokens were spent whatever the log
@@ -66,6 +74,13 @@ type Bucket struct {
 	// session. It excludes any tokens spent on a model with no price here, which
 	// UnpricedModels names.
 	CostUSD float64 `json:"costUSD"`
+	// Turns and ActiveSeconds are the work the bucket's dollars bought: the turns
+	// that started inside it, and the seconds those turns ran. Both are zero on
+	// the model and agent axes, where a turn belongs to no single row — one turn
+	// can run on two models and delegate to two agents — so the columns are
+	// dropped there rather than filled with a number that divides wrongly.
+	Turns         int `json:"turns,omitempty"`
+	ActiveSeconds int `json:"activeSeconds,omitempty"`
 }
 
 // Unpriced is a model the table holds no rate for, reported so its tokens are
@@ -88,12 +103,57 @@ type Recorded struct {
 	CostUSD  float64 `json:"costUSD"`
 }
 
+// Spread is how a per-turn cost is distributed across the sessions in the
+// window, which one average cannot say: locally the mean turn costs $2.53 and
+// the median $0.71, because a few very large turns carry the bill. Reported only
+// once enough sessions have turns for a median to mean anything.
+type Spread struct {
+	Sessions      int     `json:"sessions"`
+	MedianPerTurn float64 `json:"medianPerTurn"`
+	P90PerTurn    float64 `json:"p90PerTurn"`
+}
+
+// Selection is what a roll-up was asked to count: which sessions, over what
+// span. It is carried because the table cannot say it otherwise — the rows are
+// days or models, and the line beneath them reads "Total", which names no scope
+// at all. The same figure means very different things for one folder and for a
+// whole machine.
+type Selection struct {
+	// Scope is the set of sessions in the caller's own words — "this folder",
+	// "every project", or the path that was named.
+	Scope string `json:"scope"`
+	Since string `json:"since,omitempty"`
+	Until string `json:"until,omitempty"`
+}
+
+// line says what was priced, for the note that opens a roll-up's footer.
+func (sel Selection) line() string {
+	return "priced " + sel.Scope + span(sel.Since, sel.Until)
+}
+
+// span phrases a pair of day bounds, either of which may be absent. It is shared
+// by the roll-up's note and the summary's rows so one window is never described
+// two ways in one session's output.
+func span(since, until string) string {
+	switch {
+	case since != "" && until != "":
+		return " from " + since + " to " + until
+	case since != "":
+		return " since " + since
+	case until != "":
+		return " up to " + until
+	}
+	return ", all time"
+}
+
 // Report is a whole roll-up: the rows, the total they sum to, and what a reader
 // needs in order to know what the figure is not.
 type Report struct {
 	By             string     `json:"by"`
+	Selection      *Selection `json:"selection,omitempty"`
 	Buckets        []Bucket   `json:"buckets"`
 	Total          Bucket     `json:"total"`
+	Spread         *Spread    `json:"spread,omitempty"`
 	Recorded       *Recorded  `json:"recorded,omitempty"`
 	UnpricedModels []Unpriced `json:"unpricedModels,omitempty"`
 	// PricesVerified is the day the rate table was last checked against its
@@ -116,6 +176,8 @@ func Build(sums []model.Summary, by string, since, until time.Time) Report {
 	rows := map[string]*Bucket{}
 	seen := map[string]map[string]bool{} // bucket key -> session ids counted
 	unpriced := map[string]*Unpriced{}
+	spent := map[string]float64{} // session id -> in-window dollars
+	worked := map[string]int{}    // session id -> in-window turns
 	var order []string
 
 	for _, s := range sums {
@@ -148,8 +210,29 @@ func Build(sums []model.Summary, by string, since, until time.Time) Report {
 			}
 			r.Total.Usage.Add(d.Usage)
 			r.Total.CostUSD += usd
+			spent[s.ID] += usd
+		}
+		// Turns attach only to rows the tokens already made, so a roll-up gains no
+		// row for a day that held turns and no priced response — the table is about
+		// spend, and a zero-dollar row on it reads as a day that cost nothing rather
+		// than as one nothing could be priced for.
+		for _, a := range s.DailyActivity {
+			key, ok := activityKey(by, a.Day, s)
+			if !ok || !inWindow(a.Day, sinceDay, untilDay) {
+				continue
+			}
+			worked[s.ID] += a.Turns
+			b, ok := rows[key]
+			if !ok {
+				continue
+			}
+			b.Turns += a.Turns
+			b.ActiveSeconds += a.ActiveSeconds
+			r.Total.Turns += a.Turns
+			r.Total.ActiveSeconds += a.ActiveSeconds
 		}
 	}
+	r.Spread = spreadOf(spent, worked)
 	// The total's session count is the sessions that contributed, which is not the
 	// sum of the rows': one session spans several days and is counted in each.
 	total := map[string]bool{}
@@ -202,10 +285,72 @@ func bucketOf(by string, d model.DailyUsage, s model.Summary) (key, label string
 		return monthOf(d.Day), ""
 	case ByModel:
 		return d.Model, ""
+	case ByAgent:
+		return agentName(d.Agent), ""
 	case BySession:
 		return s.ID, s.Title
 	}
 	return ByTotal, ""
+}
+
+// agentName names the row a response falls under on the agent axis, standing in
+// for the main thread, whose records carry no label.
+func agentName(agent string) string {
+	if agent == "" {
+		return mainThreadAgent
+	}
+	return agent
+}
+
+// activityKey is the row a day's turns fall under, and whether the axis takes
+// turns at all. The model and agent axes do not: a turn can run on two models
+// and delegate to two agents, so it has no one row to be counted in.
+func activityKey(by, day string, s model.Summary) (string, bool) {
+	switch by {
+	case ByDay:
+		return dayLabel(day), true
+	case ByWeek:
+		return weekOf(day), true
+	case ByMonth:
+		return monthOf(day), true
+	case BySession:
+		return s.ID, true
+	case ByTotal:
+		return ByTotal, true
+	}
+	return "", false
+}
+
+// minSpreadSessions is how many sessions a distribution needs before it is worth
+// printing. Below it the median is one session's own figure restated, which
+// reads as a second measurement and is not one.
+const minSpreadSessions = 3
+
+// spreadOf is the median and top-decile cost per turn across the sessions that
+// both spent and worked inside the window. A session with turns and no priced
+// tokens is left out rather than entered as free: its model had no price, and a
+// zero would drag the median toward a figure nobody paid.
+func spreadOf(spent map[string]float64, worked map[string]int) *Spread {
+	var rates []float64
+	for id, usd := range spent {
+		if n := worked[id]; n > 0 && usd > 0 {
+			rates = append(rates, usd/float64(n))
+		}
+	}
+	if len(rates) < minSpreadSessions {
+		return nil
+	}
+	sort.Float64s(rates)
+	mid := len(rates) / 2
+	median := rates[mid]
+	if len(rates)%2 == 0 {
+		median = (rates[mid-1] + rates[mid]) / 2
+	}
+	p90 := rates[len(rates)-1]
+	if i := int(float64(len(rates)) * 0.9); i < len(rates) {
+		p90 = rates[i]
+	}
+	return &Spread{Sessions: len(rates), MedianPerTurn: median, P90PerTurn: p90}
 }
 
 // dayLabel names a day bucket, standing in for a response the log could not
@@ -266,7 +411,7 @@ func inWindow(day, sinceDay, untilDay string) bool {
 // axes that are questions about size by size, most expensive first.
 func sortBuckets(bs []Bucket, by string) {
 	switch by {
-	case ByModel, BySession:
+	case ByModel, ByAgent, BySession:
 		sort.SliceStable(bs, func(i, j int) bool {
 			if bs[i].CostUSD != bs[j].CostUSD {
 				return bs[i].CostUSD > bs[j].CostUSD
@@ -328,8 +473,25 @@ const (
 	sessionsW = 8
 	tokensW   = 11
 	costW     = 11
+	turnsW    = 7
+	activeW   = 8
+	perTurnW  = 8
 	gap       = 2
 )
+
+// numericWidth is the space the fixed right-hand columns take, each counted with
+// the gap that precedes it — what the one variable-width column has to give way
+// to on a narrow terminal.
+func numericWidth(by string, showTurns bool) int {
+	w := (gap + tokensW) + (gap + costW)
+	if by != BySession {
+		w += gap + sessionsW
+	}
+	if showTurns {
+		w += (gap + turnsW) + (gap + activeW) + (gap + perTurnW)
+	}
+	return w
+}
 
 // Render writes the rows, the total they sum to, and the notes that say what the
 // figure is and is not.
@@ -340,6 +502,10 @@ func Render(w io.Writer, r Report, opts Options) error {
 	head := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 	note := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 
+	// One condition covers both reasons the three columns are dropped: an axis a
+	// turn cannot be attributed to leaves the total at zero, and so does a corpus
+	// of logs too old to carry turn timings.
+	showTurns := r.Total.Turns > 0
 	keyW := len(axisHeading(r.By))
 	labelW := 0
 	for _, b := range r.Buckets {
@@ -355,7 +521,7 @@ func Render(w io.Writer, r Report, opts Options) error {
 		if labelW < len("Title") {
 			labelW = len("Title")
 		}
-		if max := labelCap(opts.Width, keyW); labelW > max {
+		if max := labelCap(opts.Width, keyW, numericWidth(r.By, showTurns)); labelW > max {
 			labelW = max
 		}
 	}
@@ -365,13 +531,13 @@ func Render(w io.Writer, r Report, opts Options) error {
 
 	var out strings.Builder
 	if len(r.Buckets) > 0 {
-		out.WriteString(head.Render(headerRow(r.By, keyW, labelW)) + "\n")
+		out.WriteString(head.Render(headerRow(r.By, keyW, labelW, showTurns)) + "\n")
 		for _, b := range r.Buckets {
-			out.WriteString(row(r.By, b, keyW, labelW) + "\n")
+			out.WriteString(row(r.By, b, keyW, labelW, showTurns) + "\n")
 		}
 		out.WriteString("\n")
 	}
-	out.WriteString(totalRow(r, keyW, labelW) + "\n")
+	out.WriteString(totalRow(r, keyW, labelW, showTurns) + "\n")
 	for _, line := range notes(r) {
 		out.WriteString(note.Render(line) + "\n")
 	}
@@ -390,6 +556,8 @@ func axisHeading(by string) string {
 		return "Month"
 	case ByModel:
 		return "Model"
+	case ByAgent:
+		return "Delegated to"
 	case BySession:
 		return "Session"
 	}
@@ -398,54 +566,98 @@ func axisHeading(by string) string {
 
 // labelCap bounds a session title so the numeric columns survive a narrow
 // terminal, the listing's rule applied to a table with one variable column.
-func labelCap(width, keyW int) int {
+func labelCap(width, keyW, numeric int) int {
 	if width <= 0 {
 		width = 100
 	}
-	cap := width - (keyW + tokensW + costW + 3*gap)
+	cap := width - (keyW + gap + numeric)
 	if cap < 10 {
 		cap = 10
 	}
 	return cap
 }
 
-func headerRow(by string, keyW, labelW int) string {
+func headerRow(by string, keyW, labelW int, showTurns bool) string {
+	cells := []string{padRight(axisHeading(by), keyW)}
 	if by == BySession {
-		return padRight("Session", keyW) + strings.Repeat(" ", gap) +
-			padRight("Title", labelW) + strings.Repeat(" ", gap) +
-			padLeft("Tokens", tokensW) + strings.Repeat(" ", gap) + padLeft("Cost", costW)
+		cells = append(cells, padRight("Title", labelW))
+	} else {
+		cells = append(cells, padLeft("Sessions", sessionsW))
 	}
-	return padRight(axisHeading(by), keyW) + strings.Repeat(" ", gap) +
-		padLeft("Sessions", sessionsW) + strings.Repeat(" ", gap) +
-		padLeft("Tokens", tokensW) + strings.Repeat(" ", gap) + padLeft("Cost", costW)
+	cells = append(cells, padLeft("Tokens", tokensW), padLeft("Cost", costW))
+	if showTurns {
+		cells = append(cells, padLeft("Turns", turnsW), padLeft("Active", activeW), padLeft("$/turn", perTurnW))
+	}
+	return joinCells(cells)
 }
 
-func row(by string, b Bucket, keyW, labelW int) string {
-	tokens := spend.Tokens(b.Usage.Input + b.Usage.Output + b.Usage.CacheRead + b.Usage.CacheCreate)
+func row(by string, b Bucket, keyW, labelW int, showTurns bool) string {
+	key := b.Key
 	if by == BySession {
-		return padRight(shortID(b.Key), keyW) + strings.Repeat(" ", gap) +
-			padRight(cut(displayTitle(b.Label), labelW), labelW) + strings.Repeat(" ", gap) +
-			padLeft(tokens, tokensW) + strings.Repeat(" ", gap) + padLeft(spend.USD(b.CostUSD), costW)
+		key = shortID(b.Key)
 	}
-	return padRight(b.Key, keyW) + strings.Repeat(" ", gap) +
-		padLeft(fmt.Sprintf("%d", b.Sessions), sessionsW) + strings.Repeat(" ", gap) +
-		padLeft(tokens, tokensW) + strings.Repeat(" ", gap) + padLeft(spend.USD(b.CostUSD), costW)
+	cells := []string{padRight(key, keyW)}
+	if by == BySession {
+		cells = append(cells, padRight(cut(displayTitle(b.Label), labelW), labelW))
+	} else {
+		cells = append(cells, padLeft(fmt.Sprintf("%d", b.Sessions), sessionsW))
+	}
+	cells = append(cells, figures(b)...)
+	if showTurns {
+		cells = append(cells, work(b)...)
+	}
+	return joinCells(cells)
 }
 
 // totalRow prints the figure every row sums to. On the session axis the session
 // count has no column of its own — the rows are sessions — so it is spelled into
 // the title column, where it says what the total covers.
-func totalRow(r Report, keyW, labelW int) string {
+func totalRow(r Report, keyW, labelW int, showTurns bool) string {
 	t := r.Total
-	tokens := spend.Tokens(t.Usage.Input + t.Usage.Output + t.Usage.CacheRead + t.Usage.CacheCreate)
+	cells := []string{padRight("Total", keyW)}
 	if r.By == BySession {
-		return padRight("Total", keyW) + strings.Repeat(" ", gap) +
-			padRight(cut(sessionCount(t.Sessions), labelW), labelW) + strings.Repeat(" ", gap) +
-			padLeft(tokens, tokensW) + strings.Repeat(" ", gap) + padLeft(spend.USD(t.CostUSD), costW)
+		cells = append(cells, padRight(cut(sessionCount(t.Sessions), labelW), labelW))
+	} else {
+		cells = append(cells, padLeft(fmt.Sprintf("%d", t.Sessions), sessionsW))
 	}
-	return padRight("Total", keyW) + strings.Repeat(" ", gap) +
-		padLeft(fmt.Sprintf("%d", t.Sessions), sessionsW) + strings.Repeat(" ", gap) +
-		padLeft(tokens, tokensW) + strings.Repeat(" ", gap) + padLeft(spend.USD(t.CostUSD), costW)
+	cells = append(cells, figures(t)...)
+	if showTurns {
+		cells = append(cells, work(t)...)
+	}
+	return joinCells(cells)
+}
+
+func joinCells(cells []string) string { return strings.Join(cells, strings.Repeat(" ", gap)) }
+
+// figures is the pair every row carries: what the bucket spent, in tokens and in
+// dollars.
+func figures(b Bucket) []string {
+	return []string{
+		padLeft(spend.Tokens(allTokens(b.Usage)), tokensW),
+		padLeft(spend.USD(b.CostUSD), costW),
+	}
+}
+
+// work is what those dollars bought. The per-turn cell is blank rather than zero
+// on a bucket with no turn of its own — a day can hold spend from a turn that
+// began the day before, and a dash of zero there would read as a free turn.
+func work(b Bucket) []string {
+	perTurn := ""
+	if b.Turns > 0 {
+		perTurn = spend.USD(b.CostUSD / float64(b.Turns))
+	}
+	return []string{
+		padLeft(fmt.Sprintf("%d", b.Turns), turnsW),
+		padLeft(spend.Duration(b.ActiveSeconds), activeW),
+		padLeft(perTurn, perTurnW),
+	}
+}
+
+// allTokens is every counter a bucket holds. CacheCreate1h is a share of
+// CacheCreate rather than a fifth counter, so adding it would count those tokens
+// twice.
+func allTokens(u model.Usage) int {
+	return u.Input + u.Output + u.CacheRead + u.CacheCreate
 }
 
 // notes are what a reader needs in order not to misread the figure: that it is
@@ -453,17 +665,44 @@ func totalRow(r Report, keyW, labelW int) string {
 // the window it can be compared on, and which models are in the tokens but in
 // none of the dollars.
 func notes(r Report) []string {
-	out := []string{fmt.Sprintf(
-		"computed from the transcript at %s list prices — an estimate, not a bill", r.PricesVerified)}
+	var out []string
+	if r.Selection != nil {
+		out = append(out, r.Selection.line())
+	}
+	out = append(out, fmt.Sprintf(
+		"computed from the transcript at %s list prices — an estimate, not a bill", r.PricesVerified))
+	if line := workLine(r.Total); line != "" {
+		out = append(out, line)
+	}
+	if r.Spread != nil {
+		out = append(out, fmt.Sprintf("half of those %s cost under %s a turn; the top tenth above %s",
+			sessionCount(r.Spread.Sessions), spend.USD(r.Spread.MedianPerTurn), spend.USD(r.Spread.P90PerTurn)))
+	}
 	if r.Recorded != nil {
 		out = append(out, fmt.Sprintf("Claude Code recorded %s for the %s it kept a record for",
 			spend.USD(r.Recorded.CostUSD), sessionCount(r.Recorded.Sessions)))
 	}
 	for _, m := range r.UnpricedModels {
 		out = append(out, fmt.Sprintf("%s has no price here: its %s tokens over %s are in the tokens above and in no dollar figure",
-			m.Model, spend.Tokens(m.Usage.Input+m.Usage.Output+m.Usage.CacheRead+m.Usage.CacheCreate), sessionCount(m.Sessions)))
+			m.Model, spend.Tokens(allTokens(m.Usage)), sessionCount(m.Sessions)))
 	}
 	return out
+}
+
+// workLine says what the total's dollars bought, in the two units a person can
+// act on: a turn, and an hour actually spent in turns. The hourly half is
+// dropped when no turn carried a usable span, since dividing by zero time would
+// print a rate nothing was measured at.
+func workLine(t Bucket) string {
+	if t.Turns == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("%d turns at %s each", t.Turns, spend.USD(t.CostUSD/float64(t.Turns)))
+	if t.ActiveSeconds > 0 {
+		line += fmt.Sprintf(", over %s of active time at %s an hour",
+			spend.Duration(t.ActiveSeconds), spend.USD(t.CostUSD/(float64(t.ActiveSeconds)/3600)))
+	}
+	return line
 }
 
 // displayTitle flattens a title to one line, since a prompt-derived one carries
@@ -537,7 +776,9 @@ type Scope struct {
 	// date rather than the words "last thirty days" because a day is the finest
 	// bucket a response is attributed to, so a thirty-day bound counts thirty-one
 	// calendar days; naming the day keeps that out of a reader's head.
-	Since    string      `json:"since,omitempty"`
+	Since string `json:"since,omitempty"`
+	// Until is the last day the scope counts, set only when the caller named one.
+	Until    string      `json:"until,omitempty"`
 	Sessions int         `json:"sessions"`
 	Usage    model.Usage `json:"usage"`
 	CostUSD  float64     `json:"costUSD"`
@@ -560,31 +801,62 @@ type Overview struct {
 // fact from no spend. The notes come from the machine scope, the widest of the
 // three — a model with no price or a session carrying Claude Code's own record
 // is worth naming once, against the largest set that holds it.
-func BuildOverview(session *model.Summary, folder, machine []model.Summary, since time.Time) Overview {
-	wide := Build(machine, ByTotal, since, time.Time{})
+func BuildOverview(session *model.Summary, folder, machine []model.Summary, w Window) Overview {
+	// An explicit lower bound replaces the machine row's default rather than
+	// narrowing it further: a caller who named a window asked for that window on
+	// every row, and applying both would report a span nobody chose.
+	machineSince := w.Since
+	if machineSince.IsZero() {
+		machineSince = w.MachineSince
+	}
+	wide := Build(machine, ByTotal, machineSince, w.Until)
 	out := Overview{
 		Recorded:       wide.Recorded,
 		UnpricedModels: wide.UnpricedModels,
 		PricesVerified: price.VerifiedOn,
 	}
-	if session != nil {
-		one := Build([]model.Summary{*session}, ByTotal, time.Time{}, time.Time{}).Total
+	narrowSince, narrowUntil := dayString(w.Since), dayString(w.Until)
+	// A row is dropped when the window leaves it holding no session at all. The
+	// alternative is a row reading $0.00, which says the session was free where
+	// the truth is that it falls outside the span asked for — the same reason a
+	// directory with no project prints no row rather than a zero one.
+	if one := Build([]model.Summary{deref(session)}, ByTotal, w.Since, w.Until).Total; session != nil && one.Sessions > 0 {
 		out.Scopes = append(out.Scopes, Scope{
 			Scope: ScopeSession, Label: displayTitle(session.Title),
+			Since: narrowSince, Until: narrowUntil,
 			Sessions: one.Sessions, Usage: one.Usage, CostUSD: one.CostUSD,
 		})
 	}
-	if len(folder) > 0 {
-		all := Build(folder, ByTotal, time.Time{}, time.Time{}).Total
+	if all := Build(folder, ByTotal, w.Since, w.Until).Total; all.Sessions > 0 {
 		out.Scopes = append(out.Scopes, Scope{
-			Scope: ScopeFolder, Sessions: all.Sessions, Usage: all.Usage, CostUSD: all.CostUSD,
+			Scope: ScopeFolder, Since: narrowSince, Until: narrowUntil,
+			Sessions: all.Sessions, Usage: all.Usage, CostUSD: all.CostUSD,
 		})
 	}
 	out.Scopes = append(out.Scopes, Scope{
-		Scope: ScopeMachine, Since: dayString(since),
+		Scope: ScopeMachine, Since: dayString(machineSince), Until: narrowUntil,
 		Sessions: wide.Total.Sessions, Usage: wide.Total.Usage, CostUSD: wide.Total.CostUSD,
 	})
 	return out
+}
+
+// deref is the session a summary row prices, or an empty one when this directory
+// has no session to price — which Build reports as no session rather than as a
+// session that spent nothing.
+func deref(s *model.Summary) model.Summary {
+	if s == nil {
+		return model.Summary{}
+	}
+	return *s
+}
+
+// Window is the span a summary counts over. Since and Until bound every row and
+// are zero when the caller named neither; MachineSince stands in for the machine
+// row alone in that case, which is what makes the widest row a recent figure
+// rather than a lifetime one.
+type Window struct {
+	Since, Until time.Time
+	MachineSince time.Time
 }
 
 // scopeName heads a summary row, in the second person: the reader is asking what
@@ -603,16 +875,10 @@ func scopeName(scope string) string {
 // scopeWindow describes what a row counted, for the two rows whose key does not
 // say: a folder's whole history, and the machine's window named by its first day.
 func scopeWindow(s Scope) string {
-	switch s.Scope {
-	case ScopeSession:
+	if s.Scope == ScopeSession {
 		return s.Label
-	case ScopeFolder:
-		return fmt.Sprintf("%s, all time", sessionCount(s.Sessions))
 	}
-	if s.Since == "" {
-		return fmt.Sprintf("%s, all time", sessionCount(s.Sessions))
-	}
-	return fmt.Sprintf("%s since %s", sessionCount(s.Sessions), s.Since)
+	return sessionCount(s.Sessions) + span(s.Since, s.Until)
 }
 
 func sessionCount(n int) string {
@@ -646,7 +912,7 @@ func RenderOverview(w io.Writer, o Overview, opts Options) error {
 			windowW = n
 		}
 	}
-	if max := labelCap(opts.Width, nameW); windowW > max {
+	if max := labelCap(opts.Width, nameW, numericWidth(BySession, false)); windowW > max {
 		windowW = max
 	}
 	var out strings.Builder

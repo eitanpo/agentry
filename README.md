@@ -95,6 +95,7 @@ agentry cost --by day                     # one row per day
 agentry cost --by week                    # one row per week, labelled by its Monday
 agentry cost --by month                   # one row per calendar month
 agentry cost --by model                   # what each model cost you
+agentry cost --by agent                   # what each skill and subagent cost you
 agentry cost --by session                 # one row per session, priciest first
 agentry cost --since 30d                  # the last 30 days
 agentry cost --since today --by session   # today's sessions, priciest first
@@ -115,8 +116,11 @@ This machine  301 sessions since 2026-08-12         8.1B     $6049.13
 
 Each row names its own window. "This session" is the newest session here that was not a headless
 run, the same one `agentry view` shows; the other two count every session of every kind, because a
-hook costs real money. Give any selector — `--by`, `--since`, `--until`, `--all-projects`,
-`--project`, `--from` — and you get the single-scope table instead.
+hook costs real money. `--by`, `--all-projects` and `--project` switch to the
+single-scope table instead — a different shape, or a scope of their own. `--since`, `--until` and
+`--from` narrow these same three rows rather than replacing them, so `agentry cost --since 7d` is
+still all three scopes, each counting a week. The single-scope table opens its footer with what it
+priced, since a line reading `Total` names no scope.
 
 The figure is **an estimate, not a bill**: it prices the responses the transcript records, at the
 same rates and by the same formula Claude Code uses. Over the 71 local sessions carrying both
@@ -131,6 +135,16 @@ days, and the rows always sum to the total — there is no `--limit` to make the
 single-scope table, headless sessions are left out by the same default the listing applies and
 `cost` says on stderr how many it did not price, since a total that quietly omitted them is just
 lower than your bill; the three-row summary counts them in its folder and machine figures.
+
+**A roll-up says what the dollars bought, not just what they were.** Every axis except `model` and
+`agent` carries `Turns`, `Active` and `$/turn` columns, and two lines under the total: what a turn
+and an active hour cost, then the median cost per turn across the sessions in the window and the
+level the top tenth sits above. Both are there because one average hides the shape — locally the
+mean turn costs $2.53 against a median of $0.71. Active time runs from each prompt to the last thing
+the assistant said in that turn, with any silence over five minutes counted as five minutes — the
+log cannot tell a long test run from a person who walked away, and uncapped one local turn measured
+168 hours. A session's wall-clock span is never divided by, and cost per line changed is not offered
+at all, because Claude Code records line counts for a minority of sessions.
 
 **A rendered session ends with what it produced.** If the session opened a pull request or published
 an artifact, an `Outputs` section after the last turn lists each one, clickable on a terminal — a
@@ -183,7 +197,7 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--effort LEVEL` | `list` | — | Only sessions run at that reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Case-insensitive and **exact**, unlike the substring filters — the levels nest, so `high` must not quietly include `xhigh`. Unknown levels return nothing rather than erroring, since the set grows. |
 | `--min-lines N` | `list` | — | Only sessions that changed at least N lines — additions plus removals, from Claude Code's own record. Inclusive. A session whose log carries no such record matches no bound, which is most sessions: the record exists only from Claude Code 2.1.241 and not on every session since. A negative value is a usage error. |
 | `--max-lines N` | `list` | — | Only sessions that changed at most N lines, on the same rule. `--max-lines 0` selects the sessions that recorded changing nothing — never the ones with no record. Combined with `--min-lines` it makes a range, and a floor above the ceiling is a usage error rather than an empty listing. |
-| `--by total\|day\|week\|month\|model\|session` | `cost` | `total` | Which bucket the dollars are added up in. Time buckets print oldest first; `model` and `session` print priciest first. Days begin at local midnight and weeks at Monday. There is no `--limit`, so the rows always account for the total line. |
+| `--by total\|day\|week\|month\|model\|agent\|session` | `cost` | `total` | Which bucket the dollars are added up in. Time buckets print oldest first; `model`, `agent` and `session` print priciest first. Days begin at local midnight and weeks at Monday. `agent` groups by what the tokens were delegated to — a subagent type, a forked skill with its leading slash, or `(main thread)`; a delegation that delegates again is charged to the call you made, so a skill's row is what invoking it cost in full. There is no `--limit`, so the rows always account for the total line. |
 | `--all-projects` | `list`, `cost` | — | Every project under the projects root (`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/` when set), not just this directory's. Mutually exclusive with `--project`. |
 | `--project PATH` | `list`, `cost` | — | PATH's sessions instead of this directory's, including every project nested under PATH. It moves the root, not the depth — a listing already covers what is nested under the current directory, which is how standing in a repo picks up its git worktrees. |
 | `--from cli\|app\|sdk\|all` | `list`, `view`, `cost` | `cli`+`app` | Where the session was run. `sdk` is anything non-interactive (`claude -p`, a hook, CI) and is **hidden by default**; `all` restores it. On `view` (no id) it picks which kind the most-recent lookup walks back to; it cannot be combined with a session id. |

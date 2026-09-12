@@ -127,19 +127,20 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		// The last value is the session's, matching the last-activity time the
 		// listing orders by. The full list is kept only when it diverges, so a
 		// single-entrypoint session serializes one field rather than two.
-		Entrypoint:   lastOf(eps),
-		Entrypoints:  manyOrNone(eps),
-		Model:        lastOf(ms),
-		Models:       manyOrNone(ms),
-		Effort:       lastOf(effs),
-		Efforts:      manyOrNone(effs),
-		Usage:        usage,
-		DailyUsage:   daily,
-		CostUSD:      cost,
-		LinesAdded:   added,
-		LinesRemoved: removed,
-		PRs:          sessionPRs(entries),
-		Artifacts:    sessionArtifacts(entries),
+		Entrypoint:    lastOf(eps),
+		Entrypoints:   manyOrNone(eps),
+		Model:         lastOf(ms),
+		Models:        manyOrNone(ms),
+		Effort:        lastOf(effs),
+		Efforts:       manyOrNone(effs),
+		Usage:         usage,
+		DailyUsage:    daily,
+		DailyActivity: dailyActivity(turns, firstStamp(entries)),
+		CostUSD:       cost,
+		LinesAdded:    added,
+		LinesRemoved:  removed,
+		PRs:           sessionPRs(entries),
+		Artifacts:     sessionArtifacts(entries),
 	}, nil
 }
 
@@ -217,9 +218,22 @@ func subagentDir(jsonlPath string) string {
 func sessionSpend(jsonlPath string, entries []entry) ([]model.DailyUsage, model.Usage) {
 	fallback := firstStamp(entries)
 	recs := mainTally(entries, fallback).records()
+	labels := agentLabels(entries)
 	paths, _ := filepath.Glob(filepath.Join(subagentDir(jsonlPath), "agent-*.jsonl"))
+	scans := make(map[string]sidecarScan, len(paths))
 	for _, p := range paths {
-		recs = append(recs, sidecarTally(p, fallback).records()...)
+		scans[strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))] = readSidecar(p, fallback)
+	}
+	spreadAgentLabels(labels, scans)
+	for key, scan := range scans {
+		label := labels[key]
+		if label == "" {
+			label = unattributedAgent
+		}
+		for i := range scan.records {
+			scan.records[i].agent = label
+		}
+		recs = append(recs, scan.records...)
 	}
 	daily := groupDaily(recs)
 	var total model.Usage
@@ -229,11 +243,153 @@ func sessionSpend(jsonlPath string, entries []entry) ([]model.DailyUsage, model.
 	return daily, total
 }
 
+// unattributedAgent labels a sidecar whose spawning call is not in the main log.
+// A subagent that delegates again writes its child's sidecar beside the session's
+// own, while the call that made it lives in the subagent's log — so the label is
+// recoverable only by reading every sidecar, which the cheap pass does not do.
+// Naming the tokens keeps the agent axis summing to the session total.
+const unattributedAgent = "(unattributed)"
+
+// agentLabels maps each subagent sidecar's file key ("agent-xxx") to the name of
+// the delegation that spawned it. Both spawning tools are read, since a forked
+// skill costs money under its own name exactly as a named agent does.
+func agentLabels(entries []entry) map[string]string {
+	ident := map[string]string{}
+	for _, e := range entries {
+		if e.typ != "assistant" {
+			continue
+		}
+		for _, b := range e.blocks {
+			if b.typ == "tool_use" && (b.name == "Agent" || b.name == "Skill") {
+				ident[b.id] = spawnLabel(b.name, toolIdentity(b.name, b.input))
+			}
+		}
+	}
+	out := map[string]string{}
+	for _, spawns := range []map[string]string{agentIDMap(entries), skillSidecarMap(entries)} {
+		for toolUseID, fileKey := range spawns {
+			if label := ident[toolUseID]; label != "" {
+				out[fileKey] = label
+			}
+		}
+	}
+	return out
+}
+
+// spreadAgentLabels carries each delegation's name down the chain it started, so
+// a subagent that delegates again is charged to the call the session itself made
+// rather than to a row naming something the session never invoked. What a reader
+// can act on is the delegation they chose; the depth below it is that choice's
+// cost, not a separate one.
+//
+// It runs to a fixed point because a chain can be deeper than two, and the scans
+// are a map with no ordering to rely on. A cycle cannot extend it: a label is
+// written once and only to a child that has none.
+func spreadAgentLabels(labels map[string]string, scans map[string]sidecarScan) {
+	for changed := true; changed; {
+		changed = false
+		for parent, scan := range scans {
+			label := labels[parent]
+			if label == "" {
+				continue
+			}
+			for _, child := range scan.children {
+				if labels[child] == "" {
+					labels[child] = label
+					changed = true
+				}
+			}
+		}
+	}
+}
+
+// spawnLabel names one delegation on the agent axis. A skill keeps the leading
+// slash it is invoked by, which is what tells a reader that a row is a skill and
+// not an agent type in a list that mixes both.
+func spawnLabel(tool, identity string) string {
+	if identity == "" {
+		return ""
+	}
+	if tool == "Skill" {
+		return "/" + identity
+	}
+	return identity
+}
+
+// dailyActivity counts each day's turns and the seconds they ran for, bucketed
+// by the day a turn started on. A turn spanning midnight is counted whole on the
+// day it began, since a turn is the unit being counted and splitting one would
+// invent a fraction the log does not record.
+func dailyActivity(turns []rawTurn, fallback time.Time) []model.DailyActivity {
+	idx := map[string]int{}
+	var out []model.DailyActivity
+	for _, tn := range turns {
+		day := dayOf(tn.start, fallback)
+		i, ok := idx[day]
+		if !ok {
+			i = len(out)
+			idx[day] = i
+			out = append(out, model.DailyActivity{Day: day})
+		}
+		out[i].Turns++
+		out[i].ActiveSeconds += activeSeconds(tn)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Day < out[j].Day })
+	return out
+}
+
+// maxIdleGap bounds how much of one silence between entries counts as work. The
+// log cannot tell a ten-minute test run from a person who walked away mid-turn:
+// both are one gap between two timestamps. Left unbounded the measure collapses —
+// one local turn spans 168 hours, and days averaging over an hour a turn carry
+// 73% of a month's supposed activity. Capping each gap bounds the error in the
+// direction that understates, which is the safe direction for a figure dollars
+// are divided by.
+const maxIdleGap = 5 * time.Minute
+
+// activeSeconds is how long one turn worked: from its prompt to the last thing
+// the assistant said in it, with every silence longer than maxIdleGap counted as
+// maxIdleGap.
+//
+// It stops at the last assistant entry rather than at rawTurn.end, which is the
+// last entry of any type. A session resumed weeks later writes bookkeeping
+// entries — a cost record, a file-history snapshot — that the splitter files
+// under the turn still open, and measuring to those reads a day of absence as a
+// day of work.
+func activeSeconds(tn rawTurn) int {
+	last := -1
+	for i, e := range tn.entries {
+		if e.typ == "assistant" && !e.t.IsZero() {
+			last = i
+		}
+	}
+	if last < 0 || tn.start.IsZero() {
+		return 0
+	}
+	total := time.Duration(0)
+	prev := tn.start
+	for _, e := range tn.entries[:last+1] {
+		if e.t.IsZero() {
+			continue
+		}
+		if gap := e.t.Sub(prev); gap > 0 {
+			if gap > maxIdleGap {
+				gap = maxIdleGap
+			}
+			total += gap
+		}
+		prev = e.t
+	}
+	return int(total.Seconds())
+}
+
 // usageOnly is the slice of an entry a token tally needs. Sidecars are read
 // through it rather than through loadEntries, which would also decode every
 // content block on the way: over 250 local sessions a cross-project listing
 // measured 2.40s reading no sidecars, 2.96s through this, and 3.96s through
-// loadEntries. An unreadable file or a malformed line is skipped rather than
+// loadEntries. Reading each sidecar's own delegation links in the same pass cost
+// a further 17% of the whole sweep — 1.05s to 1.23s over 647 sessions — which is
+// what buys the agent axis its chains. An unreadable file or a malformed line is skipped rather than
 // raised — it undercounts the tally, where an error would drop the whole
 // session from the listing over a subagent's log.
 type usageOnly struct {
@@ -247,32 +403,81 @@ type usageOnly struct {
 	// delegated reply once per content block.
 	RequestID string `json:"requestId"`
 	UUID      string `json:"uuid"`
-	Message   struct {
+	// ToolUseResult is raw because a result is an object on a delegation and a
+	// plain string on plenty of other tools; decoding it as an object would fail
+	// the whole line and lose the usage beside it.
+	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	Message       struct {
 		Model string   `json:"model"`
 		Usage rawUsage `json:"usage"`
 	} `json:"message"`
 }
 
-func sidecarTally(path string, fallback time.Time) usageTally {
-	var t usageTally
+// sidecarScan is one subagent log read once: the responses it holds, and the
+// keys of the logs it delegated to in turn.
+type sidecarScan struct {
+	records  []usageRecord
+	children []string
+}
+
+// readSidecar tallies one subagent log and notes every log it spawned in turn,
+// in a single pass. The two are read together because a second pass would double
+// the file reads this function exists to keep cheap, and because a delegation
+// chain cannot be labelled until every link in it has been seen.
+//
+// The spawning call is left unnamed here: a nested delegation is attributed to
+// the delegation the session itself made, so what this needs from a child is its
+// key, never its own type.
+func readSidecar(path string, fallback time.Time) sidecarScan {
+	var out sidecarScan
 	f, err := os.Open(path)
 	if err != nil {
-		return t
+		return out
 	}
 	defer f.Close()
+	var t usageTally
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // sidecars hold large tool results too
 	for sc.Scan() {
 		var re usageOnly
-		if json.Unmarshal(sc.Bytes(), &re) != nil || re.Type != "assistant" {
+		if json.Unmarshal(sc.Bytes(), &re) != nil {
 			continue
 		}
-		ts, _ := time.Parse(time.RFC3339, re.Timestamp)
-		t.add(usageKey(re.RequestID, re.UUID), usageRecord{
-			day: dayOf(ts, fallback), model: re.Message.Model, usage: re.Message.Usage.tally(),
-		})
+		if re.Type == "assistant" {
+			ts, _ := time.Parse(time.RFC3339, re.Timestamp)
+			t.add(usageKey(re.RequestID, re.UUID), usageRecord{
+				day: dayOf(ts, fallback), model: re.Message.Model,
+				usage: re.Message.Usage.tally(),
+			})
+		}
+		if id := sidecarAgentID(re.ToolUseResult); id != "" {
+			out.children = append(out.children, "agent-"+id)
+		}
 	}
-	return t
+	out.records = t.records()
+	return out
+}
+
+// sidecarAgentID reads the spawned log's id out of a toolUseResult, which is an
+// object on a delegation and something else entirely on every other tool.
+//
+// Inside a sidecar the field needs no further guard. A subagent log names itself
+// with a top-level agentId on every entry, never one nested here, so an agentId
+// in this position is always a log this one spawned — including a skill forked
+// into the background, whose result carries the link and no tool_result block to
+// match it against.
+
+func sidecarAgentID(raw json.RawMessage) string {
+	if len(raw) == 0 || raw[0] != '{' {
+		return ""
+	}
+	var r struct {
+		AgentID string `json:"agentId"`
+	}
+	if json.Unmarshal(raw, &r) != nil {
+		return ""
+	}
+	return r.AgentID
 }
 
 // entrypoints returns every distinct entrypoint the session carries, in
@@ -933,6 +1138,10 @@ type usageTally struct {
 type usageRecord struct {
 	day   string
 	model string
+	// agent is what the response was delegated to, empty on the main thread —
+	// the label the agent axis groups by, carried here so one deduplication rule
+	// serves that split as well as the day-and-model one.
+	agent string
 	usage model.Usage
 }
 
@@ -1056,12 +1265,12 @@ func groupDaily(recs []usageRecord) []model.DailyUsage {
 		if r.usage == (model.Usage{}) {
 			continue
 		}
-		key := r.day + "\x00" + r.model
+		key := r.day + "\x00" + r.model + "\x00" + r.agent
 		i, ok := idx[key]
 		if !ok {
 			i = len(out)
 			idx[key] = i
-			out = append(out, model.DailyUsage{Day: r.day, Model: r.model})
+			out = append(out, model.DailyUsage{Day: r.day, Model: r.model, Agent: r.agent})
 		}
 		out[i].Usage.Add(r.usage)
 	}
@@ -1069,7 +1278,10 @@ func groupDaily(recs []usageRecord) []model.DailyUsage {
 		if out[i].Day != out[j].Day {
 			return out[i].Day < out[j].Day
 		}
-		return out[i].Model < out[j].Model
+		if out[i].Model != out[j].Model {
+			return out[i].Model < out[j].Model
+		}
+		return out[i].Agent < out[j].Agent
 	})
 	return out
 }

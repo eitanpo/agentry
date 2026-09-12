@@ -1123,8 +1123,10 @@ func TestDailyUsageSplitsByDayAndModel(t *testing.T) {
 			Input: 10, Output: 50, CacheRead: 100, CacheCreate: 200, CacheCreate1h: 200}},
 		{Day: first, Model: "claude-sonnet-5", Usage: model.Usage{Input: 20, Output: 30}},
 		// The sidecar's own model, not the session's: a subagent is priced by what
-		// answered inside it.
-		{Day: second, Model: "claude-haiku-4-5-20251001", Usage: model.Usage{
+		// answered inside it. The fixture's main log holds no call that spawned this
+		// sidecar, which is the shape a nested delegation leaves behind, so the
+		// tokens are named as unattributed rather than folded into the main thread's.
+		{Day: second, Model: "claude-haiku-4-5-20251001", Agent: unattributedAgent, Usage: model.Usage{
 			Input: 100, Output: 200, CacheRead: 50, CacheCreate: 30}},
 		{Day: second, Model: "claude-opus-5", Usage: model.Usage{
 			Input: 1, Output: 2, CacheRead: 3, CacheCreate: 4}},
@@ -1192,5 +1194,85 @@ func TestSummarizeAllKeepsOrderAndSkipsBadFiles(t *testing.T) {
 		if one.Usage != got[i].Usage {
 			t.Errorf("%s: parallel Usage = %+v, serial = %+v", p, got[i].Usage, one.Usage)
 		}
+	}
+}
+
+// TestDelegatedTokensCarryTheirCallersName pins the agent axis's whole input:
+// a subagent labelled by its type, a forked skill labelled by its invoked name
+// with the slash kept, and the session's own tokens left unlabelled so the axis
+// sums to the session total rather than to its delegated part.
+func TestDelegatedTokensCarryTheirCallersName(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "agent-attribution.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, d := range s.DailyUsage {
+		got[d.Agent] += d.Usage.Output
+	}
+	// Explore holds 1500: its own 1000 plus the 500 its own delegation spent.
+	want := map[string]int{"": 350, "Explore": 1500, "/lookup": 2000}
+	if len(got) != len(want) {
+		t.Fatalf("agents = %v, want %v", got, want)
+	}
+	for agent, tokens := range want {
+		if got[agent] != tokens {
+			t.Errorf("agent %q = %d output tokens, want %d", agent, got[agent], tokens)
+		}
+	}
+	// Every delegated token is also in the session's own total, so the axis is a
+	// breakdown of the bill rather than an addition to it.
+	if s.Usage.Output != 3850 {
+		t.Errorf("session output = %d, want 3850", s.Usage.Output)
+	}
+}
+
+// TestNestedDelegationChargesTheCallTheSessionMade pins where a chain's cost
+// lands: on the delegation the session itself chose, not on a row naming
+// something it never invoked and could not decide to stop running.
+func TestNestedDelegationChargesTheCallTheSessionMade(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "agent-attribution.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's Explore run delegates again, and that grandchild's log names
+	// no caller of its own in the session's main log.
+	for _, d := range s.DailyUsage {
+		if d.Agent == unattributedAgent {
+			t.Errorf("a traceable delegation was left unattributed: %+v", d)
+		}
+		if d.Agent == "Plan" {
+			t.Errorf("nested delegation charged to %q, want the session's own call", d.Agent)
+		}
+	}
+}
+
+// TestActiveTimeIgnoresTrailingBookkeeping pins the measurement a resumed
+// session breaks: the fixture's last entry is a file-history snapshot written a
+// day after the work, and measuring the turn to it would report 24 hours of
+// activity for 70 seconds of it.
+func TestActiveTimeIgnoresTrailingBookkeeping(t *testing.T) {
+	s, err := Summarize(filepath.Join("testdata", "agent-attribution.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.DailyActivity) != 1 {
+		t.Fatalf("DailyActivity = %+v, want one day", s.DailyActivity)
+	}
+	a := s.DailyActivity[0]
+	if a.Turns != 1 {
+		t.Errorf("turns = %d, want 1", a.Turns)
+	}
+	if a.ActiveSeconds != 70 {
+		t.Errorf("activeSeconds = %d, want 70 (10:00:00 to the last assistant entry at 10:01:10)", a.ActiveSeconds)
+	}
+	// The per-day split must reproduce the count the listing prints, or a roll-up
+	// dividing by it would disagree with the session it came from.
+	total := 0
+	for _, d := range s.DailyActivity {
+		total += d.Turns
+	}
+	if total != s.NumTurns {
+		t.Errorf("DailyActivity turns = %d, NumTurns = %d", total, s.NumTurns)
 	}
 }

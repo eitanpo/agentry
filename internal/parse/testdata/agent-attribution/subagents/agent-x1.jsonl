@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-05-27T10:00:10Z","requestId":"req_a1","uuid":"a1","agentId":"x1","message":{"role":"assistant","model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000},"content":[{"type":"tool_use","id":"t3","name":"Agent","input":{"description":"go deeper","subagent_type":"Plan"}}]}}
+{"type":"user","timestamp":"2026-05-27T10:00:20Z","agentId":"x1","toolUseResult":{"agentId":"x3"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","is_error":false,"content":"planned"}]}}

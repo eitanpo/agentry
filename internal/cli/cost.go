@@ -29,12 +29,14 @@ func newCostCmd(noColor *bool) *cobra.Command {
 		Long: "agentry cost — price the sessions from their tokens\n\n" +
 			"With no flags it answers three scopes at once: the session this directory\n" +
 			"was last working in, the directory's whole history, and everything this\n" +
-			"machine ran in the last 30 days. Any selector below switches it to a\n" +
+			"machine ran in the last 30 days. --since, --until and --from narrow those\n" +
+			"same three rows; --by, --all-projects and --project switch to a\n" +
 			"single-scope roll-up on one axis.\n\n" +
 			"The figure is computed from the transcript at list prices — an estimate,\n" +
 			"not a bill.",
 		Args: cobra.NoArgs,
 		Example: "  agentry cost                       this session, this folder, this machine\n" +
+			"  agentry cost --since 7d            the same three scopes, over a week\n" +
 			"  agentry cost --by day              one row per day, this directory\n" +
 			"  agentry cost --since 30d --by week\n" +
 			"  agentry cost --all-projects --by model\n" +
@@ -72,16 +74,23 @@ func parseBy(cmd *cobra.Command) (string, error) {
 	return "", usageErr("--by: unknown axis %q (want: %s)", by, strings.Join(cost.Axes, ", "))
 }
 
-// costSelectors are the flags that choose what is counted. Any of them switches
-// the verb from its three-scope summary to the single-scope roll-up; --format and
-// --no-color are deliberately absent, since neither chooses what is counted, only
-// how it is written.
-var costSelectors = []string{"by", "since", "until", "all-projects", "project", "from"}
+// costShapers are the flags that replace the three-scope summary rather than
+// narrow it. --by asks for a different shape entirely, and the two scope flags
+// contradict the summary's own rows, which are scopes.
+//
+// The window and entrypoint flags are deliberately absent. They filter the same
+// question the summary answers, so they move its rows instead of collapsing
+// them: a caller asking for the last week wants the three scopes over a week,
+// not one number whose line does not even say which scope it covers. --format
+// and --no-color are absent for a different reason — neither chooses what is
+// counted, only how it is written.
+var costShapers = []string{"by", "all-projects", "project"}
 
 // summaryMode reports whether the verb should answer with the three-scope
-// summary — the answer to being asked nothing.
+// summary — the answer to being asked nothing, and to being asked only to narrow
+// it.
 func summaryMode(cmd *cobra.Command) bool {
-	for _, f := range costSelectors {
+	for _, f := range costShapers {
 		if cmd.Flags().Changed(f) {
 			return false
 		}
@@ -115,7 +124,10 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 		return err
 	}
 	if summaryMode(cmd) {
-		return runCostSummary(cmd, noColor, format)
+		return runCostSummary(cmd, noColor, format, from, cost.Window{
+			Since: since, Until: until,
+			MachineSince: time.Now().AddDate(0, 0, -machineWindow),
+		})
 	}
 
 	paths, err := sessionPaths(cmd)
@@ -165,6 +177,9 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 			len(sums)-len(visible))
 	}
 	report := cost.Build(visible, by, since, until)
+	report.Selection = &cost.Selection{
+		Scope: scopeName(cmd), Since: dayOf(since), Until: dayOf(until),
+	}
 
 	if format == "json" {
 		if err := cost.RenderJSON(os.Stdout, report); err != nil {
@@ -209,8 +224,7 @@ func parseWindow(cmd *cobra.Command) (since, until time.Time, err error) {
 // scopes nest — the machine's sessions contain the directory's, which contain the
 // one. Re-reading the narrow scopes would double the sweep that is already the
 // whole cost of the answer.
-func runCostSummary(cmd *cobra.Command, noColor *bool, format string) error {
-	since := time.Now().AddDate(0, 0, -machineWindow)
+func runCostSummary(cmd *cobra.Command, noColor *bool, format, from string, w cost.Window) error {
 	paths, err := locate.SessionsAll()
 	if err != nil {
 		// The machine holds no session at all. Under --format json the contract is
@@ -218,11 +232,18 @@ func runCostSummary(cmd *cobra.Command, noColor *bool, format string) error {
 		// — built rather than zero-valued, so it carries the price table's date like
 		// every other summary — and the reason goes to stderr with the exit code.
 		if format == "json" {
-			_ = cost.RenderOverviewJSON(os.Stdout, cost.BuildOverview(nil, nil, nil, since))
+			_ = cost.RenderOverviewJSON(os.Stdout, cost.BuildOverview(nil, nil, nil, w))
 		}
 		return noInputErr(err)
 	}
 	machine := parse.SummarizeAll(paths)
+	// Only an explicit --from filters the two wide rows. Their default is every
+	// session of every kind, headless included, because they are meant to be the
+	// bill and a hook costs real money — so the listing's default exclusion must
+	// not reach them uninvited.
+	if from != "" {
+		machine = list.FilterByFrom(machine, from)
+	}
 
 	var folder []model.Summary
 	var session *model.Summary
@@ -248,14 +269,20 @@ func runCostSummary(cmd *cobra.Command, noColor *bool, format string) error {
 			if !ok {
 				continue // it would not parse, and the sweep already skipped it
 			}
+			if from != "" && !entrypoint.Matches(from, s.Entrypoint) {
+				continue
+			}
 			folder = append(folder, *s)
-			if session == nil && entrypoint.Matches("", s.Entrypoint) {
+			// The session row skips headless runs under the default, the same
+			// resolution `agentry view` makes; a named --from picks the newest of
+			// the kind that was asked for instead.
+			if session == nil && entrypoint.Matches(from, s.Entrypoint) {
 				session = s
 			}
 		}
 	}
 
-	o := cost.BuildOverview(session, folder, machine, since)
+	o := cost.BuildOverview(session, folder, machine, w)
 	if format == "json" {
 		if err := cost.RenderOverviewJSON(os.Stdout, o); err != nil {
 			return &exitError{code: 1, err: err}
@@ -267,6 +294,28 @@ func runCostSummary(cmd *cobra.Command, noColor *bool, format string) error {
 		return &exitError{code: 1, err: err}
 	}
 	return nil
+}
+
+// scopeName says which sessions a roll-up counted, in the words the caller chose
+// them with. It is what the total line would otherwise leave unsaid.
+func scopeName(cmd *cobra.Command) string {
+	if all, _ := cmd.Flags().GetBool("all-projects"); all {
+		return "every project"
+	}
+	if p, _ := cmd.Flags().GetString("project"); p != "" {
+		return p
+	}
+	return "this folder"
+}
+
+// dayOf is the local calendar day a bound falls on, empty for an unset bound —
+// the same reading the roll-up gives its window, so the note and the rows cannot
+// describe one bound two ways.
+func dayOf(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Local().Format("2006-01-02")
 }
 
 // sessionID is the id a session log's path carries: its file stem, which is how

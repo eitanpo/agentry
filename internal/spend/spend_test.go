@@ -79,3 +79,27 @@ func TestLineShowsLinesChanged(t *testing.T) {
 		}
 	})
 }
+
+// TestDuration pins the shape the cost roll-up's elapsed column and the
+// renderer's turn timings share, including the two spans that have no minutes
+// to show: the format is the reason they share a function at all.
+func TestDuration(t *testing.T) {
+	tests := []struct {
+		name    string
+		seconds int
+		want    string
+	}{
+		{"under a minute", 30, "0m"},
+		{"minutes", 5 * 60, "5m"},
+		{"an hour and a bit", 3660, "1h01m"},
+		{"padded minutes", 4*3600 + 4*60, "4h04m"},
+		{"negative", -5, "0m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Duration(tt.seconds); got != tt.want {
+				t.Errorf("Duration(%d) = %q, want %q", tt.seconds, got, tt.want)
+			}
+		})
+	}
+}

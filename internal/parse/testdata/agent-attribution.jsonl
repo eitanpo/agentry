@@ -1,0 +1,7 @@
+{"type":"user","timestamp":"2026-05-27T10:00:00Z","message":{"role":"user","content":"delegate twice"}}
+{"type":"assistant","timestamp":"2026-05-27T10:00:05Z","requestId":"req_1","uuid":"u1","message":{"role":"assistant","model":"claude-opus-5","usage":{"output_tokens":100},"content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"description":"go look","subagent_type":"Explore"}}]}}
+{"type":"user","timestamp":"2026-05-27T10:00:30Z","toolUseResult":{"agentId":"x1"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":false,"content":"found it"}]}}
+{"type":"assistant","timestamp":"2026-05-27T10:00:40Z","requestId":"req_2","uuid":"u2","message":{"role":"assistant","model":"claude-opus-5","usage":{"output_tokens":200},"content":[{"type":"tool_use","id":"t2","name":"Skill","input":{"skill":"lookup"}}]}}
+{"type":"user","timestamp":"2026-05-27T10:00:50Z","toolUseResult":{"agentId":"x2"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","is_error":false,"content":"looked up"}]}}
+{"type":"assistant","timestamp":"2026-05-27T10:01:10Z","requestId":"req_3","uuid":"u3","message":{"role":"assistant","model":"claude-opus-5","usage":{"output_tokens":50},"content":[{"type":"text","text":"done"}]}}
+{"type":"file-history-snapshot","timestamp":"2026-05-28T10:00:00Z","snapshot":{"trackedFileBackups":{}}}

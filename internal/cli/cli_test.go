@@ -1332,6 +1332,26 @@ func TestCostVerbPricesTheProject(t *testing.T) {
 			t.Errorf("cost --by day is missing %q:\n%s", want, byDay)
 		}
 	}
+	// A roll-up's figure means nothing without the sessions it covered, and the
+	// line beneath the rows reads "Total", which names no scope.
+	if !strings.Contains(byDay, "priced this folder") {
+		t.Errorf("cost --by day did not say what it priced:\n%s", byDay)
+	}
+
+	// A window narrows the same question the summary answers, so it moves the
+	// three rows rather than collapsing them into one unlabelled figure. The bound
+	// is a date old enough to keep the fixture's sessions, since a row the window
+	// empties is dropped rather than printed as zero.
+	windowed := captureStdout(t, func() { exec("cost", "--since", "2020-01-01", "--no-color") })
+	for _, want := range []string{"This session", "This folder", "This machine"} {
+		if !strings.Contains(windowed, want) {
+			t.Errorf("cost --since dropped the %q row:\n%s", want, windowed)
+		}
+	}
+	// The folder row reads "all time" only while nothing bounds it.
+	if strings.Contains(windowed, "all time") {
+		t.Errorf("cost --since left a row unbounded:\n%s", windowed)
+	}
 }
 
 // TestCostJSONAlwaysEmitsObject is the cost verb's half of the output contract
@@ -1415,5 +1435,22 @@ func TestCostReportsExcludedHeadlessSessions(t *testing.T) {
 	}
 	if _, _, stderr = exec("cost", "--no-color"); strings.Contains(stderr, "headless") {
 		t.Errorf("the summary warns about sessions it counts: %q", stderr)
+	}
+}
+
+// TestCostWindowDropsRowsItEmpties pins the other half of narrowing the summary:
+// a scope the window leaves holding nothing is absent, because a row reading
+// $0.00 says the session was free where the truth is that it falls outside the
+// span asked for.
+func TestCostWindowDropsRowsItEmpties(t *testing.T) {
+	fixtureProject(t)
+	out := captureStdout(t, func() { exec("cost", "--until", "2000-01-01", "--no-color") })
+	for _, gone := range []string{"This session", "This folder"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("a window holding no session still printed the %q row:\n%s", gone, out)
+		}
+	}
+	if !strings.Contains(out, "This machine") {
+		t.Errorf("the machine row is the anchor and must always print:\n%s", out)
 	}
 }

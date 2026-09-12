@@ -46,6 +46,25 @@ func deref(n *int) int {
 // printing every digit would claim an accuracy the number does not have.
 func USD(v float64) string { return fmt.Sprintf("$%.2f", v) }
 
+// Duration renders a span of seconds the way every other elapsed figure agentry
+// prints reads — "5h04m" once it passes an hour, "23m" below that. Seconds are
+// never shown: the spans this phrases are a session's or a bucket's, where a
+// second is noise.
+//
+// Negative and zero spans render as "0m" rather than as nothing, since a column
+// of times with a blank cell reads as missing data where the span is genuinely
+// too short to show.
+func Duration(seconds int) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	h, m := seconds/3600, (seconds%3600)/60
+	if h > 0 {
+		return fmt.Sprintf("%dh%02dm", h, m)
+	}
+	return fmt.Sprintf("%dm", m)
+}
+
 // Tokens abbreviates a token count to fit a column: exact below a thousand, then
 // thousands, millions and billions, each to one decimal place for its first
 // order of magnitude and to none above it.

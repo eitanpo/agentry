@@ -267,7 +267,7 @@ func TestRenderJSONEmitsAnObjectWhenNothingMatched(t *testing.T) {
 // carried on that row alone.
 func TestBuildOverviewPricesThreeScopes(t *testing.T) {
 	sums := fixture()
-	o := BuildOverview(&sums[0], sums, sums, day(tuesday))
+	o := BuildOverview(&sums[0], sums, sums, Window{MachineSince: day(tuesday)})
 	if len(o.Scopes) != 3 {
 		t.Fatalf("Scopes = %+v, want three", o.Scopes)
 	}
@@ -298,7 +298,7 @@ func TestBuildOverviewPricesThreeScopes(t *testing.T) {
 // directory Claude Code has never run in: two rows absent rather than two rows
 // of zero, since no session is a different fact from no spend.
 func TestBuildOverviewWithoutAProjectPricesTheMachineAlone(t *testing.T) {
-	o := BuildOverview(nil, nil, fixture(), time.Time{})
+	o := BuildOverview(nil, nil, fixture(), Window{})
 	if len(o.Scopes) != 1 || o.Scopes[0].Scope != ScopeMachine {
 		t.Fatalf("Scopes = %+v, want the machine row alone", o.Scopes)
 	}
@@ -367,7 +367,7 @@ func TestMachineTotalAgreesWithDirectTotal(t *testing.T) {
 	since := day("2026-08-12")
 
 	direct := Build(sums, ByTotal, since, time.Time{}).Total
-	o := BuildOverview(nil, nil, sums, since)
+	o := BuildOverview(nil, nil, sums, Window{MachineSince: since})
 	if len(o.Scopes) != 1 || o.Scopes[0].Scope != ScopeMachine {
 		t.Fatalf("Scopes = %+v, want the machine row alone", o.Scopes)
 	}
@@ -399,7 +399,7 @@ func TestMachineTotalAgreesWithDirectTotal(t *testing.T) {
 func TestRenderOverviewNamesEachWindow(t *testing.T) {
 	sums := fixture()
 	var buf bytes.Buffer
-	if err := RenderOverview(&buf, BuildOverview(&sums[0], sums, sums, day(tuesday)), Options{Width: 100}); err != nil {
+	if err := RenderOverview(&buf, BuildOverview(&sums[0], sums, sums, Window{MachineSince: day(tuesday)}), Options{Width: 100}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -415,5 +415,183 @@ func TestRenderOverviewNamesEachWindow(t *testing.T) {
 	}
 	if strings.Contains(got, "Sessions") {
 		t.Errorf("summary printed the roll-up's header row:\n%s", got)
+	}
+}
+
+// agentOut is a delegated response: the same output-only tally out builds,
+// labelled with what it was delegated to.
+func agentOut(day, modelID, agent string, tokens int) model.DailyUsage {
+	d := out(day, modelID, tokens)
+	d.Agent = agent
+	return d
+}
+
+// worked is one day's turns and the minutes they ran for.
+func worked(day string, turns, minutes int) model.DailyActivity {
+	return model.DailyActivity{Day: day, Turns: turns, ActiveSeconds: minutes * 60}
+}
+
+// delegating is one session that spent on its own thread, on a named subagent
+// and on a forked skill, priced so the three rows sort in an order none of the
+// other fields would produce by accident.
+func delegating() []model.Summary {
+	return []model.Summary{{
+		ID: "cccccccc-3333", Title: "Delegating session",
+		Start: day(monday), End: day(monday),
+		DailyUsage: []model.DailyUsage{
+			out(monday, "claude-opus-5", million),                     // $25 on the main thread
+			agentOut(monday, "claude-sonnet-5", "Explore", million),   // $10
+			agentOut(monday, "claude-sonnet-5", "/lookup", 2*million), // $20
+		},
+		DailyActivity: []model.DailyActivity{worked(monday, 4, 40)},
+	}}
+}
+
+// TestBuildByAgentSplitsTheBillWithoutGrowingIt pins the axis and the rule that
+// makes it readable as a share: the main thread is a row, so the rows sum to the
+// same total every other axis reports over the same sessions.
+func TestBuildByAgentSplitsTheBillWithoutGrowingIt(t *testing.T) {
+	r := Build(delegating(), ByAgent, time.Time{}, time.Time{})
+	want := []struct {
+		key  string
+		cost float64
+	}{{mainThreadAgent, 25}, {"/lookup", 20}, {"Explore", 10}}
+	if len(r.Buckets) != len(want) {
+		t.Fatalf("buckets = %+v, want %d rows", r.Buckets, len(want))
+	}
+	for i, w := range want {
+		if r.Buckets[i].Key != w.key {
+			t.Errorf("row %d key = %q, want %q (rows sort by cost, priciest first)", i, r.Buckets[i].Key, w.key)
+		}
+		if !nearly(r.Buckets[i].CostUSD, w.cost) {
+			t.Errorf("row %q = $%.2f, want $%.2f", w.key, r.Buckets[i].CostUSD, w.cost)
+		}
+	}
+	if total := Build(delegating(), ByTotal, time.Time{}, time.Time{}).Total.CostUSD; !nearly(r.Total.CostUSD, total) {
+		t.Errorf("agent total $%.2f, plain total $%.2f — the axis must split the bill, not add to it",
+			r.Total.CostUSD, total)
+	}
+}
+
+// TestTurnsLandInTheBucketTheyStartedIn pins the reason turns are carried per
+// day rather than per session: a day row has to divide that day's dollars by
+// that day's turns, not by every turn of every session that touched it.
+func TestTurnsLandInTheBucketTheyStartedIn(t *testing.T) {
+	sums := fixture()
+	sums[0].DailyActivity = []model.DailyActivity{worked(monday, 3, 30), worked(tuesday, 5, 50)}
+	sums[1].DailyActivity = []model.DailyActivity{worked(tuesday, 2, 10)}
+
+	r := Build(sums, ByDay, time.Time{}, time.Time{})
+	want := map[string]struct{ turns, seconds int }{
+		monday:  {3, 30 * 60},
+		tuesday: {7, 60 * 60},
+	}
+	for _, b := range r.Buckets {
+		w, ok := want[b.Key]
+		if !ok {
+			t.Fatalf("unexpected row %q", b.Key)
+		}
+		if b.Turns != w.turns || b.ActiveSeconds != w.seconds {
+			t.Errorf("%s = %d turns / %ds, want %d turns / %ds", b.Key, b.Turns, b.ActiveSeconds, w.turns, w.seconds)
+		}
+	}
+	if r.Total.Turns != 10 {
+		t.Errorf("total turns = %d, want 10", r.Total.Turns)
+	}
+}
+
+// TestModelAndAgentAxesCountNoTurns pins the one case where a column is dropped
+// rather than filled: a turn can run on two models and delegate to two agents,
+// so it belongs to no row on either axis.
+func TestModelAndAgentAxesCountNoTurns(t *testing.T) {
+	for _, by := range []string{ByModel, ByAgent} {
+		r := Build(delegating(), by, time.Time{}, time.Time{})
+		if r.Total.Turns != 0 {
+			t.Errorf("--by %s counted %d turns; a turn has no single %s", by, r.Total.Turns, by)
+		}
+		var buf bytes.Buffer
+		if err := Render(&buf, r, Options{Width: 120}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(buf.String(), "$/turn") {
+			t.Errorf("--by %s rendered a $/turn column:\n%s", by, buf.String())
+		}
+	}
+}
+
+// TestRenderShowsWhatTheDollarsBought pins the three columns and the two lines
+// under the total, including the spread — one average cannot say that a few very
+// large turns carry the bill.
+func TestRenderShowsWhatTheDollarsBought(t *testing.T) {
+	sums := fixture()
+	sums[0].DailyActivity = []model.DailyActivity{worked(monday, 2, 30), worked(tuesday, 3, 30)}
+	sums[1].DailyActivity = []model.DailyActivity{worked(tuesday, 4, 20)}
+	sums = append(sums, delegating()...)
+
+	var buf bytes.Buffer
+	if err := Render(&buf, Build(sums, BySession, time.Time{}, time.Time{}), Options{Width: 120}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{"Turns", "Active", "$/turn", " turns at $", "of active time at $", "half of those 3 sessions"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered output is missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestSpreadNeedsEnoughSessionsToMeanAnything pins the floor: below it the
+// median is one session's own figure restated, which reads as a second
+// measurement and is not one.
+func TestSpreadNeedsEnoughSessionsToMeanAnything(t *testing.T) {
+	sums := fixture()
+	sums[0].DailyActivity = []model.DailyActivity{worked(monday, 2, 30)}
+	sums[1].DailyActivity = []model.DailyActivity{worked(tuesday, 4, 20)}
+	if r := Build(sums, BySession, time.Time{}, time.Time{}); r.Spread != nil {
+		t.Errorf("spread reported over %d sessions, want none below %d", r.Spread.Sessions, minSpreadSessions)
+	}
+}
+
+// TestWindowNarrowsEveryScope pins what a caller asking for a window gets: all
+// three rows moved to it, and the machine's own default replaced rather than
+// applied on top — a span nobody chose is worse than either bound alone.
+func TestWindowNarrowsEveryScope(t *testing.T) {
+	sums := fixture()
+	sess := sums[0]
+	o := BuildOverview(&sess, sums, sums, Window{
+		Since:        day(tuesday),
+		MachineSince: day(monday),
+	})
+	if len(o.Scopes) != 3 {
+		t.Fatalf("Scopes = %+v, want three rows", o.Scopes)
+	}
+	for _, s := range o.Scopes {
+		if s.Since != tuesday {
+			t.Errorf("%s row counts from %q, want the window's own %q", s.Scope, s.Since, tuesday)
+		}
+	}
+	// Monday's spend is outside the window, so the folder row must have dropped it.
+	all := Build(sums, ByTotal, time.Time{}, time.Time{}).Total
+	for _, s := range o.Scopes {
+		if s.Scope == ScopeFolder && !(s.CostUSD < all.CostUSD) {
+			t.Errorf("folder row = $%.2f over the whole fixture's $%.2f; the window changed nothing",
+				s.CostUSD, all.CostUSD)
+		}
+	}
+}
+
+// TestRollUpSaysWhatItPriced pins the line a lone total cannot do without: the
+// rows are days or models and the figure beneath them reads "Total", which names
+// no scope at all.
+func TestRollUpSaysWhatItPriced(t *testing.T) {
+	r := Build(fixture(), ByTotal, time.Time{}, time.Time{})
+	r.Selection = &Selection{Scope: "this folder", Since: monday, Until: tuesday}
+	var buf bytes.Buffer
+	if err := Render(&buf, r, Options{Width: 100}); err != nil {
+		t.Fatal(err)
+	}
+	want := "priced this folder from " + monday + " to " + tuesday
+	if !strings.Contains(buf.String(), want) {
+		t.Errorf("rendered output is missing %q:\n%s", want, buf.String())
 	}
 }
