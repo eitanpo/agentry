@@ -11,19 +11,28 @@ import (
 	"github.com/eitanpo/agentry/internal/model"
 )
 
-// Line reads "Tokens: 516 in / 323k out  ·  cache 96%  ·  $17.25  ·  +342/-8".
+// Line reads "Tokens: 516 in / 323k out  ·  cache 96%  ·  saved 71%  ·  $17.25  ·  +342/-8".
 // The cache share is dropped when nothing was sent to be cached or read back, and
-// the dollar figure when the log recorded no cost: a session Claude Code wrote no
-// cost for is not a session that cost nothing, so no zero stands in for it.
+// the saved share beside it goes with it: the two are one pair, how much of the
+// input came from cache and what that took off the bill. The saved share also goes
+// on a session with no priced response, where its denominator would be zero.
+//
+// The dollar figure goes when the log recorded no cost: a session Claude Code
+// wrote no cost for is not a session that cost nothing, so no zero stands in for
+// it. It is Claude Code's own record while the saved share is agentry's own
+// price, which is why only one of the two carries a currency.
 //
 // The line counters are dropped when both are zero, which reads as "changed no
 // code" rather than as "not recorded" — the dollar figure beside them already
 // says whether the record exists, since one entry carries both, and two thirds of
 // local sessions with a record changed no lines at all.
-func Line(u model.Usage, costUSD *float64, linesAdded, linesRemoved *int) string {
+func Line(u model.Usage, saving *model.CacheSaving, costUSD *float64, linesAdded, linesRemoved *int) string {
 	s := fmt.Sprintf("Tokens: %s in / %s out", Tokens(u.Input), Tokens(u.Output))
 	if in := u.Input + u.CacheRead + u.CacheCreate; in > 0 {
 		s += fmt.Sprintf("  ·  cache %.0f%%", float64(u.CacheRead)/float64(in)*100)
+		if saving != nil && saving.WithoutCacheUSD > 0 {
+			s += fmt.Sprintf("  ·  saved %.0f%%", saving.SavedShare()*100)
+		}
 	}
 	if costUSD != nil {
 		s += "  ·  " + USD(*costUSD)

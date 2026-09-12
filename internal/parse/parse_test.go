@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1274,5 +1275,52 @@ func TestActiveTimeIgnoresTrailingBookkeeping(t *testing.T) {
 	}
 	if total != s.NumTurns {
 		t.Errorf("DailyActivity turns = %d, NumTurns = %d", total, s.NumTurns)
+	}
+}
+
+// TestCacheSavingAgreesAcrossBothReadPaths pins that the render path and the
+// listing put the same saving on one session. They reach it differently — Load
+// prices the sidecars it already parsed, Summarize prices the ones it opens for
+// the split — and a session whose header and whose listing row disagreed about
+// what caching saved would leave a reader with no way to tell which was right.
+//
+// The fixture's saving is negative, which is the case worth pinning end to end: it
+// writes a cache for an hour at twice the input rate and reads almost none of it
+// back, so it paid more than the same tokens would have cost uncached. A clamp
+// anywhere along either path fails here.
+func TestCacheSavingAgreesAcrossBothReadPaths(t *testing.T) {
+	path := filepath.Join("testdata", "daily-usage.jsonl")
+
+	sum, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.CacheSaving == nil || sess.Meta.CacheSaving == nil {
+		t.Fatalf("both paths must price a fixture whose models are all priced: listing %v, render %v",
+			sum.CacheSaving, sess.Meta.CacheSaving)
+	}
+	if *sum.CacheSaving != *sess.Meta.CacheSaving {
+		t.Errorf("listing priced %+v, render priced %+v", *sum.CacheSaving, *sess.Meta.CacheSaving)
+	}
+
+	// Hand-priced from the split the test above pins, each model at its own rates.
+	want := model.CacheSaving{WithCacheUSD: 0.004914, WithoutCacheUSD: 0.004410}
+	if math.Abs(sum.CacheSaving.WithCacheUSD-want.WithCacheUSD) > 1e-9 ||
+		math.Abs(sum.CacheSaving.WithoutCacheUSD-want.WithoutCacheUSD) > 1e-9 {
+		t.Errorf("CacheSaving = %+v, want %+v", *sum.CacheSaving, want)
+	}
+	if sum.CacheSaving.SavedShare() >= 0 {
+		t.Errorf("SavedShare = %v; the fixture paid more than it would have uncached",
+			sum.CacheSaving.SavedShare())
+	}
+
+	// The split and the total are the same responses read two ways, so the path
+	// that groups them and the path that sums them cannot report different tokens.
+	if sum.Usage != sess.Meta.Usage {
+		t.Errorf("listing tallied %+v, render tallied %+v", sum.Usage, sess.Meta.Usage)
 	}
 }

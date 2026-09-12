@@ -113,6 +113,38 @@ func Of(modelID string, u model.Usage) (float64, bool) {
 	return perMillion / 1e6, true
 }
 
+// Saving prices one session's responses twice — at the rates they were billed at,
+// and with every token that was read from cache or written to it charged as fresh
+// input instead — so the difference is what caching took off that session's bill.
+// false where no response could be priced at all.
+//
+// Pricing walks the per-model split rather than a summed tally because the rates
+// are not proportional across models: one tier reads cache at a fortieth of its
+// own input rate where every other reads it at a tenth, so a mixed-model session
+// priced at one model's rates would report a saving it did not get.
+//
+// A model with no price is left out of both halves rather than counted at zero in
+// both, which keeps the share between them a share of the responses that could be
+// priced — the same rule the roll-up applies when it names such a model instead of
+// pricing it.
+func Saving(daily []model.DailyUsage) (model.CacheSaving, bool) {
+	var out model.CacheSaving
+	priced := false
+	for _, d := range daily {
+		r, ok := ratesOf(d.Model)
+		if !ok {
+			continue
+		}
+		billed, _ := Of(d.Model, d.Usage)
+		u := d.Usage
+		uncached := float64(u.Input+u.CacheRead+u.CacheCreate)*r.Input + float64(u.Output)*r.Output
+		out.WithCacheUSD += billed
+		out.WithoutCacheUSD += uncached / 1e6
+		priced = true
+	}
+	return out, priced
+}
+
 // ratesOf resolves a log's model id to its tier's rates by longest prefix.
 func ratesOf(modelID string) (Rates, bool) {
 	best := ""

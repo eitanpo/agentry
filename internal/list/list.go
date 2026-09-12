@@ -45,7 +45,10 @@ const (
 	railGlyph   = "│"
 	railClose   = "╰─"
 	promptGlyph = "❯"
-	railVisualW = 6 // "  │ ❯ " — visible columns before the prompt text
+	// Budgeted against the widest prefix a detail line can take, "  ╰─ ❯ ": a
+	// one-line block draws the closing rule in place of the rail glyph, which is
+	// one column wider, so budgeting against the rail would let that line wrap.
+	railVisualW = 7
 )
 
 // activity is the time a session is ordered and filtered by: its last entry,
@@ -632,11 +635,13 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	}
 	// columns: when(16) dur(7,right) turns(4,right) [from] [project|worktree] title(rest) id(>=8), 2-space gaps
 	const whenW, durW, turnsW, projMaxW = 16, 7, 4, 24
-	// The id is abbreviated to the shortest prefix that tells these rows apart,
-	// floored at 8. A full UUID is 36 of a 100-column row for a value a caller
-	// only needs enough of to name the session again; the freed columns go to the
-	// title and the path column. See idWidth for the floor's reasoning.
-	idW := idWidth(sums)
+	// The id is printed whole, since `claude --resume` refuses anything shorter
+	// and a listing that showed only a prefix left that command needing a second
+	// one to expand what was already on screen. idWidth still runs: it decides how
+	// much of the id is emphasized, not how much is drawn. See idWidth for the
+	// floor's reasoning.
+	uniqueW := idWidth(sums)
+	idW := idColumnW(sums)
 	// The entrypoint tag follows the project column's rule: drawn only when the
 	// listing spans more than one, so a listing of one kind is unchanged. Width
 	// is 4 to fit the "+" a resumed session takes.
@@ -709,11 +714,8 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	block := opts.Prompts || opts.Tools || opts.Files || opts.Model || opts.Cost || opts.Outputs
 	var b strings.Builder
 	rows := arrange(sums)
-	for idx, r := range rows {
+	for _, r := range rows {
 		s := r.s
-		if block && idx > 0 {
-			b.WriteByte('\n') // blank line separates session blocks
-		}
 		// The when column shows the session's last activity (its most recent turn's
 		// end), the same time it is ordered by; activity falls back to Start when no
 		// later timestamp is known.
@@ -742,13 +744,16 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			from,
 			proj,
 			pad(title, titleW),
-			meta.Render(abbrevID(s.ID, idW)))
-		rail := railIndent + dim.Render(railGlyph) + " "
+			renderID(s.ID, uniqueW, meta, dim))
+		// The block's lines are collected before any is written, because how many
+		// there are decides whether the closing rule carries the only one or stands
+		// on a line of its own.
+		var detail []string
 		// What the session ran on leads the block: it describes the session, where
 		// the channels below it enumerate the session's contents.
 		if opts.Model {
 			if line := runLine(s); line != "" {
-				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncate(line, promptW)))
+				detail = append(detail, dim.Render(truncate(line, promptW)))
 			}
 		}
 		// What it spent sits beside what it ran on, for the same reason: both
@@ -757,16 +762,16 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		// both call, so the two surfaces cannot report one session's spend
 		// differently.
 		if opts.Cost {
-			fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncate(spend.Line(s.Usage, s.CostUSD, s.LinesAdded, s.LinesRemoved), promptW)))
+			detail = append(detail, dim.Render(truncate(spend.Line(s.Usage, s.CacheSaving, s.CostUSD, s.LinesAdded, s.LinesRemoved), promptW)))
 		}
 		if opts.Prompts {
 			for _, p := range s.Prompts {
-				fmt.Fprintf(&b, "%s%s %s\n", rail, dim.Render(promptGlyph), truncate(oneLine(p), promptW))
+				detail = append(detail, dim.Render(promptGlyph)+" "+truncate(oneLine(p), promptW))
 			}
 		}
 		if opts.Tools {
 			for _, line := range toolLines(s.Tools, s.Denials) {
-				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncate(line, promptW)))
+				detail = append(detail, dim.Render(truncate(line, promptW)))
 			}
 		}
 		if opts.Files {
@@ -774,7 +779,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			// another is its tail, the same reason the project column truncates
 			// that way.
 			for _, f := range s.Files {
-				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncateLeft(f, promptW)))
+				detail = append(detail, dim.Render(truncateLeft(f, promptW)))
 			}
 		}
 		if opts.Outputs {
@@ -787,13 +792,26 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			// uuid that identifies nothing to a reader, and --format json carries it in
 			// full — the trade the Edits line already makes for paths.
 			for _, p := range s.PRs {
-				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncateLeft(p.Key(), promptW)))
+				detail = append(detail, dim.Render(truncateLeft(p.Key(), promptW)))
 			}
 			for _, a := range s.Artifacts {
-				fmt.Fprintf(&b, "%s%s\n", rail, dim.Render(truncate(artifactLine(a), promptW)))
+				detail = append(detail, dim.Render(truncate(artifactLine(a), promptW)))
 			}
 		}
-		if block {
+		// One line hangs off the closing rule instead of taking a rail line above a
+		// bare one, so the chrome never costs more lines than the content it bounds.
+		// Two or more keep the rail: content on the rule there would give the last
+		// line different chrome from its siblings without saying anything different.
+		// An empty block still prints the bare rule, which separates the row from
+		// the next session's.
+		switch {
+		case len(detail) == 1:
+			fmt.Fprintf(&b, "%s%s %s\n", railIndent, dim.Render(railClose), detail[0])
+		case block:
+			rail := railIndent + dim.Render(railGlyph) + " "
+			for _, line := range detail {
+				fmt.Fprintf(&b, "%s%s\n", rail, line)
+			}
 			fmt.Fprintf(&b, "%s%s\n", railIndent, dim.Render(railClose))
 		}
 	}
@@ -1169,6 +1187,30 @@ func idWidth(sums []model.Summary) int {
 		}
 	}
 	return longest
+}
+
+// idColumnW is the width the id column takes, every id being printed whole.
+func idColumnW(sums []model.Summary) int {
+	w := 0
+	for _, s := range sums {
+		if n := len(s.ID); n > w {
+			w = n
+		}
+	}
+	return w
+}
+
+// renderID draws the id whole, the prefix that tells these rows apart in the id's
+// own color and the rest of it a shade down. Weight rather than presence is what
+// separates the two jobs the value does: the prefix is what a reader scans the
+// column by and hands back to agentry, and the whole string is what `claude
+// --resume` requires. A caller with color off gets the same characters, since
+// dropping half of a value a reader copies would be the worse degradation.
+func renderID(id string, uniqueW int, bright, faint lipgloss.Style) string {
+	if len(id) <= uniqueW {
+		return bright.Render(id)
+	}
+	return bright.Render(id[:uniqueW]) + faint.Render(id[uniqueW:])
 }
 
 // abbrevID cuts an id to n characters, or returns it whole when it is shorter.

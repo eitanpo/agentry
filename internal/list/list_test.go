@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/muesli/termenv"
 )
 
 func TestParseWhen(t *testing.T) {
@@ -1450,31 +1452,45 @@ func TestIDWidth(t *testing.T) {
 	}
 }
 
-// TestRenderAbbreviatedID pins what the row shows and what it buys: the id is
-// cut to the computed width, and the columns it frees go to the title.
-func TestRenderAbbreviatedID(t *testing.T) {
+// TestRenderWholeIDWithPrefixEmphasized pins the two jobs one value does. The
+// whole id is printed because `claude --resume` refuses a prefix, and the prefix
+// that tells these rows apart is styled differently from the rest because that is
+// the part a reader scans the column by and hands back to agentry.
+//
+// Color off is the case that matters most: emphasis is unreadable there, so the
+// characters must all survive rather than the row falling back to a prefix a
+// caller cannot resume with.
+func TestRenderWholeIDWithPrefixEmphasized(t *testing.T) {
 	const id = "ba6b3ded-475b-4c3a-96fe-99698a557d14"
 	sums := []model.Summary{{
 		ID:    id,
-		Title: "a title long enough to need the columns the full id was taking",
+		Title: "a title",
 		Start: time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC),
 		End:   time.Date(2026, 6, 3, 14, 5, 0, 0, time.UTC),
 	}}
-	var b strings.Builder
-	if err := Render(&b, sums, Options{Width: 100, Color: false}); err != nil {
+
+	var plain strings.Builder
+	if err := Render(&plain, sums, Options{Width: 120, Color: false}); err != nil {
 		t.Fatal(err)
 	}
-	out := b.String()
+	if !strings.Contains(plain.String(), id) {
+		t.Errorf("the whole id must print with color off: %q", plain.String())
+	}
+
+	lipgloss.SetColorProfile(termenv.ANSI)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	var colored strings.Builder
+	if err := Render(&colored, sums, Options{Width: 120, Color: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := colored.String()
+	// A styled run ends with a reset, so the id appearing whole and unbroken means
+	// one style covered all of it and the prefix was never emphasized.
 	if strings.Contains(out, id) {
-		t.Errorf("the full id must not be printed: %q", out)
+		t.Errorf("the id must be drawn as two styled runs, not one: %q", out)
 	}
-	if !strings.Contains(out, id[:idFloor]) {
-		t.Errorf("output missing the id prefix %q: %q", id[:idFloor], out)
-	}
-	// 28 columns come back from the id; the title is what they are for. This
-	// substring starts past character 29, where the title used to be cut.
-	if !strings.Contains(out, "the columns the full id was") {
-		t.Errorf("title should have grown into the freed columns: %q", out)
+	if !strings.Contains(out, id[:idFloor]) || !strings.Contains(out, id[idFloor:]) {
+		t.Errorf("both halves must survive the split at %d: %q", idFloor, out)
 	}
 }
 
@@ -1634,6 +1650,25 @@ func TestRenderIncludeCost(t *testing.T) {
 	})
 }
 
+// TestRenderBlockSeparation pins the rail-and-rule as the only separator
+// between consecutive session blocks: PRODUCT.md states the closing rule
+// "bounds the block, separating one session from the next," so a blank line
+// between blocks would be a second separator doing the rule's job.
+func TestRenderBlockSeparation(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "s1", Title: "first", Usage: model.Usage{Input: 5, Output: 9}},
+		{ID: "s2", Title: "second", Usage: model.Usage{Input: 6, Output: 10}},
+	}
+	var b strings.Builder
+	if err := Render(&b, sums, Options{Width: 120, Color: false, Cost: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	if strings.Contains(out, railClose+"\n\n") {
+		t.Errorf("blank line between session blocks, want the closing rule alone as separator:\n%s", out)
+	}
+}
+
 // TestFilterByChanged pins how much code a session changed as a selector, and
 // the two cases that decide whether the filter is honest: a session Claude Code
 // kept no record for matches no bound, and a ceiling of zero is a real bound
@@ -1675,4 +1710,52 @@ func TestFilterByChanged(t *testing.T) {
 	t.Run("no bound is a no-op", func(t *testing.T) {
 		assertIDs(t, Filter(sums, Changed{}), []string{"big", "small", "readonly", "unrecorded"})
 	})
+}
+
+// TestRenderOneLineBlockCollapsesOntoTheRule pins that a detail block's chrome
+// never costs more lines than the content it bounds. One channel showing one line
+// is the commonest shape this surface takes, and it used to spend a rail line and
+// a bare rule on a single fact.
+//
+// The two-line case is pinned beside it because the collapse must not generalize:
+// content on the rule in a longer block would give the last line different chrome
+// from its siblings without saying anything different.
+func TestRenderOneLineBlockCollapsesOntoTheRule(t *testing.T) {
+	sums := []model.Summary{{
+		ID: "1897892b-e61f-4659-8168-5f0119c03b4e", Title: "access-point",
+		Model: "claude-opus-5",
+		Usage: model.Usage{Input: 180, Output: 93000, CacheRead: 4000},
+	}}
+
+	var one strings.Builder
+	if err := Render(&one, sums, Options{Width: 120, Color: false, Cost: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(one.String(), railClose+" Tokens:") {
+		t.Errorf("a one-line block must hang its line off the closing rule: %q", one.String())
+	}
+	if strings.Contains(one.String(), railGlyph+" Tokens:") {
+		t.Errorf("a one-line block must not also take a rail line: %q", one.String())
+	}
+
+	var two strings.Builder
+	if err := Render(&two, sums, Options{Width: 120, Color: false, Cost: true, Model: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(two.String(), railGlyph+" Tokens:") {
+		t.Errorf("a two-line block must keep the rail: %q", two.String())
+	}
+	if !strings.HasSuffix(two.String(), railIndent+railClose+"\n") {
+		t.Errorf("a two-line block must close on a rule of its own: %q", two.String())
+	}
+
+	// A channel that finds nothing still prints the rule, which is what separates
+	// this session's row from the next one's.
+	var empty strings.Builder
+	if err := Render(&empty, sums, Options{Width: 120, Color: false, Prompts: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(empty.String(), railIndent+railClose+"\n") {
+		t.Errorf("an empty block must still print the bare rule: %q", empty.String())
+	}
 }

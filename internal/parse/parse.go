@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/eitanpo/agentry/internal/price"
 )
 
 // Only user and assistant entries carry content we render; every other type
@@ -67,10 +68,11 @@ func Load(jsonlPath string) (*model.Session, error) {
 	}
 	sess.Meta.Start, sess.Meta.End = timeRange(entries)
 
-	sess.Meta.Usage = sumUsage(entries)
-	for _, s := range subs {
-		sess.Meta.Usage.Add(sumUsage(s.entries))
+	daily := groupDaily(sessionRecords(entries, subs))
+	for _, d := range daily {
+		sess.Meta.Usage.Add(d.Usage)
 	}
+	sess.Meta.CacheSaving = cacheSaving(daily)
 
 	for _, t := range splitTurns(entries) {
 		turn := model.Turn{
@@ -135,6 +137,7 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		Efforts:       manyOrNone(effs),
 		Usage:         usage,
 		DailyUsage:    daily,
+		CacheSaving:   cacheSaving(daily),
 		DailyActivity: dailyActivity(turns, firstStamp(entries)),
 		CostUSD:       cost,
 		LinesAdded:    added,
@@ -241,6 +244,33 @@ func sessionSpend(jsonlPath string, entries []entry) ([]model.DailyUsage, model.
 		total.Add(d.Usage)
 	}
 	return daily, total
+}
+
+// sessionRecords is every response the session spent tokens on, the main thread's
+// and every subagent's. Each log is deduplicated on its own tally, since a request
+// id is unique to its log and a shared one would let a sidecar's response displace
+// a main-thread response that happened to key the same.
+//
+// Load's counterpart to what sessionSpend reads off disk for Summarize, taking the
+// sidecars Load already parsed rather than opening them a second time.
+func sessionRecords(entries []entry, subs map[string]*subagent) []usageRecord {
+	fallback := firstStamp(entries)
+	recs := mainTally(entries, fallback).records()
+	for _, s := range subs {
+		recs = append(recs, mainTally(s.entries, fallback).records()...)
+	}
+	return recs
+}
+
+// cacheSaving prices the split for what caching took off the session, nil where no
+// response carried a model agentry holds a price for — a gap in the price table
+// rather than a session caching saved nothing on.
+func cacheSaving(daily []model.DailyUsage) *model.CacheSaving {
+	c, ok := price.Saving(daily)
+	if !ok {
+		return nil
+	}
+	return &c
 }
 
 // unattributedAgent labels a sidecar whose spawning call is not in the main log.

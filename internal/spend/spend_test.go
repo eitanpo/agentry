@@ -1,6 +1,7 @@
 package spend
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/eitanpo/agentry/internal/model"
@@ -31,11 +32,11 @@ func TestTokens(t *testing.T) {
 // gap.
 func TestLineOmitsAbsentCost(t *testing.T) {
 	u := model.Usage{Input: 10, Output: 2000, CacheRead: 90, CacheCreate: 0}
-	if got := Line(u, nil, nil, nil); got != "Tokens: 10 in / 2.0k out  ·  cache 90%" {
+	if got := Line(u, nil, nil, nil, nil); got != "Tokens: 10 in / 2.0k out  ·  cache 90%" {
 		t.Errorf("Line without cost = %q", got)
 	}
 	zero := 0.0
-	if got := Line(u, &zero, nil, nil); got != "Tokens: 10 in / 2.0k out  ·  cache 90%  ·  $0.00" {
+	if got := Line(u, nil, &zero, nil, nil); got != "Tokens: 10 in / 2.0k out  ·  cache 90%  ·  $0.00" {
 		t.Errorf("Line with a recorded zero = %q; a measured zero must render", got)
 	}
 }
@@ -46,7 +47,7 @@ func TestLineOmitsAbsentCost(t *testing.T) {
 func TestLineRoundsToTheCent(t *testing.T) {
 	c := 17.254517250000003
 	want := "Tokens: 0 in / 0 out  ·  $17.25"
-	if got := Line(model.Usage{}, &c, nil, nil); got != want {
+	if got := Line(model.Usage{}, nil, &c, nil, nil); got != want {
 		t.Errorf("Line = %q, want %q", got, want)
 	}
 }
@@ -58,14 +59,14 @@ func TestLineRoundsToTheCent(t *testing.T) {
 // record exists, since one entry carries both.
 func TestLineShowsLinesChanged(t *testing.T) {
 	cost, add, rem := 17.25, 342, 8
-	got := Line(model.Usage{Input: 5, Output: 9}, &cost, &add, &rem)
+	got := Line(model.Usage{Input: 5, Output: 9}, nil, &cost, &add, &rem)
 	if want := "Tokens: 5 in / 9 out  ·  cache 0%  ·  $17.25  ·  +342/-8"; got != want {
 		t.Errorf("Line = %q, want %q", got, want)
 	}
 
 	t.Run("removals alone still render", func(t *testing.T) {
 		zero, rem := 0, 12
-		got := Line(model.Usage{}, nil, &zero, &rem)
+		got := Line(model.Usage{}, nil, nil, &zero, &rem)
 		if want := "Tokens: 0 in / 0 out  ·  +0/-12"; got != want {
 			t.Errorf("Line = %q, want %q", got, want)
 		}
@@ -73,7 +74,7 @@ func TestLineShowsLinesChanged(t *testing.T) {
 
 	t.Run("a session that changed nothing shows no counters", func(t *testing.T) {
 		cost, zero := 4.0, 0
-		got := Line(model.Usage{}, &cost, &zero, &zero)
+		got := Line(model.Usage{}, nil, &cost, &zero, &zero)
 		if want := "Tokens: 0 in / 0 out  ·  $4.00"; got != want {
 			t.Errorf("Line = %q, want %q", got, want)
 		}
@@ -101,5 +102,42 @@ func TestDuration(t *testing.T) {
 				t.Errorf("Duration(%d) = %q, want %q", tt.seconds, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLineShowsWhatCachingSavedBesideTheCacheShare pins the pair the header
+// carries: how much of the input came from cache, and what that took off the
+// bill. The two answer different questions and a session reads high on one while
+// reading middling on the other, so a line dropping either loses a fact.
+//
+// The saving is a share and never a dollar figure on this line. The currency here
+// is Claude Code's own record, and a computed dollar saving printed beside it
+// would put an estimate and a record on one line with nothing telling them apart.
+func TestLineShowsWhatCachingSavedBesideTheCacheShare(t *testing.T) {
+	u := model.Usage{Input: 10, Output: 2000, CacheRead: 90, CacheCreate: 0}
+	saving := model.CacheSaving{WithCacheUSD: 3, WithoutCacheUSD: 12}
+
+	want := "Tokens: 10 in / 2.0k out  ·  cache 90%  ·  saved 75%"
+	if got := Line(u, &saving, nil, nil, nil); got != want {
+		t.Errorf("Line = %q, want %q", got, want)
+	}
+	if strings.Contains(Line(u, &saving, nil, nil, nil), "$") {
+		t.Error("the saved share must carry no currency: the line's only $ is Claude Code's record")
+	}
+}
+
+// TestLineOmitsTheSavingItCannotPrice pins the distinction between a session
+// caching saved nothing on and one whose models agentry holds no price for. A
+// "saved 0%" on the second would read as a measurement where the truth is that
+// the price table does not reach it.
+func TestLineOmitsTheSavingItCannotPrice(t *testing.T) {
+	u := model.Usage{Input: 10, Output: 2000, CacheRead: 90}
+	want := "Tokens: 10 in / 2.0k out  ·  cache 90%"
+	if got := Line(u, nil, nil, nil, nil); got != want {
+		t.Errorf("Line with no priceable response = %q, want %q", got, want)
+	}
+	free := model.CacheSaving{}
+	if got := Line(u, &free, nil, nil, nil); got != want {
+		t.Errorf("Line with a zero uncached price = %q, want %q", got, want)
 	}
 }

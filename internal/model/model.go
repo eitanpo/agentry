@@ -34,6 +34,11 @@ type Meta struct {
 	Start   time.Time `json:"start"`
 	End     time.Time `json:"end"`
 	Usage   Usage     `json:"usage"`
+	// CacheSaving mirrors the Summary field of the same name, computed from the
+	// same responses, so a saving read off a rendered session and one read off a
+	// listing cannot differ. Nil on a session none of whose responses agentry
+	// holds a price for, which is not a claim that caching saved nothing.
+	CacheSaving *CacheSaving `json:"cacheSaving,omitempty"`
 	// CostUSD is what Claude Code recorded the session as having cost, mirroring
 	// the Summary field of the same name. A pointer because a free session and a
 	// log that records no cost are different facts and both would marshal as zero;
@@ -139,6 +144,12 @@ type Summary struct {
 	// same responses, same deduplication, only grouped — so the two cannot
 	// disagree about what one session spent.
 	DailyUsage []DailyUsage `json:"dailyUsage,omitempty"`
+	// CacheSaving is DailyUsage priced twice — as billed, and with nothing cached
+	// — so a caller can say what caching took off this session without pricing the
+	// tally itself. Priced per model from the split rather than from Usage, since
+	// the rates are not proportional across models. Nil on a session none of whose
+	// responses agentry holds a price for.
+	CacheSaving *CacheSaving `json:"cacheSaving,omitempty"`
 	// DailyActivity splits the session's turns and the time they ran for by the
 	// local day each turn started on, so a cost roll-up can divide a bucket's
 	// dollars by the work done in that same bucket. Summing every entry's Turns
@@ -249,6 +260,33 @@ type Usage struct {
 	// writes by close to a fifth.
 	// Zero on a log that carries no split, which prices as five-minute writes.
 	CacheCreate1h int `json:"cacheCreate1h"`
+}
+
+// CacheSaving is one session's responses priced twice: at the rates they were
+// billed at, and with every token that was read from cache or written to it
+// charged as fresh input instead. Caching does not change how many tokens a
+// request sends, only the rate the resent context is charged at, so the
+// difference between the two is what caching took off the bill.
+//
+// The two prices are carried rather than the share between them because a share
+// of one session cannot be added to a share of another, where these sum across
+// any set of sessions and the share is taken afterwards.
+type CacheSaving struct {
+	WithCacheUSD    float64 `json:"withCacheUSD"`
+	WithoutCacheUSD float64 `json:"withoutCacheUSD"`
+}
+
+// SavedUSD is what caching took off the bill.
+func (c CacheSaving) SavedUSD() float64 { return c.WithoutCacheUSD - c.WithCacheUSD }
+
+// SavedShare is that saving as a fraction of the uncached price. Zero where the
+// uncached price is zero, which is the one case the division has no answer for
+// and which describes a session that spent nothing either way.
+func (c CacheSaving) SavedShare() float64 {
+	if c.WithoutCacheUSD <= 0 {
+		return 0
+	}
+	return c.SavedUSD() / c.WithoutCacheUSD
 }
 
 // Add accumulates another tally into this one.

@@ -188,7 +188,7 @@ func (r *renderer) header(s *model.Session) string {
 	// What the session spent, in the wording the listing's cost channel also
 	// prints — one phrasing, so a spend read off a rendered session and one read
 	// off a listing cannot differ.
-	spent := spend.Line(m.Usage, m.CostUSD, m.LinesAdded, m.LinesRemoved)
+	spent := spend.Line(m.Usage, m.CacheSaving, m.CostUSD, m.LinesAdded, m.LinesRemoved)
 
 	body := r.claude.Render(title) + "\n" +
 		strings.Join(counts, " · ") + "\n" +
