@@ -40,6 +40,8 @@ func newCostCmd(noColor *bool) *cobra.Command {
 			"  agentry cost --by day              one row per day, this directory\n" +
 			"  agentry cost --since 30d --by week\n" +
 			"  agentry cost --all-projects --by model\n" +
+			"  agentry cost --by project          which repo costs the most\n" +
+			"  agentry cost --by day --chart calendar\n" +
 			"  agentry cost --by session          priciest session first",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCost(cmd, noColor)
@@ -47,6 +49,8 @@ func newCostCmd(noColor *bool) *cobra.Command {
 	}
 	cmd.Flags().String("by", cost.ByTotal, "bucket the dollars by: "+strings.Join(cost.Axes, ", "))
 	_ = cmd.RegisterFlagCompletionFunc("by", fixedComp(cost.Axes))
+	cmd.Flags().String("chart", cost.ChartNone, "draw the time buckets instead of listing them: "+strings.Join(cost.Charts, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("chart", fixedComp(cost.Charts))
 	cmd.Flags().String("since", "", "only spend on or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
 	cmd.Flags().String("until", "", "only spend on or before WHEN")
 	cmd.Flags().Bool("all-projects", false, "price every project's sessions, not just this directory's")
@@ -74,6 +78,54 @@ func parseBy(cmd *cobra.Command) (string, error) {
 	return "", usageErr("--by: unknown axis %q (want: %s)", by, strings.Join(cost.Axes, ", "))
 }
 
+// timeAxes are the --by values a chart can be drawn of. The others have no order
+// along the bottom of a plot: the rows of --by agent could be listed in any
+// sequence, so a line through them would join neighbours that are only
+// alphabetical.
+var timeAxes = []string{cost.ByDay, cost.ByWeek, cost.ByMonth}
+
+// parseChart validates --chart against the axis and the format it was asked
+// with. Each rejection names both flags rather than the value alone: the value
+// is fine on its own, and it is the pair that cannot be honoured.
+func parseChart(cmd *cobra.Command, by, format string) (string, error) {
+	chart, _ := cmd.Flags().GetString("chart")
+	if chart == "" {
+		chart = cost.ChartNone
+	}
+	known := false
+	for _, c := range cost.Charts {
+		if chart == c {
+			known = true
+		}
+	}
+	if !known {
+		if g := nearest(chart, cost.Charts); g != "" {
+			return "", usageErr("--chart: unknown chart %q — did you mean %q?", chart, g)
+		}
+		return "", usageErr("--chart: unknown chart %q (want: %s)", chart, strings.Join(cost.Charts, ", "))
+	}
+	if chart == cost.ChartNone {
+		return chart, nil
+	}
+	if format == "json" {
+		return "", usageErr("--chart %s cannot be combined with --format json — the object is the same either way", chart)
+	}
+	timed := false
+	for _, a := range timeAxes {
+		if by == a {
+			timed = true
+		}
+	}
+	if !timed {
+		return "", usageErr("--chart %s needs a time axis — add --by %s, not --by %s",
+			chart, strings.Join(timeAxes, "|"), by)
+	}
+	if chart == cost.ChartCalendar && by != cost.ByDay {
+		return "", usageErr("--chart calendar needs --by day — a calendar's squares are days, not %ss", by)
+	}
+	return chart, nil
+}
+
 // costShapers are the flags that replace the three-scope summary rather than
 // narrow it. --by asks for a different shape entirely, and the two scope flags
 // contradict the summary's own rows, which are scopes.
@@ -84,7 +136,7 @@ func parseBy(cmd *cobra.Command) (string, error) {
 // not one number whose line does not even say which scope it covers. --format
 // and --no-color are absent for a different reason — neither chooses what is
 // counted, only how it is written.
-var costShapers = []string{"by", "all-projects", "project"}
+var costShapers = []string{"by", "all-projects", "project", "chart"}
 
 // summaryMode reports whether the verb should answer with the three-scope
 // summary — the answer to being asked nothing, and to being asked only to narrow
@@ -120,6 +172,10 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 		return err
 	}
 	since, until, err := parseWindow(cmd)
+	if err != nil {
+		return err
+	}
+	chart, err := parseChart(cmd, by, format)
 	if err != nil {
 		return err
 	}
@@ -188,7 +244,7 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 		return nil
 	}
 	color, width := terminal(*noColor)
-	if err := cost.Render(os.Stdout, report, cost.Options{Width: width, Color: color}); err != nil {
+	if err := cost.Render(os.Stdout, report, cost.Options{Width: width, Color: color, Chart: chart}); err != nil {
 		return &exitError{code: 1, err: err}
 	}
 	return nil

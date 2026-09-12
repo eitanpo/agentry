@@ -595,3 +595,181 @@ func TestRollUpSaysWhatItPriced(t *testing.T) {
 		t.Errorf("rendered output is missing %q:\n%s", want, buf.String())
 	}
 }
+
+// projectFixture is three sessions in three directories: a repository, a
+// worktree that repository's tooling made beneath a dot-directory, and a
+// sibling repository sharing the same parent.
+func projectFixture() []model.Summary {
+	return []model.Summary{
+		{
+			ID: "cccccccc-1111", Cwd: "/home/u/Projects/app",
+			DailyUsage:    []model.DailyUsage{out(monday, "claude-sonnet-5", million)},
+			DailyActivity: []model.DailyActivity{{Day: monday, Turns: 2, ActiveSeconds: 60}},
+		},
+		{
+			ID: "cccccccc-2222", Cwd: "/home/u/Projects/app/.claude-worktrees/feature",
+			DailyUsage:    []model.DailyUsage{out(monday, "claude-sonnet-5", million)},
+			DailyActivity: []model.DailyActivity{{Day: monday, Turns: 3, ActiveSeconds: 90}},
+		},
+		{
+			ID: "cccccccc-3333", Cwd: "/home/u/Projects/other",
+			DailyUsage: []model.DailyUsage{out(monday, "claude-sonnet-5", million)},
+		},
+	}
+}
+
+// TestProjectAxisFoldsAWorktreeIntoItsRepository pins the cut that makes the
+// axis answer "which repo costs me". A worktree lives under a dot-directory
+// inside the repository, so its dollars belong to the repository; a sibling
+// repository under the same parent does not, and stays a row of its own.
+func TestProjectAxisFoldsAWorktreeIntoItsRepository(t *testing.T) {
+	old := homeDir
+	homeDir = "/home/u"
+	t.Cleanup(func() { homeDir = old })
+
+	r := Build(projectFixture(), ByProject, time.Time{}, time.Time{})
+	got := map[string]float64{}
+	for _, b := range r.Buckets {
+		got[b.Key] = b.CostUSD
+	}
+	if len(got) != 2 {
+		t.Fatalf("Build(--by project) made %d rows %v, want 2: the worktree folds into its repository", len(got), got)
+	}
+	if !nearly(got["~/Projects/app"], 20) {
+		t.Errorf("~/Projects/app = %v, want 20 — both its own session and its worktree's", got["~/Projects/app"])
+	}
+	if !nearly(got["~/Projects/other"], 10) {
+		t.Errorf("~/Projects/other = %v, want 10 — a sibling repository is not folded in", got["~/Projects/other"])
+	}
+}
+
+// TestProjectAxisCountsTurns is the half the model and agent axes cannot do: a
+// turn belongs to one session and a session to one directory, so the project
+// axis carries the Turns column.
+func TestProjectAxisCountsTurns(t *testing.T) {
+	old := homeDir
+	homeDir = "/home/u"
+	t.Cleanup(func() { homeDir = old })
+
+	r := Build(projectFixture(), ByProject, time.Time{}, time.Time{})
+	for _, b := range r.Buckets {
+		if b.Key == "~/Projects/app" && b.Turns != 5 {
+			t.Errorf("~/Projects/app turns = %d, want 5 — the repository's own two plus the worktree's three", b.Turns)
+		}
+	}
+}
+
+// TestProjectRootKeepsALoneHiddenDirectory pins the exception: cutting at the
+// first hidden segment would name the home directory for ~/.config and ~/.bob
+// alike, merging every such directory into one row.
+func TestProjectRootKeepsALoneHiddenDirectory(t *testing.T) {
+	old := homeDir
+	homeDir = "/home/u"
+	t.Cleanup(func() { homeDir = old })
+
+	for _, tt := range []struct{ cwd, want string }{
+		{"/home/u/.bob", "/home/u/.bob"},
+		{"/home/u/.config/nvim", "/home/u/.config"},
+		{"/home/u/Projects/app/.claude-worktrees/x", "/home/u/Projects/app"},
+		{"/home/u/Projects/app", "/home/u/Projects/app"},
+		{"/private/tmp/work", "/private/tmp/work"},
+	} {
+		if got := projectRoot(tt.cwd); got != tt.want {
+			t.Errorf("projectRoot(%q) = %q, want %q", tt.cwd, got, tt.want)
+		}
+	}
+}
+
+// TestRenderDrawsAShareBarOnEveryRowThatSpent pins both halves of the bar: the
+// largest row fills the column, and a row too small to round up to one mark
+// still draws the narrowest one rather than reading as a row that cost nothing.
+func TestRenderDrawsAShareBarOnEveryRowThatSpent(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "dddddddd-1111", DailyUsage: []model.DailyUsage{out(monday, "claude-opus-5", 1000*million)}},
+		{ID: "dddddddd-2222", DailyUsage: []model.DailyUsage{out(tuesday, "claude-opus-5", million / 100)}},
+	}
+	var buf bytes.Buffer
+	if err := Render(&buf, Build(sums, ByDay, time.Time{}, time.Time{}), Options{Width: 120}); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(buf.String(), "\n")
+	if !strings.Contains(lines[0], "Share") {
+		t.Fatalf("header = %q, want a Share column", lines[0])
+	}
+	if !strings.Contains(lines[1], "█") {
+		t.Errorf("largest row = %q, want a full block", lines[1])
+	}
+	if !strings.Contains(lines[2], "▏") {
+		t.Errorf("smallest row = %q, want the narrowest mark rather than an empty cell", lines[2])
+	}
+	total := lines[4]
+	if strings.ContainsAny(total, "█▏") {
+		t.Errorf("total row = %q, want no bar — a full-width bar says only that the total is the total", total)
+	}
+}
+
+// TestRenderDropsTheShareBarBeforeAnyFigure pins the degradation order: a
+// terminal too narrow for everything loses the bar, never a number.
+func TestRenderDropsTheShareBarBeforeAnyFigure(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, Build(fixture(), ByDay, time.Time{}, time.Time{}), Options{Width: 46}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if strings.Contains(got, "Share") || strings.ContainsAny(got, "█▏▎▍▌▋▊▉") {
+		t.Errorf("narrow render = %q, want no share column", got)
+	}
+	if !strings.Contains(got, "$10.00") {
+		t.Errorf("narrow render = %q, want the figures kept", got)
+	}
+}
+
+// TestRenderCalendarReplacesTheRowsAndKeepsTheNotes pins what a chart does and
+// does not take the place of: the rows go, and the total and its notes stay,
+// because those say what the picture is of.
+func TestRenderCalendarReplacesTheRowsAndKeepsTheNotes(t *testing.T) {
+	var buf bytes.Buffer
+	r := Build(fixture(), ByDay, time.Time{}, time.Time{})
+	if err := Render(&buf, r, Options{Width: 100, Chart: ChartCalendar}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if strings.Contains(got, monday) {
+		t.Errorf("calendar render = %q, want the day rows replaced", got)
+	}
+	if !strings.Contains(got, "Mon") || !strings.ContainsAny(got, string(calendarShades)) {
+		t.Errorf("calendar render = %q, want a weekday grid with shaded days", got)
+	}
+	if !strings.Contains(got, "Total") || !strings.Contains(got, "estimate, not a bill") {
+		t.Errorf("calendar render = %q, want the total and its notes kept", got)
+	}
+}
+
+// TestChartFallsBackToTheTableWhenItCannotBeDrawn pins the one case a picture
+// has nothing to say: a single bucket is not a line, and printing an empty
+// frame would be worse than printing the row.
+func TestChartFallsBackToTheTableWhenItCannotBeDrawn(t *testing.T) {
+	sums := []model.Summary{{ID: "eeeeeeee-1111", DailyUsage: []model.DailyUsage{out(monday, "claude-opus-5", million)}}}
+	var buf bytes.Buffer
+	if err := Render(&buf, Build(sums, ByDay, time.Time{}, time.Time{}), Options{Width: 100, Chart: ChartLine}); err != nil {
+		t.Fatal(err)
+	}
+	// The header, not the day: the plot labels its own span with that same day,
+	// so a test looking for the date passes whether or not the table was printed.
+	if !strings.Contains(buf.String(), "Sessions") {
+		t.Errorf("one-bucket line chart = %q, want the table instead", buf.String())
+	}
+}
+
+// TestLineChartPlotsOldestLeft pins the axis direction against the listing's
+// convention, and that the plot labels the range it drew.
+func TestLineChartPlotsOldestLeft(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, Build(fixture(), ByDay, time.Time{}, time.Time{}), Options{Width: 100, Chart: ChartLine}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, monday+" → "+tuesday) {
+		t.Errorf("line chart = %q, want the span labelled oldest first", got)
+	}
+}

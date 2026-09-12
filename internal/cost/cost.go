@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -32,13 +33,14 @@ const (
 	ByMonth   = "month"
 	ByModel   = "model"
 	ByAgent   = "agent"
+	ByProject = "project"
 	BySession = "session"
 )
 
 // Axes is every --by value, in the order help and completion offer them:
-// the default first, then the time buckets coarsening, then the three axes that
-// are not time.
-var Axes = []string{ByTotal, ByDay, ByWeek, ByMonth, ByModel, ByAgent, BySession}
+// the default first, then the time buckets coarsening, then the four axes that
+// are not time, narrowing.
+var Axes = []string{ByTotal, ByDay, ByWeek, ByMonth, ByModel, ByAgent, ByProject, BySession}
 
 // mainThreadAgent names the tokens a session spent itself, on the axis that
 // groups the rest by what they were delegated to. It is a row rather than an
@@ -46,6 +48,11 @@ var Axes = []string{ByTotal, ByDay, ByWeek, ByMonth, ByModel, ByAgent, BySession
 // them; in the local corpus the main thread is the large majority of every
 // session, which a delegated-only table would hide.
 const mainThreadAgent = "(main thread)"
+
+// unknownProject names the row of a session whose log recorded no working
+// directory. Its dollars were spent somewhere, so the row is named rather than
+// dropped — the rule unknownDay follows for a response with no timestamp.
+const unknownProject = "(unknown)"
 
 // unknownDay labels the bucket of a response whose entry carries no timestamp in
 // a session that carries none either. The tokens were spent whatever the log
@@ -287,10 +294,73 @@ func bucketOf(by string, d model.DailyUsage, s model.Summary) (key, label string
 		return d.Model, ""
 	case ByAgent:
 		return agentName(d.Agent), ""
+	case ByProject:
+		return projectName(s.Cwd), ""
 	case BySession:
 		return s.ID, s.Title
 	}
 	return ByTotal, ""
+}
+
+// projectName is the row a session falls under on the project axis: its working
+// directory cut at the first hidden segment, with the home directory
+// abbreviated so a column whose rows share a long prefix still reads.
+//
+// The cut is what folds a repository's worktrees into the repository. A tool
+// that checks a branch out beside the repo puts it under a dot-directory —
+// `<repo>/.claude-worktrees/<name>` — so cutting there names the repo, while a
+// sibling repo under a shared parent is untouched, since no segment between
+// them is hidden. Cutting by the selection's own directories instead would let
+// one session run from a parent folder swallow every repo beneath it: locally
+// a single session in `~/Projects/wix-private` merged three repos into one row
+// worth $3,552.
+func projectName(cwd string) string {
+	if cwd == "" {
+		return unknownProject
+	}
+	return abbrevHome(projectRoot(cwd))
+}
+
+// projectRoot cuts a path at its first hidden segment. A path whose only
+// non-empty segments are hidden — a dot-directory in the home directory, say —
+// keeps that first segment, since cutting it away would name the home directory
+// and merge every such directory into one row.
+func projectRoot(cwd string) string {
+	segs := strings.Split(cwd, "/")
+	for i, seg := range segs {
+		if !strings.HasPrefix(seg, ".") || seg == "" {
+			continue
+		}
+		if i+1 < len(segs) {
+			// Keep the hidden segment only where dropping it would leave nothing but
+			// the root or the home directory to name the row by.
+			cut := strings.Join(segs[:i], "/")
+			if cut == "" || cut == homeDir {
+				return strings.Join(segs[:i+1], "/")
+			}
+			return cut
+		}
+		return cwd
+	}
+	return cwd
+}
+
+// homeDir is resolved once. A machine with no resolvable home abbreviates
+// nothing, which prints the path in full rather than failing.
+var homeDir, _ = os.UserHomeDir()
+
+// abbrevHome writes the home directory as "~", the listing's abbreviation.
+func abbrevHome(path string) string {
+	if homeDir == "" {
+		return path
+	}
+	if path == homeDir {
+		return "~"
+	}
+	if strings.HasPrefix(path, homeDir+"/") {
+		return "~" + path[len(homeDir):]
+	}
+	return path
 }
 
 // agentName names the row a response falls under on the agent axis, standing in
@@ -313,6 +383,10 @@ func activityKey(by, day string, s model.Summary) (string, bool) {
 		return weekOf(day), true
 	case ByMonth:
 		return monthOf(day), true
+	case ByProject:
+		// A turn belongs to one session, and a session to one directory, so the
+		// project axis takes turns where the model and agent axes cannot.
+		return projectName(s.Cwd), true
 	case BySession:
 		return s.ID, true
 	case ByTotal:
@@ -411,7 +485,7 @@ func inWindow(day, sinceDay, untilDay string) bool {
 // axes that are questions about size by size, most expensive first.
 func sortBuckets(bs []Bucket, by string) {
 	switch by {
-	case ByModel, ByAgent, BySession:
+	case ByModel, ByAgent, ByProject, BySession:
 		sort.SliceStable(bs, func(i, j int) bool {
 			if bs[i].CostUSD != bs[j].CostUSD {
 				return bs[i].CostUSD > bs[j].CostUSD
@@ -449,6 +523,9 @@ func recordedOf(sums []model.Summary, sinceDay, untilDay string) *Recorded {
 type Options struct {
 	Width int
 	Color bool
+	// Chart replaces the rows with a picture of them. Empty and ChartNone both
+	// print the table, so a caller that never heard of charts gets one.
+	Chart string
 }
 
 // RenderJSON writes the report as an indented object — the roll-up's
@@ -493,6 +570,86 @@ func numericWidth(by string, showTurns bool) int {
 	return w
 }
 
+// barMax and barMin bound the share column. Wider than barMax buys no precision
+// a reader uses — the figure beside it is exact — and narrower than barMin the
+// eighth-blocks cannot separate a small row from an empty one, so the column is
+// dropped instead of drawn misleadingly.
+const (
+	barMax = 24
+	barMin = 6
+)
+
+// projectKeyMax bounds the project column. Forty characters holds the tail of
+// every local path that names a repository, which is the part that identifies
+// it — the leading directories are shared by every row and carry nothing.
+const projectKeyMax = 40
+
+// barEighths are the leading fractions of a cell, so a bar ends on an eighth of
+// a column rather than rounding to the nearest whole one.
+var barEighths = []rune{' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'}
+
+// barWidth is the room the share column gets after every other column has taken
+// what it needs, zero when there is not enough left for one.
+func barWidth(width, used int) int {
+	if width <= 0 {
+		width = 100
+	}
+	free := width - used - gap
+	switch {
+	case free < barMin:
+		return 0
+	case free > barMax:
+		return barMax
+	}
+	return free
+}
+
+// bar draws one row's share of the largest row. A row that spent anything at all
+// draws at least the narrowest mark: rounding it away would render a row that
+// cost real money exactly like one that cost nothing.
+func bar(v, max float64, w int) string {
+	if w <= 0 || max <= 0 || v <= 0 {
+		return ""
+	}
+	eighths := int(v / max * float64(w) * 8)
+	if eighths > w*8 {
+		eighths = w * 8
+	}
+	full, rem := eighths/8, eighths%8
+	if full == 0 && rem == 0 {
+		rem = 1
+	}
+	out := strings.Repeat("█", full)
+	if rem > 0 {
+		out += string(barEighths[rem])
+	}
+	return out
+}
+
+// barTiers shade a bar by the share it draws, largest first. The shade repeats
+// what the bar's length and the figure beside it already say — no row is
+// distinguished by its color alone, so the table reads the same under NO_COLOR,
+// through a pipe, and to a reader who cannot separate the hues.
+var barTiers = []struct {
+	atLeast float64
+	color   lipgloss.AdaptiveColor
+}{
+	{0.80, lipgloss.AdaptiveColor{Light: "160", Dark: "203"}},
+	{0.50, lipgloss.AdaptiveColor{Light: "166", Dark: "215"}},
+	{0.25, lipgloss.AdaptiveColor{Light: "136", Dark: "179"}},
+	{0.10, lipgloss.AdaptiveColor{Light: "64", Dark: "108"}},
+	{0.00, lipgloss.AdaptiveColor{Light: "66", Dark: "109"}},
+}
+
+func barStyle(frac float64) lipgloss.Style {
+	for _, t := range barTiers {
+		if frac >= t.atLeast {
+			return lipgloss.NewStyle().Foreground(t.color)
+		}
+	}
+	return lipgloss.NewStyle()
+}
+
 // Render writes the rows, the total they sum to, and the notes that say what the
 // figure is and is not.
 func Render(w io.Writer, r Report, opts Options) error {
@@ -521,21 +678,53 @@ func Render(w io.Writer, r Report, opts Options) error {
 		if labelW < len("Title") {
 			labelW = len("Title")
 		}
-		if max := labelCap(opts.Width, keyW, numericWidth(r.By, showTurns)); labelW > max {
+		if max := labelCap(opts.Width, keyW, numericWidth(r.By, showTurns)+gap+barMin); labelW > max {
 			labelW = max
+		}
+	}
+	// The project axis is the other variable-width key, and an unbounded one: a
+	// session run inside a temporary working directory carries its whole path,
+	// which locally reached 140 characters and pushed every figure off screen.
+	// Bounded by a fixed width as well as by the terminal's, because a path long
+	// enough to fill a wide terminal would take the room every other column and
+	// the share bar need, to show directories the reader already recognises.
+	if r.By == ByProject {
+		if keyW > projectKeyMax {
+			keyW = projectKeyMax
+		}
+		if max := labelCap(opts.Width, 0, numericWidth(r.By, showTurns)+gap+barMin); keyW > max {
+			keyW = max
 		}
 	}
 	if keyW < len("Total") {
 		keyW = len("Total")
 	}
 
+	used := keyW + numericWidth(r.By, showTurns)
+	if r.By == BySession {
+		used += gap + labelW
+	}
+	barW := barWidth(opts.Width, used)
+	var maxCost float64
+	for _, b := range r.Buckets {
+		if b.CostUSD > maxCost {
+			maxCost = b.CostUSD
+		}
+	}
+
 	var out strings.Builder
 	if len(r.Buckets) > 0 {
-		out.WriteString(head.Render(headerRow(r.By, keyW, labelW, showTurns)) + "\n")
-		for _, b := range r.Buckets {
-			out.WriteString(row(r.By, b, keyW, labelW, showTurns) + "\n")
+		// A chart that cannot be drawn from these rows falls back to the table and
+		// says why on the notes beneath it, rather than printing an empty frame.
+		if chart, ok := renderChart(opts.Chart, r.Buckets, opts); ok {
+			out.WriteString(chart + "\n")
+		} else {
+			out.WriteString(head.Render(headerRow(r.By, keyW, labelW, showTurns, barW)) + "\n")
+			for _, b := range r.Buckets {
+				out.WriteString(row(r.By, b, keyW, labelW, showTurns, barW, maxCost) + "\n")
+			}
+			out.WriteString("\n")
 		}
-		out.WriteString("\n")
 	}
 	out.WriteString(totalRow(r, keyW, labelW, showTurns) + "\n")
 	for _, line := range notes(r) {
@@ -558,6 +747,8 @@ func axisHeading(by string) string {
 		return "Model"
 	case ByAgent:
 		return "Delegated to"
+	case ByProject:
+		return "Project"
 	case BySession:
 		return "Session"
 	}
@@ -577,7 +768,7 @@ func labelCap(width, keyW, numeric int) int {
 	return cap
 }
 
-func headerRow(by string, keyW, labelW int, showTurns bool) string {
+func headerRow(by string, keyW, labelW int, showTurns bool, barW int) string {
 	cells := []string{padRight(axisHeading(by), keyW)}
 	if by == BySession {
 		cells = append(cells, padRight("Title", labelW))
@@ -588,13 +779,19 @@ func headerRow(by string, keyW, labelW int, showTurns bool) string {
 	if showTurns {
 		cells = append(cells, padLeft("Turns", turnsW), padLeft("Active", activeW), padLeft("$/turn", perTurnW))
 	}
+	if barW > 0 {
+		cells = append(cells, "Share")
+	}
 	return joinCells(cells)
 }
 
-func row(by string, b Bucket, keyW, labelW int, showTurns bool) string {
+func row(by string, b Bucket, keyW, labelW int, showTurns bool, barW int, maxCost float64) string {
 	key := b.Key
-	if by == BySession {
+	switch by {
+	case BySession:
 		key = shortID(b.Key)
+	case ByProject:
+		key = cutLeft(b.Key, keyW)
 	}
 	cells := []string{padRight(key, keyW)}
 	if by == BySession {
@@ -606,7 +803,13 @@ func row(by string, b Bucket, keyW, labelW int, showTurns bool) string {
 	if showTurns {
 		cells = append(cells, work(b)...)
 	}
-	return joinCells(cells)
+	// The share column is left off the total rather than filled: a bar spanning
+	// the whole width would say only that the total is the total.
+	if barW > 0 && maxCost > 0 {
+		frac := b.CostUSD / maxCost
+		cells = append(cells, barStyle(frac).Render(bar(b.CostUSD, maxCost, barW)))
+	}
+	return strings.TrimRight(joinCells(cells), " ")
 }
 
 // totalRow prints the figure every row sums to. On the session axis the session
@@ -628,6 +831,17 @@ func totalRow(r Report, keyW, labelW int, showTurns bool) string {
 }
 
 func joinCells(cells []string) string { return strings.Join(cells, strings.Repeat(" ", gap)) }
+
+// cutLeft trims a path to fit, dropping the front rather than the back. Paths in
+// one column share their leading directories and differ at the end, so cutting
+// the way a title is cut would leave rows that all read alike.
+func cutLeft(s string, w int) string {
+	if w < 2 || utf8.RuneCountInString(s) <= w {
+		return s
+	}
+	r := []rune(s)
+	return "…" + string(r[len(r)-(w-1):])
+}
 
 // figures is the pair every row carries: what the bucket spent, in tokens and in
 // dollars.

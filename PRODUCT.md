@@ -249,11 +249,18 @@ Under a named window every row is bounded by it, and the machine row's own thirt
 - `--by month` — one row per calendar month.
 - `--by model` — one row per model, which is what answers "what has Opus cost me".
 - `--by agent` — one row per thing the tokens were delegated to, which is what answers "what is that skill costing me".
+- `--by project` — one row per directory the sessions ran in, which is what answers "which repo is costing me".
 - `--by session` — one row per session, with its title, which is what answers "which session cost that much".
 
 `--by agent` names a subagent by its type and a forked skill by its invoked name with the leading slash kept, so a table mixing both says which is which. The session's own tokens are a row called **`(main thread)`** rather than an omission, so the rows sum to the total and each one's share reads off the table; the main thread is the large majority of every local session, which a delegated-only table would hide. **A delegation that delegates again is charged to the call the session itself made.** A subagent or skill that spawns its own subagents writes their logs beside the session's, and each link is followed until the chain reaches the call the session chose — so a skill's row is what invoking it actually cost, including everything it ran underneath. Charging the nested work to its own name would name a row nobody invoked and nobody can decide to stop running.
 
 A log that **no spawn record names at all** is named **`(unattributed)`** rather than dropped, since its tokens were spent whatever the record forgot. That is the floor rather than an edge case: 169 of 1,507 local sidecar logs, 11%, carry no record naming them, which was 1.9% of a month's dollars.
+
+**`--by project` groups by the directory the session ran in**, read from the log rather than from the project folder's name, which is lossy. The path is **cut at its first hidden segment**, which is what folds a repository's worktrees into the repository: a tool that checks a branch out beside the repo puts it under a dot-directory, `<repo>/.claude-worktrees/<name>`, so cutting there names the repo. A sibling repository under a shared parent is untouched, since no segment between the two is hidden.
+
+Cutting by the rows themselves instead — folding every directory into the outermost row that contains it — was tried and is wrong: one session run from a parent folder then swallows every repository beneath it, which locally merged three repos into a single $3,552 row. A path whose only hidden segment is its last named part keeps it, so `~/.bob` and `~/.config` stay apart rather than both collapsing onto the home directory.
+
+Nothing is read from the filesystem, so a directory deleted or moved since the sessions ran groups the way it did then. The home directory prints as `~`, the listing's abbreviation. The column is bounded at forty characters and **cut from the left**, since paths in one column share their leading directories and differ at the end — locally a session run inside a temporary directory carried a 140-character path that pushed every figure off screen. Locally this axis carries the largest single finding in the tool: one repository is $2,604 of a $6,221 month, which no other axis separates out.
 
 Three further columns say what the dollars bought: **`Turns`**, **`Active`**, and **`$/turn`**. A turn is counted in the bucket its prompt started in. Active time runs from that prompt to the last thing the assistant said in the turn, counting **any silence longer than five minutes as five minutes**.
 
@@ -281,13 +288,17 @@ Scope is the listing's: the current directory's project and everything nested un
 
 **Whenever that default leaves sessions unpriced, `cost` says how many on stderr** and names `--from all`, which is more than the listing owes. A listing that dropped rows still shows the rows it kept, so the reader can see it is looking at a subset; a total is one number, and one that quietly omitted sessions is simply lower than the bill — locally by $426 of $10,244, across 246 headless runs. The note goes to stderr, so a figure piped into another program is still the figure alone.
 
+**Every row carries a bar showing its share of the window's dollars.** It is the last column, so it takes whatever width the figures leave and is the first thing dropped when the terminal is too narrow — no figure ever wraps to make room for it. A row that spent anything at all draws at least one mark, so a row too small to see is never rendered as a row that spent nothing, and the total line carries no bar, since a bar covering the whole width says only that the total is the total.
+
+The bar is a second reading of the Cost column and never the only one. Under `NO_COLOR`, on a monochrome terminal, and through a pipe the figure it repeats is still on the row, and the bar itself is drawn from block characters rather than from color, so it survives all three. Where color is available it shades the bar by rank, which adds nothing a reader needs and takes nothing away from one who cannot see it.
+
 The text form is a table with a total line beneath it:
 
 ```
 Day               Sessions      Tokens        Cost
-2026-09-09               3        4.1M      $12.44
-2026-09-10               5        9.7M      $31.02
-2026-09-11               2        1.8M       $6.10
+2026-09-09               3        4.1M      $12.44  ████████▎
+2026-09-10               5        9.7M      $31.02  ████████████████████
+2026-09-11               2        1.8M       $6.10  ███▉
 
 Total                   10       15.6M      $49.56
 computed from the transcript at 2026-09-11 list prices — an estimate, not a bill
@@ -295,6 +306,16 @@ Claude Code recorded $54.02 for the 4 sessions it kept a record for
 ```
 
 The last line appears only when a session **wholly inside the window** carries Claude Code's own record, and it names how many, because that is the only comparison that is exact: a record is one number for a whole session, so a session straddling the window's edge cannot contribute a share of it. Where no session in the window carries one, the line is absent rather than reading zero.
+
+**`--chart` replaces the rows with a picture of them**, keeping the total line and every note beneath it, because those say what the picture is of. It takes `line`, `calendar` or `none`, and `none` is the default that prints the table.
+
+`--chart line` draws the buckets as a braille line plot, joining the points rather than leaving them as dots: a braille cell is two dots wide and four tall, so the plot fits four times as many points across a terminal as block characters do, and separate dots at that resolution read as scatter. The value axis is labelled down the left edge and the span named beneath, oldest at the left.
+
+`--chart calendar` lays the days out as a week per column and a weekday per row, each square shaded in one of four steps by which quarter of the spending days it falls in. Quarters by count rather than by dollars, since a month holding one very large day would otherwise shade every other day alike. A day inside the span that spent nothing is a dot, so an idle day and a day outside the window never read the same.
+
+**A chart that cannot be drawn falls back to the table.** One bucket is not a line and not a calendar, and an empty frame would say less than the row it replaced.
+
+The flag is rejected at parse time where it cannot mean anything, naming both flags rather than the value alone: `--chart` on an axis that is not time, `--chart calendar` on any axis but `--by day`, and `--chart` together with `--format json`, whose object is the same whether or not a picture was asked for.
 
 `--format json` on the three-row summary emits `scopes`, one entry per panel as `{scope, label, since, sessions, usage, costUSD}` — `scope` being `session`, `folder` or `machine`, and `since` present on the machine panel alone — beside the same `recorded`, `unpricedModels` and `pricesVerified` the roll-up carries.
 

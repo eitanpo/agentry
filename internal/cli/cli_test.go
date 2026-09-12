@@ -1454,3 +1454,85 @@ func TestCostWindowDropsRowsItEmpties(t *testing.T) {
 		t.Errorf("the machine row is the anchor and must always print:\n%s", out)
 	}
 }
+
+// TestChartIsRejectedWhereItCannotMeanAnything pins the three pairs --chart
+// cannot be honoured in, and that each rejection names both flags. Naming only
+// the value would send a reader to correct the half that was already right.
+func TestChartIsRejectedWhereItCannotMeanAnything(t *testing.T) {
+	fixtureProject(t)
+	for _, tt := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no axis at all", []string{"cost", "--chart", "line"}, "--by"},
+		{"an axis with no order", []string{"cost", "--by", "agent", "--chart", "line"}, "--by"},
+		{"a calendar of weeks", []string{"cost", "--by", "week", "--chart", "calendar"}, "--by day"},
+		{"a picture of an object", []string{"cost", "--by", "day", "--chart", "line", "--format", "json"}, "--format json"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			code, _, stderr := exec(tt.args...)
+			if code != exUsage {
+				t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+			}
+			if !strings.Contains(stderr, "--chart") || !strings.Contains(stderr, tt.want) {
+				t.Errorf("stderr = %q, want both --chart and %q named", stderr, tt.want)
+			}
+		})
+	}
+}
+
+// secondDay writes one more session into the project the working directory is
+// already in, dated a week after the fixture's. A picture of one bucket is not a
+// picture, so a chart cannot be drawn — let alone asserted — from a fixture
+// holding a single day.
+func secondDay(t *testing.T) {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := `{"type":"user","timestamp":"2026-06-03T10:00:00Z","message":{"role":"user","content":"later prompt"}}
+{"type":"assistant","timestamp":"2026-06-03T10:00:05Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":900000}}}
+`
+	dir := filepath.Join(locate.ProjectsRoot, locate.ProjectDirName(cwd))
+	if err := os.WriteFile(filepath.Join(dir, "cafe1234-0000-0000-0000-000000000001.jsonl"), []byte(log), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestChartDrawsInPlaceOfTheRows is the accepted half: the day rows give way to
+// a picture, and the total line and its notes stay, since those say what the
+// picture is of.
+func TestChartDrawsInPlaceOfTheRows(t *testing.T) {
+	fixtureProject(t)
+	secondDay(t)
+	out := captureStdout(t, func() {
+		if code, _, stderr := exec("cost", "--by", "day", "--chart", "calendar", "--no-color"); code != 0 {
+			t.Fatalf("exit = %d, stderr = %q", code, stderr)
+		}
+	})
+	if strings.Contains(out, "Sessions") {
+		t.Errorf("--chart calendar kept the table:\n%s", out)
+	}
+	for _, want := range []string{"Mon", "Total", "an estimate, not a bill"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--chart calendar output is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestProjectAxisNamesTheDirectory pins the axis reaching the CLI: --by project
+// is offered, accepted, and heads its column with the directory rather than
+// with a session id.
+func TestProjectAxisNamesTheDirectory(t *testing.T) {
+	fixtureProject(t)
+	out := captureStdout(t, func() {
+		if code, _, stderr := exec("cost", "--by", "project", "--no-color"); code != 0 {
+			t.Fatalf("exit = %d, stderr = %q", code, stderr)
+		}
+	})
+	if !strings.Contains(out, "Project") {
+		t.Errorf("cost --by project did not head its column with Project:\n%s", out)
+	}
+}
