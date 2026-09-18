@@ -62,9 +62,8 @@ Release builds set the full version from the git tag via `-ldflags "-X main.Vers
 (GoReleaser does this on tag).
 
 The increment policy lives in [AGENTS.md](AGENTS.md) § Versioning, which owns the bump
-decision — do not restate it here. This file owns the mechanics only. `var Version` changes
-**only when releasing** (step 1 below), never in a feature commit — the bump covers everything
-accumulated since the last tag.
+decision — do not restate it here. This file owns the mechanics only: `var Version` is set at
+step 1 of the flow below.
 
 ## Releasing
 
