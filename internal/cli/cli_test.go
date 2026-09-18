@@ -1145,6 +1145,22 @@ func TestRunFlags(t *testing.T) {
 		if !strings.Contains(out, "Tokens:") {
 			t.Errorf("--include all missing the cost channel: %q", out)
 		}
+		if !strings.Contains(out, "trying to read") {
+			t.Errorf("--include all missing the last-reply channel: %q", out)
+		}
+	})
+
+	t.Run("--include last-reply shows the final reply and no earlier one", func(t *testing.T) {
+		// End to end from the flag string: the fixture holds two assistant text
+		// blocks, so a channel that showed the corpus rather than its last entry
+		// would surface the first one too. The channel is named for showing one.
+		out := captureStdout(t, func() { exec("list", "--include", "last-reply") })
+		if !strings.Contains(out, "trying to read") {
+			t.Errorf("output missing the final reply: %q", out)
+		}
+		if strings.Contains(out, "here is an answer") {
+			t.Errorf("output carries an earlier reply: %q", out)
+		}
 	})
 
 	t.Run("--include cost states the spend in the text table", func(t *testing.T) {
@@ -1606,4 +1622,154 @@ func TestCostLevelRejectsTheRenderOnlyValues(t *testing.T) {
 			t.Errorf("cost --level %s: stderr = %q, want the flag named", v, stderr)
 		}
 	}
+}
+
+// TestDefaultCapAppliesToBareListingOnly pins the cap rule: ten rows on a bare
+// text listing, every session once a selecting flag is passed or the output is
+// JSON, and an explicit --limit winning over both. Every other test in this file
+// passes --limit 0, so without this one the rule has no behavioural coverage and
+// a change to it breaks nothing.
+func TestDefaultCapAppliesToBareListingOnly(t *testing.T) {
+	const sessions = 12
+	t.Chdir(t.TempDir())
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	orig := locate.ProjectsRoot
+	locate.ProjectsRoot = root
+	t.Cleanup(func() { locate.ProjectsRoot = orig })
+	for i := 0; i < sessions; i++ {
+		writeProject(t, root, cwd, fmt.Sprintf("%08d-0000-0000-0000-000000000000", i))
+	}
+
+	// Every row carries the fixture's date in its first column, so counting it
+	// counts rows without counting the detail lines a channel adds.
+	rows := func(t *testing.T, args ...string) int {
+		t.Helper()
+		out := captureStdout(t, func() { exec(append([]string{"list"}, args...)...) })
+		return strings.Count(out, "2026-06-03")
+	}
+
+	if n := rows(t); n != 10 {
+		t.Errorf("a bare listing showed %d rows, want the default cap of 10", n)
+	}
+	// Scope flags read as a request for everything. They were the case the old
+	// roll-call rule missed, so --all-projects --from all stayed capped at ten.
+	if n := rows(t, "--all-projects"); n != sessions {
+		t.Errorf("--all-projects showed %d rows, want every session (%d)", n, sessions)
+	}
+	if n := rows(t, "--from", "all"); n != sessions {
+		t.Errorf("--from all showed %d rows, want every session (%d)", n, sessions)
+	}
+	// A detail channel asks for more about each session, not for more sessions, so
+	// it must leave the cap alone — lifting it here answers a request for detail
+	// with every session's worth of it.
+	if n := rows(t, "--include", "prompts"); n != 10 {
+		t.Errorf("--include showed %d rows, want the cap still in force at 10", n)
+	}
+	// An explicit --limit outranks a selecting flag.
+	if n := rows(t, "--all-projects", "--limit", "3"); n != 3 {
+		t.Errorf("--limit 3 showed %d rows, want 3", n)
+	}
+
+	count := func(t *testing.T, args ...string) int {
+		t.Helper()
+		out := captureStdout(t, func() { exec(append([]string{"list", "--format", "json"}, args...)...) })
+		var got []map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
+		}
+		return len(got)
+	}
+
+	t.Run("json is never capped by default", func(t *testing.T) {
+		// A consumer cannot tell a capped array from a complete one, so a cap here
+		// is a wrong answer nothing downstream can detect.
+		if n := count(t); n != sessions {
+			t.Errorf("bare JSON carried %d sessions, want every one (%d)", n, sessions)
+		}
+	})
+
+	t.Run("an explicit limit still caps json", func(t *testing.T) {
+		// The exemption is of the default, not of the flag: a caller who names a
+		// number has asked for one.
+		if n := count(t, "--limit", "4"); n != 4 {
+			t.Errorf("--limit 4 carried %d sessions, want 4", n)
+		}
+	})
+
+	t.Run("a cap that hid sessions names the remainder on stderr", func(t *testing.T) {
+		// Without the count, ten rows drawn from twelve reads as the whole set.
+		var stderr string
+		out := captureStdout(t, func() { _, _, stderr = exec("list") })
+		if !strings.Contains(stderr, "2 more session(s)") {
+			t.Errorf("stderr = %q, want the count the cap held back", stderr)
+		}
+		// The notice names the keyword, not the sentinel: a caller told to pass 0
+		// learns the spelling that reads as zero on the neighbouring flag.
+		if !strings.Contains(stderr, "--limit all") {
+			t.Errorf("stderr = %q, want the flag that lists them", stderr)
+		}
+		// The blank line that separates the notice from the last row. This pins the
+		// separator, not the position: the listing writes to os.Stdout while the
+		// notice writes to the command's error writer, so this harness captures the
+		// two into separate buffers and their relative order is not recoverable
+		// here. Moving the call back above the table would keep this assertion
+		// green — the order is checked by running the binary with both streams
+		// merged onto one destination.
+		if !strings.HasPrefix(stderr, "\n") {
+			t.Errorf("stderr = %q, want a blank line before the notice", stderr)
+		}
+		// The whole reason it is not in the table: a caller reading a field off
+		// every line must still find a session on every line of stdout.
+		if strings.Contains(out, "more session(s)") {
+			t.Errorf("stdout carries the notice and must not: %q", out)
+		}
+	})
+
+	t.Run("all removes the cap and 0 still does", func(t *testing.T) {
+		// "all" is the documented spelling; 0 is what the flag took before it, so
+		// every script already passing 0 keeps working.
+		for _, v := range []string{"all", "0"} {
+			if n := rows(t, "--limit", v); n != sessions {
+				t.Errorf("--limit %s showed %d rows, want every session (%d)", v, n, sessions)
+			}
+		}
+	})
+
+	t.Run("a value that is neither a count nor the keyword is a usage error", func(t *testing.T) {
+		// Same treatment --from and --include give a bad value: named, with the
+		// nearest keyword, rather than falling back to the default.
+		code, _, stderr := exec("list", "--limit", "al")
+		if code != exUsage {
+			t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+		}
+		if !strings.Contains(stderr, `did you mean "all"`) {
+			t.Errorf("stderr = %q, want a nearest-keyword suggestion", stderr)
+		}
+	})
+
+	t.Run("a negative count is a usage error, not no cap", func(t *testing.T) {
+		// The int flag this replaced accepted a negative and silently lifted the
+		// cap, answering a typo with every session there is.
+		code, _, stderr := exec("list", "--limit", "-5")
+		if code != exUsage {
+			t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+		}
+		if !strings.Contains(stderr, "negative") {
+			t.Errorf("stderr = %q, want the value named as negative", stderr)
+		}
+	})
+
+	t.Run("a listing that hid nothing stays quiet", func(t *testing.T) {
+		// A notice on every listing is a notice nobody reads, and there is no
+		// remainder to name once the cap is off.
+		var stderr string
+		captureStdout(t, func() { _, _, stderr = exec("list", "--all-projects") })
+		if strings.Contains(stderr, "more session(s)") {
+			t.Errorf("stderr = %q, want no remainder notice when nothing was hidden", stderr)
+		}
+	})
 }

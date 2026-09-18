@@ -37,8 +37,11 @@ var levels = map[string]render.Channels{
 var (
 	verbNames    = []string{"view", "list", "cost"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
-	includeNames = []string{"prompts", "tools", "files", "model", "cost", "outputs", "all"}
+	includeNames = []string{"prompts", "tools", "files", "model", "cost", "outputs", "last-reply", "all"}
 	formatNames  = []string{"json", "text"}
+	// --limit takes a count or this one keyword, so the suggestion set is a single
+	// entry: a mistyped number is arithmetic, not a near-miss on a name.
+	limitNames = []string{"all"}
 )
 
 // effortLevels are the levels `claude --effort` accepts, offered as completion

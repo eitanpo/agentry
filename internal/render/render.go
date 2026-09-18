@@ -371,6 +371,23 @@ func (r *renderer) toolBody(text, prefix string) []string {
 	return out
 }
 
+// Reply lays out one assistant reply the way a rendered turn lays out its own:
+// the glyph alone on a line, then the prose through glamour at the given wrap
+// width. It returns one string per display line and adds no left rail, which
+// the caller supplies — the listing's last-reply channel hangs these lines off
+// the same rail and closing rule a turn uses.
+//
+// It exists so the listing does not grow a second markdown path: a reply read
+// off a listing and the same reply under the render path go through this one
+// function, so the two cannot drift in how a reply reads. The glamour renderer
+// is built per call rather than cached across calls, which costs one
+// construction per session in a listing.
+func Reply(text string, width int, color bool) []string {
+	r := &renderer{opts: Options{Width: width, Color: color}, gcache: map[int]*glamour.TermRenderer{}}
+	r.initStyles()
+	return append([]string{r.claude.Render(glyphClaude)}, r.markdown(text, width)...)
+}
+
 // markdown renders a body through glamour at the given wrap width, returning
 // trimmed lines. With color on, markdown links in the prose become OSC 8
 // terminal hyperlinks (see linkifyMarkdown).

@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/eitanpo/agentry/internal/render"
 	"github.com/muesli/termenv"
 )
 
@@ -58,28 +59,40 @@ func TestSelect(t *testing.T) {
 	}
 
 	t.Run("orders most-recent first", func(t *testing.T) {
-		got := Select(sums, time.Time{}, time.Time{}, 0)
+		got, matched := Select(sums, time.Time{}, time.Time{}, 0)
 		want := []string{"evening", "onlystart", "noon", "morning"}
 		assertIDs(t, got, want)
+		if matched != len(sums) {
+			t.Errorf("matched = %d, want %d when no cap drops anything", matched, len(sums))
+		}
 	})
 
 	t.Run("limit caps count", func(t *testing.T) {
-		got := Select(sums, time.Time{}, time.Time{}, 2)
+		got, matched := Select(sums, time.Time{}, time.Time{}, 2)
 		assertIDs(t, got, []string{"evening", "onlystart"})
+		// The count is what the caller subtracts from to name the remainder, so it
+		// reports the window's size rather than the capped slice's.
+		if matched != len(sums) {
+			t.Errorf("matched = %d, want %d: the cap must not change what matched", matched, len(sums))
+		}
 	})
 
 	t.Run("since drops earlier", func(t *testing.T) {
-		got := Select(sums, at(12), time.Time{}, 0)
+		got, matched := Select(sums, at(12), time.Time{}, 0)
 		assertIDs(t, got, []string{"evening", "onlystart", "noon"})
+		// A window narrows what matched; only a cap leaves a remainder.
+		if matched != 3 {
+			t.Errorf("matched = %d, want 3", matched)
+		}
 	})
 
 	t.Run("until drops later", func(t *testing.T) {
-		got := Select(sums, time.Time{}, at(12), 0)
+		got, _ := Select(sums, time.Time{}, at(12), 0)
 		assertIDs(t, got, []string{"noon", "morning"})
 	})
 
 	t.Run("window matching none is empty", func(t *testing.T) {
-		got := Select(sums, at(20), time.Time{}, 0)
+		got, _ := Select(sums, at(20), time.Time{}, 0)
 		if len(got) != 0 {
 			t.Errorf("got %d, want 0", len(got))
 		}
@@ -1099,15 +1112,22 @@ func TestRenderIncludeModel(t *testing.T) {
 
 	t.Run("a session naming neither shows no line", func(t *testing.T) {
 		// About half of sessions predate the effort field, and a few name no model
-		// either. An empty rail line would read as data rather than as absence.
+		// either. An empty rail line would read as data rather than as absence, and
+		// so would a bare closing rule with nothing above it: chrome bounding no
+		// content reads as a channel that ran and found nothing, not one with
+		// nothing to find.
 		var b strings.Builder
 		if err := Render(&b, []model.Summary{{ID: "s1", Title: "do work"}},
 			Options{Width: 120, Color: false, Model: true}); err != nil {
 			t.Fatal(err)
 		}
-		// The block is the row, then the closing rule — no line between them.
-		if lines := strings.Count(strings.TrimSpace(b.String()), "\n"); lines != 1 {
-			t.Errorf("want just the row and its closing rule, got %q", b.String())
+		// Just the row: no rail, no closing rule.
+		out := strings.TrimSpace(b.String())
+		if strings.Count(out, "\n") != 0 {
+			t.Errorf("want just the row, no block chrome, got %q", b.String())
+		}
+		if strings.Contains(out, railClose) {
+			t.Errorf("want no bare closing rule, got %q", b.String())
 		}
 	})
 }
@@ -1243,13 +1263,47 @@ func TestRenderIncludeOutputs(t *testing.T) {
 	})
 
 	t.Run("a session that produced nothing shows no line", func(t *testing.T) {
+		// Neither a pull request nor an artifact: the channel has nothing to
+		// enumerate, so the row gets no rail and no bare closing rule either — a
+		// bare rule here would read as "checked, found nothing" rather than as no
+		// block at all. This is the common case: most sessions produce neither.
 		var b strings.Builder
 		if err := Render(&b, []model.Summary{{ID: "s1", Title: "quiet"}},
 			Options{Width: 120, Color: false, Outputs: true}); err != nil {
 			t.Fatal(err)
 		}
-		if lines := strings.Count(strings.TrimSpace(b.String()), "\n"); lines != 1 {
-			t.Errorf("want just the row and its closing rule, got %q", b.String())
+		out := strings.TrimSpace(b.String())
+		if strings.Count(out, "\n") != 0 {
+			t.Errorf("want just the row, no block chrome, got %q", b.String())
+		}
+		if strings.Contains(out, railClose) {
+			t.Errorf("want no bare closing rule, got %q", b.String())
+		}
+	})
+
+	t.Run("combined with a channel that has content, the shared rail still closes", func(t *testing.T) {
+		// outputs contributes nothing, but prompts does: the shared block must
+		// still show its one line hung off the closing rule, not suppress the
+		// whole block because one of its channels was empty.
+		var b strings.Builder
+		sums := []model.Summary{{ID: "s1", Title: "quiet", Prompts: []string{"do the thing"}}}
+		if err := Render(&b, sums, Options{Width: 120, Color: false, Prompts: true, Outputs: true}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		if !strings.Contains(out, "╰─ "+promptGlyph+" do the thing") {
+			t.Errorf("want the prompt line hung off the closing rule, got %q", out)
+		}
+
+		// And when every selected channel is empty, the combination suppresses the
+		// whole block exactly as a single empty channel does.
+		var empty strings.Builder
+		if err := Render(&empty, []model.Summary{{ID: "s1", Title: "quiet"}},
+			Options{Width: 120, Color: false, Prompts: true, Outputs: true}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(empty.String(), railClose) {
+			t.Errorf("want no bare closing rule when every selected channel is empty, got %q", empty.String())
 		}
 	})
 }
@@ -1258,6 +1312,126 @@ func TestRenderIncludeOutputs(t *testing.T) {
 // reads the model's own prose, and the only one whose corpus --format json does
 // not carry. Without it, no listing can count whether a rule about how a reply
 // is written ever fired.
+func TestRenderIncludeLastReply(t *testing.T) {
+	// Two paragraphs, because a single newline is a soft break markdown joins into
+	// one paragraph — a fixture split that way would pin joining, not preservation.
+	last := "**Done.** The rail closes only where it bounds content.\n\nOne file changed, and the suite passes."
+	sums := []model.Summary{{ID: "s1", Title: "ship it",
+		Prompts: []string{"make it work"},
+		Files:   []string{"/repo/internal/list/list.go"},
+		Replies: []string{"Starting on it.", "Found the cause.", last},
+	}}
+
+	var off strings.Builder
+	if err := Render(&off, sums, Options{Width: 200, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(off.String(), "One file changed") {
+		t.Errorf("the reply should be hidden without the channel: %q", off.String())
+	}
+
+	var on strings.Builder
+	if err := Render(&on, sums, Options{Width: 200, Color: false, LastReply: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := on.String()
+
+	// The glyph takes a line of its own, as it does in a rendered turn, rather
+	// than prefixing the first line of prose the way a prompt glyph does.
+	var sawGlyph bool
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(strings.TrimLeft(line, " │")) == "◆" {
+			sawGlyph = true
+		}
+	}
+	if !sawGlyph {
+		t.Errorf("no line carrying the reply glyph alone: %q", out)
+	}
+
+	// Every paragraph survives. The channel shows the whole reply, so a check on
+	// the opening alone would pass on the truncating version this replaced.
+	for _, want := range []string{"The rail closes only where it bounds content.", "One file changed, and the suite passes."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("reply is missing %q: %q", want, out)
+		}
+	}
+
+	// Only the final one. The channel is named last-reply precisely because every
+	// other multi-valued channel is exhaustive, so an earlier reply surfacing here
+	// is the failure that name exists to rule out.
+	for _, earlier := range []string{"Starting on it.", "Found the cause."} {
+		if strings.Contains(out, earlier) {
+			t.Errorf("only the final reply belongs in this channel, found %q in %q", earlier, out)
+		}
+	}
+
+	t.Run("the lines are the render path's own, not a second layout", func(t *testing.T) {
+		// The whole point of routing through render.Reply: a reply read off a
+		// listing and the same reply under the render path go through one helper, so
+		// they cannot drift. This fixture is short enough not to wrap, so the two
+		// widths produce the same lines and a divergence here is a real one.
+		for _, line := range render.Reply(last, 200, false) {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if !strings.Contains(out, "│ "+line) {
+				t.Errorf("render path line %q is absent from the listing: %q", line, out)
+			}
+		}
+	})
+
+	t.Run("it renders below the prompts and above the channels that enumerate", func(t *testing.T) {
+		// The final reply is the conversation's far end, so it belongs beside the
+		// prompts rather than among the lines listing what the session did.
+		var b strings.Builder
+		if err := Render(&b, sums, Options{Width: 200, Color: false,
+			Prompts: true, LastReply: true, Files: true}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		prompt := strings.Index(out, "make it work")
+		reply := strings.Index(out, "The rail closes only where")
+		file := strings.Index(out, "list.go")
+		if prompt < 0 || reply < 0 || file < 0 {
+			t.Fatalf("a channel is missing from the block: %q", out)
+		}
+		if prompt > reply || reply > file {
+			t.Errorf("want the prompt, then the reply, then the file; got %q", out)
+		}
+	})
+
+	t.Run("a session whose log holds no assistant text shows no line", func(t *testing.T) {
+		// Nothing to show, so the row gets no rail and no bare closing rule either,
+		// the rule every optional channel follows. A headless run that never
+		// answered would otherwise carry a line with nothing on it.
+		var b strings.Builder
+		if err := Render(&b, []model.Summary{{ID: "s1", Title: "quiet"}},
+			Options{Width: 120, Color: false, LastReply: true}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.String(), "╰─") {
+			t.Errorf("want no closing rule for a session with no reply, got %q", b.String())
+		}
+	})
+
+	t.Run("a narrow terminal wraps the reply instead of cutting it", func(t *testing.T) {
+		// The channel shows the whole reply, so a narrow width costs lines rather
+		// than words — the opposite trade from every other channel, whose lines are
+		// truncated with an ellipsis.
+		var b strings.Builder
+		if err := Render(&b, sums, Options{Width: 60, Color: false, LastReply: true}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		if !strings.Contains(out, "passes.") {
+			t.Errorf("the reply lost its tail at a narrow width: %q", out)
+		}
+		if strings.Contains(out, "…") {
+			t.Errorf("the reply should wrap, not truncate: %q", out)
+		}
+	})
+}
+
 func TestFilterByReply(t *testing.T) {
 	sums := []model.Summary{
 		{ID: "block", Replies: []string{
@@ -1749,13 +1923,14 @@ func TestRenderOneLineBlockCollapsesOntoTheRule(t *testing.T) {
 		t.Errorf("a two-line block must close on a rule of its own: %q", two.String())
 	}
 
-	// A channel that finds nothing still prints the rule, which is what separates
-	// this session's row from the next one's.
+	// A channel that finds nothing prints no rule at all: chrome bounding no
+	// content would read as a channel that ran and found nothing rather than one
+	// with nothing to find. The row above is what separates it from the next.
 	var empty strings.Builder
 	if err := Render(&empty, sums, Options{Width: 120, Color: false, Prompts: true}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(empty.String(), railIndent+railClose+"\n") {
-		t.Errorf("an empty block must still print the bare rule: %q", empty.String())
+	if strings.Contains(empty.String(), railClose) {
+		t.Errorf("an empty block must print no bare rule: %q", empty.String())
 	}
 }

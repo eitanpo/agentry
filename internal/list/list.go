@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/eitanpo/agentry/internal/render"
 	"github.com/eitanpo/agentry/internal/spend"
 	"github.com/eitanpo/agentry/internal/trail"
 	"github.com/muesli/termenv"
@@ -37,6 +38,10 @@ type Options struct {
 	Model   bool // --include model: name the model and reasoning effort the session ran on
 	Cost    bool // --include cost: name what the session spent, in tokens and dollars
 	Outputs bool // --include outputs: list the PRs the session opened and the artifacts it published
+	// LastReply is the one channel that shows part of what it names: the session's
+	// final reply rather than every reply. PRODUCT.md's --include section owns why,
+	// and the channel's name is what carries the exception to a caller.
+	LastReply bool // --include last-reply
 }
 
 // Prompt blocks reuse the renderer's turn chrome: a left rail closed by a rule.
@@ -62,8 +67,10 @@ func activity(s model.Summary) time.Time {
 
 // Select orders summaries most-recent first by activity time, drops any outside
 // [since, until] (a zero bound is open), and caps to limit (limit <= 0 = no
-// cap). It does not mutate the input slice.
-func Select(sums []model.Summary, since, until time.Time, limit int) []model.Summary {
+// cap). It does not mutate the input slice. The second return is how many
+// summaries were inside the window before the cap, so a caller can name what the
+// cap hid; it equals len of the first return whenever nothing was dropped.
+func Select(sums []model.Summary, since, until time.Time, limit int) ([]model.Summary, int) {
 	out := make([]model.Summary, 0, len(sums))
 	for _, s := range sums {
 		t := activity(s)
@@ -78,10 +85,15 @@ func Select(sums []model.Summary, since, until time.Time, limit int) []model.Sum
 	sort.SliceStable(out, func(i, j int) bool {
 		return activity(out[i]).After(activity(out[j]))
 	})
+	// The match count is returned alongside the capped slice rather than left for
+	// the caller to recompute: the function that truncates is the only one that
+	// knows what it dropped, and a cap unable to say so is the silent truncation
+	// the --limit rule exists to prevent.
+	matched := len(out)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
-	return out
+	return out, matched
 }
 
 // Tag renders a session's entrypoint as the column value: the 3-character name
@@ -709,9 +721,6 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	if promptW < 10 {
 		promptW = 10
 	}
-	// A session shows a detail block (rail + closing rule) when any --include
-	// channel is on; the channels share one block.
-	block := opts.Prompts || opts.Tools || opts.Files || opts.Model || opts.Cost || opts.Outputs
 	var b strings.Builder
 	rows := arrange(sums)
 	for _, r := range rows {
@@ -769,6 +778,18 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 				detail = append(detail, dim.Render(promptGlyph)+" "+truncate(oneLine(p), promptW))
 			}
 		}
+		// The conversation's far end, so it sits with the prompts rather than among
+		// the channels below that enumerate what the session did. A session whose log
+		// holds no assistant text contributes no line, the rule every optional channel
+		// follows — a headless run that never answered would otherwise show an empty one.
+		//
+		// The reply goes through the render package's own layout rather than being
+		// shortened to a line here, so it reads exactly as it does under the render
+		// path. Unlike every other channel its length is the reply's, not one line
+		// per item; PRODUCT.md's --include section carries what that costs a caller.
+		if opts.LastReply && len(s.Replies) > 0 {
+			detail = append(detail, render.Reply(s.Replies[len(s.Replies)-1], promptW, opts.Color)...)
+		}
 		if opts.Tools {
 			for _, line := range toolLines(s.Tools, s.Denials) {
 				detail = append(detail, dim.Render(truncate(line, promptW)))
@@ -802,12 +823,13 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		// bare one, so the chrome never costs more lines than the content it bounds.
 		// Two or more keep the rail: content on the rule there would give the last
 		// line different chrome from its siblings without saying anything different.
-		// An empty block still prints the bare rule, which separates the row from
-		// the next session's.
+		// A block every selected channel left empty prints nothing at all: a bare
+		// rule here would cost a line bounding no content, and would read as a
+		// channel that ran and found nothing rather than one with nothing to find.
 		switch {
 		case len(detail) == 1:
 			fmt.Fprintf(&b, "%s%s %s\n", railIndent, dim.Render(railClose), detail[0])
-		case block:
+		case len(detail) > 1:
 			rail := railIndent + dim.Render(railGlyph) + " "
 			for _, line := range detail {
 				fmt.Fprintf(&b, "%s%s\n", rail, line)

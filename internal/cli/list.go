@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/list"
@@ -42,7 +44,7 @@ func newListCmd(noColor *bool) *cobra.Command {
 // a flag is read from whichever command was invoked. --format is added
 // separately (addFormatFlag) since it is shared with the render path.
 func addListFlags(cmd *cobra.Command) {
-	cmd.Flags().Int("limit", 10, "cap to N most-recent sessions (0 = no cap)")
+	cmd.Flags().String("limit", "10", `cap to N most-recent sessions, or "all" for no cap`)
 	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
 	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
 	// The channel list is spelled from includeNames rather than repeated, so help
@@ -188,9 +190,37 @@ func parseChanged(cmd *cobra.Command) (list.Changed, error) {
 	return c, nil
 }
 
-// usedFlags are every usageFilters flag name, positive and negated; any of them,
-// like a time filter, lifts the default --limit so a filtered listing is not
-// silently capped.
+// parseLimit reads --limit as a count or the keyword "all". "all" is the
+// spelling the docs and the remainder notice use, because agentry already spells
+// an exhaustive value that way on --from and --include, and because 0 means
+// literally zero on --max-lines, two lines away in the same help output. 0 is
+// still accepted as no cap: it is what the flag took before "all" existed, and
+// every script already passing it keeps working.
+//
+// A negative count is rejected rather than treated as no cap. The int flag this
+// replaced accepted one and silently lifted the cap, which is a typo answered
+// with six hundred rows.
+func parseLimit(cmd *cobra.Command) (int, error) {
+	raw, _ := cmd.Flags().GetString("limit")
+	if raw == "all" || raw == "0" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		if g := nearest(raw, limitNames); g != "" {
+			return 0, usageErr("--limit: %q is neither a count nor a keyword — did you mean %q?", raw, g)
+		}
+		return 0, usageErr("--limit: %q is neither a count nor %q", raw, "all")
+	}
+	if n < 0 {
+		return 0, usageErr("--limit: %d is negative — pass a count, or %q for no cap", n, "all")
+	}
+	return n, nil
+}
+
+// usedFlags are every usageFilters flag name, positive and negated. The cap rule
+// no longer reads this list — it inspects the flags actually passed — so this
+// exists to pin that every filter registers a negated twin.
 var usedFlags = func() []string {
 	names := make([]string, 0, 2*len(usageFilters))
 	for _, u := range usageFilters {
@@ -200,12 +230,15 @@ var usedFlags = func() []string {
 }()
 
 func runList(cmd *cobra.Command, noColor *bool) error {
-	limit, _ := cmd.Flags().GetInt("limit")
+	limit, err := parseLimit(cmd)
+	if err != nil {
+		return err
+	}
 	since, _ := cmd.Flags().GetString("since")
 	until, _ := cmd.Flags().GetString("until")
 	include, _ := cmd.Flags().GetString("include")
 
-	var showPrompts, showTools, showFiles, showModel, showCost, showOutputs bool
+	var showPrompts, showTools, showFiles, showModel, showCost, showOutputs, showLastReply bool
 	for _, tok := range strings.Split(include, ",") {
 		switch tok = strings.TrimSpace(tok); tok {
 		case "": // empty entries (e.g. unset flag) contribute nothing
@@ -221,9 +254,12 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 			showCost = true
 		case "outputs":
 			showOutputs = true
+		case "last-reply":
+			showLastReply = true
 		case "all":
 			showPrompts, showTools, showFiles = true, true, true
 			showModel, showCost, showOutputs = true, true, true
+			showLastReply = true
 		default:
 			if g := nearest(tok, includeNames); g != "" {
 				return usageErr("--include: unknown channel %q — did you mean %q?", tok, g)
@@ -259,15 +295,31 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		}
 		untilT = t
 	}
-	// A time, --used* or run filter without an explicit --limit lifts the default
-	// cap, so a filtered listing shows every match, not just ten.
-	filtering := cmd.Flags().Changed("since") || cmd.Flags().Changed("until") ||
-		cmd.Flags().Changed("model") || cmd.Flags().Changed("effort") ||
-		cmd.Flags().Changed("min-lines") || cmd.Flags().Changed("max-lines")
-	for _, f := range usedFlags {
-		filtering = filtering || cmd.Flags().Changed(f)
-	}
-	if filtering && !cmd.Flags().Changed("limit") {
+	// The default cap serves a bare listing, where ten recent rows answers "what
+	// was I just doing". Any flag that selects which sessions appear turns the
+	// listing into a question whose answer is the whole matching set, so it lifts
+	// the cap. The flags named here shape rows instead of choosing them and leave
+	// it in force: asking for more detail per session is not asking for more
+	// sessions, and lifting the cap for --include would answer a request for
+	// detail with every session's worth of it. PRODUCT.md's --limit rule owns why.
+	//
+	// Written as an exception list over the flags actually passed rather than as a
+	// roll-call of selecting flags, so a selecting flag added later lifts the cap
+	// by default. The roll-call failed the other way: it omitted the scope flags,
+	// leaving --all-projects --from all capped at ten while reading as a request
+	// for everything.
+	shapesRows := map[string]bool{"include": true, "format": true, "no-color": true}
+	var selecting bool
+	cmd.Flags().Visit(func(f *pflag.Flag) {
+		if f.Name != "limit" && !shapesRows[f.Name] {
+			selecting = true
+		}
+	})
+	// JSON is never capped by default, whatever else was passed. The array holds
+	// no chrome a truncation note could live in, and a consumer cannot tell ten of
+	// six hundred from all six hundred, so a cap there is a wrong answer nothing
+	// downstream can detect.
+	if !cmd.Flags().Changed("limit") && (selecting || format == "json") {
 		limit = 0
 	}
 
@@ -318,7 +370,22 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	// caller will actually see: capping first and filtering after would return
 	// fewer than N rows and give no hint why.
 	visible := list.FilterByFrom(sums, from)
-	selected := list.Select(list.Filter(visible, filters, run, changed), sinceT, untilT, limit)
+	selected, matched := list.Select(list.Filter(visible, filters, run, changed), sinceT, untilT, limit)
+	// A cap that hides rows without saying so leaves ten rows drawn from hundreds
+	// looking like the whole set; the cost roll-up names its remainder for the same
+	// reason. On the error stream rather than among the rows: the text table is
+	// line-oriented, so a note inside it would break a caller reading a field off
+	// every line, and the JSON array carries no default cap to describe.
+	//
+	// Called after the output rather than before it, and opening with a blank line.
+	// A notice above the rows is a banner over content the reader has not reached;
+	// under the last row it reads as the listing's closing word, which is where a
+	// reader wondering whether that was all of them has just arrived.
+	reportRemainder := func() {
+		if hidden := matched - len(selected); hidden > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nagentry: %d more session(s) hidden by --limit — pass --limit all to list them\n", hidden)
+		}
+	}
 	// A default that empties the listing must say so. Hidden non-interactive
 	// sessions are the one exclusion the caller did not ask for, so without this
 	// an empty result is indistinguishable from a project holding nothing.
@@ -331,14 +398,16 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		if err := list.RenderJSON(os.Stdout, selected); err != nil {
 			return &exitError{code: 1, err: err}
 		}
+		reportRemainder()
 		return nil
 	}
 	color, width := terminal(*noColor)
 	if err := list.Render(os.Stdout, selected, list.Options{
 		Width: width, Color: color, Prompts: showPrompts, Tools: showTools, Files: showFiles,
-		Model: showModel, Cost: showCost, Outputs: showOutputs,
+		Model: showModel, Cost: showCost, Outputs: showOutputs, LastReply: showLastReply,
 	}); err != nil {
 		return &exitError{code: 1, err: err}
 	}
+	reportRemainder()
 	return nil
 }
