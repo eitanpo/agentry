@@ -687,7 +687,7 @@ func TestProjectRootKeepsALoneHiddenDirectory(t *testing.T) {
 func TestRenderDrawsAShareBarOnEveryRowThatSpent(t *testing.T) {
 	sums := []model.Summary{
 		{ID: "dddddddd-1111", DailyUsage: []model.DailyUsage{out(monday, "claude-opus-5", 1000*million)}},
-		{ID: "dddddddd-2222", DailyUsage: []model.DailyUsage{out(tuesday, "claude-opus-5", million / 100)}},
+		{ID: "dddddddd-2222", DailyUsage: []model.DailyUsage{out(tuesday, "claude-opus-5", million/100)}},
 	}
 	var buf bytes.Buffer
 	// No picture, so the assertions below are about the bars alone; the default

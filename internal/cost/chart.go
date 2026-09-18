@@ -45,8 +45,6 @@ func autoChart(by string) string {
 	return ChartNone
 }
 
-
-
 // chartHeight is how many text rows the line plot occupies. Five rows of braille
 // give twenty vertical positions, which separates a day at the median from one
 // at twice it — the distinction the plot exists to make.

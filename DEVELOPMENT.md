@@ -14,8 +14,9 @@ does see [PRODUCT.md](PRODUCT.md); for install-via-brew and usage see [README.md
 | Command | Use |
 |---|---|
 | `go run .` | quickest iteration inside the repo (prints the bare base version, e.g. `0.1.0`) |
-| `make` / `make build` | compile-check the whole module **and** install to `~/go/bin`, stamped — the default goal, so the global `agentry` you run from other projects always reflects your latest work |
-| `make install` | install only, skipping the whole-module compile-check — the install step `make release` reuses |
+| `make` / `make build` | check formatting, compile-check the whole module, **and** install to `~/go/bin`, stamped — the default goal, so the global `agentry` you run from other projects always reflects your latest work |
+| `make fmt` | fail if any file is unformatted, naming each one; runs first under `make build` |
+| `make install` | install only, skipping both the format check and the whole-module compile-check — the install step `make release` reuses, and the way past a formatting failure you do not want to fix yet |
 
 The global binary is the only one you invoke — `agentry` resolves the session from the
 **current** directory, so you run the installed binary from the project whose log you want, not

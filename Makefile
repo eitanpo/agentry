@@ -14,12 +14,26 @@ LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 # is the install step on its own, reused by `release`.
 .DEFAULT_GOAL := build
 
-.PHONY: build install release release-dry schema-scan schema-scan-new schema-scan-test
-build:
+.PHONY: build fmt install release release-dry schema-scan schema-scan-new schema-scan-test
+build: fmt
 	go build ./...
 	go install $(LDFLAGS) .
 install:
 	go install $(LDFLAGS) .
+
+# Fail the build on an unformatted file, rather than leaving the drift for whoever
+# next runs gofmt by hand: two files had been unformatted for long enough that
+# nobody knew which change introduced it. Wired into build (25ms over this module)
+# because a check nothing triggers is a check nothing catches. `gofmt -l` lists the
+# offenders and still exits 0, so the recipe tests the list rather than the status.
+# Blocked by a slip you do not want to fix now? `make install` skips straight to it.
+fmt:
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "gofmt: not formatted — run 'gofmt -w' on:"; \
+		echo "$$unformatted" | sed 's/^/  /'; \
+		exit 1; \
+	fi
 
 # Measure how far docs/session-format.md has drifted from the logs on this machine.
 # Deliberately not wired into build: it sweeps ~500MB and takes minutes, so it is a
