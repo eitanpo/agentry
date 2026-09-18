@@ -72,12 +72,21 @@ Releases are cut locally with [GoReleaser](https://goreleaser.com) (`brew instal
 driven by [`.goreleaser.yaml`](.goreleaser.yaml). It builds the binaries, creates the GitHub
 release, and pushes the Homebrew **cask** to the `eitanpo/homebrew-tap` repo (which must exist).
 
+Nothing leaves this machine until step 4, so a failure in steps 1 to 3 costs a local reset and
+no more. Do not reorder them: an earlier revision pushed the tag before the dry run, which paid
+for a failed dry run with a tag deletion on the remote — the one step in this flow that is
+awkward to undo.
+
 1. Set `var Version` in `main.go` to the release version (drop the `v`, e.g. `0.1.0`) so non-tag
    builds report it; commit.
-2. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. GoReleaser derives the version from
-   the tag and injects it via `-ldflags`.
-3. Dry-run first: `make release-dry` (builds all targets locally, publishes nothing, installs nothing).
-4. Publish: `make release`. This runs `goreleaser release --clean` (sourcing both tokens from
+2. Tag **locally**, and push nothing: `git tag v0.1.0`. GoReleaser derives the version from the
+   tag and injects it via `-ldflags`, so the tag has to exist before the next step for that step
+   to be representative of what will ship.
+3. Dry-run: `make release-dry` (builds all targets locally, publishes nothing, installs nothing).
+   Confirm the archive names carry the version you just set.
+4. Push the commit, then the tag: `git push origin main` followed by `git push origin v0.1.0`.
+   The tag has to be on the remote before publishing, since the release is created against it.
+5. Publish: `make release`. This runs `goreleaser release --clean` (sourcing both tokens from
    `gh auth token`, since the same account owns both repos) and then `make install`, so this
    machine ends up running the version just shipped. Refreshing the local install is part of the
    release target, not a separate step to remember.
