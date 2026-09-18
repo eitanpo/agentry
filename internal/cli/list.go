@@ -357,7 +357,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		// error still goes to stderr with its exit code: an empty array is not a
 		// claim of success.
 		if format == "json" {
-			_ = list.RenderJSON(os.Stdout, nil)
+			_ = list.RenderJSON(cmd.OutOrStdout(), nil)
 		}
 		return noInputErr(err)
 	}
@@ -395,14 +395,14 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "agentry: %d headless session(s) hidden — pass --from all to include them\n", len(sums))
 	}
 	if format == "json" {
-		if err := list.RenderJSON(os.Stdout, selected); err != nil {
+		if err := list.RenderJSON(cmd.OutOrStdout(), selected); err != nil {
 			return &exitError{code: 1, err: err}
 		}
 		reportRemainder()
 		return nil
 	}
 	color, width := terminal(*noColor)
-	if err := list.Render(os.Stdout, selected, list.Options{
+	if err := list.Render(cmd.OutOrStdout(), selected, list.Options{
 		Width: width, Color: color, Prompts: showPrompts, Tools: showTools, Files: showFiles,
 		Model: showModel, Cost: showCost, Outputs: showOutputs, LastReply: showLastReply,
 	}); err != nil {

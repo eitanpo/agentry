@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -92,6 +91,20 @@ func exec(args ...string) (code int, stdout, stderr string) {
 	root.SetErr(&errBuf)
 	code = run(root, args)
 	return code, out.String(), errBuf.String()
+}
+
+// execMerged runs the command tree with both streams pointed at one buffer, so
+// the order the writes reached the caller in is recoverable. exec's two buffers
+// cannot show it: a note written before the table and one written after it land
+// in the same place, and an assertion that the note is separated from the rows
+// passes either way.
+func execMerged(args ...string) (code int, merged string) {
+	root := newRootCmd("test")
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	code = run(root, args)
+	return code, buf.String()
 }
 
 // These cases all fail before any filesystem access, so they are deterministic
@@ -328,8 +341,7 @@ func TestListJSONAlwaysEmitsArray(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			sessionlessProject(t, tt.makeDir)
-			var code int
-			out := captureStdout(t, func() { code, _, _ = exec("list", "--format", "json") })
+			code, out, _ := exec("list", "--format", "json")
 			if code != exNoInput {
 				t.Errorf("exit = %d, want %d (exNoInput) — [] on stdout must not turn the failure into a success", code, exNoInput)
 			}
@@ -342,35 +354,12 @@ func TestListJSONAlwaysEmitsArray(t *testing.T) {
 			}
 
 			sessionlessProject(t, tt.makeDir)
-			textOut := captureStdout(t, func() { exec("list") })
+			_, textOut, _ := exec("list")
 			if textOut != "" {
 				t.Errorf("text stdout = %q, want empty — only --format json owes a parseable shape", textOut)
 			}
 		})
 	}
-}
-
-// captureStdout redirects os.Stdout for the duration of fn and returns what was
-// written. The render/list paths write to os.Stdout directly (not the cobra
-// command's out buffer that exec() captures), so a behavioral output assertion
-// has to intercept the real stream.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	orig := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	done := make(chan string, 1)
-	go func() {
-		b, _ := io.ReadAll(r)
-		done <- string(b)
-	}()
-	fn()
-	w.Close()
-	os.Stdout = orig
-	return <-done
 }
 
 // fixtureProject points locate at a temp projects root and drops the sample
@@ -431,6 +420,12 @@ func crossProjectFixture(t *testing.T) string {
 	return repo
 }
 
+// fixtureDate is the day writeProject stamps on the session it writes. A test
+// counting rows or locating the last one matches on it, so it is one value here
+// rather than a literal repeated in the fixture and in every assertion that
+// reads the fixture back.
+const fixtureDate = "2026-06-03"
+
 // writeProject creates the project folder cwd encodes to under root, holding one
 // session that records cwd on its entries. Shared by the scope fixtures so both
 // build their folders through the same encoder the lookup uses.
@@ -440,7 +435,7 @@ func writeProject(t *testing.T, root, cwd, id string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"type":"user","cwd":"` + cwd + `","timestamp":"2026-06-03T14:00:00Z","uuid":"u-` + id +
+	body := `{"type":"user","cwd":"` + cwd + `","timestamp":"` + fixtureDate + `T14:00:00Z","uuid":"u-` + id +
 		`","message":{"role":"user","content":"hello"}}` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -489,7 +484,7 @@ func nestedFixture(t *testing.T) {
 // sessions — which is what standing in a main checkout used to give.
 func TestDefaultScopeIncludesNestedProjects(t *testing.T) {
 	nestedFixture(t)
-	out := captureStdout(t, func() { exec("list", "--limit", "0", "--format", "json") })
+	_, out, _ := exec("list", "--limit", "0", "--format", "json")
 	var got []struct {
 		Cwd string `json:"cwd"`
 	}
@@ -550,7 +545,7 @@ func TestScopeFlags(t *testing.T) {
 		// path; naming the repo has to reach it, or auditing a repo silently
 		// omits every session run in a worktree of it.
 		repo := crossProjectFixture(t)
-		out := captureStdout(t, func() { exec("list", "--project", repo, "--limit", "0", "--format", "json") })
+		_, out, _ := exec("list", "--project", repo, "--limit", "0", "--format", "json")
 		var got []map[string]any
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
@@ -568,7 +563,7 @@ func TestScopeFlags(t *testing.T) {
 
 	t.Run("--all-projects spans every project", func(t *testing.T) {
 		crossProjectFixture(t)
-		out := captureStdout(t, func() { exec("list", "--all-projects", "--limit", "0", "--format", "json") })
+		_, out, _ := exec("list", "--all-projects", "--limit", "0", "--format", "json")
 		var got []map[string]any
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
@@ -582,7 +577,7 @@ func TestScopeFlags(t *testing.T) {
 		// This field is the whole reason a cross-project listing is readable:
 		// without it every row names a session and not where it ran.
 		crossProjectFixture(t)
-		out := captureStdout(t, func() { exec("list", "--all-projects", "--limit", "0", "--format", "json") })
+		_, out, _ := exec("list", "--all-projects", "--limit", "0", "--format", "json")
 		var got []struct {
 			Cwd string `json:"cwd"`
 		}
@@ -655,7 +650,7 @@ func entrypointFixture(t *testing.T, eps ...string) {
 func TestFromFlag(t *testing.T) {
 	count := func(t *testing.T, args ...string) int {
 		t.Helper()
-		out := captureStdout(t, func() { exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...) })
+		_, out, _ := exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
 		var got []map[string]any
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
@@ -733,7 +728,7 @@ func TestViewSkipsHeadless(t *testing.T) {
 	// was chosen without depending on id formatting.
 	t.Run("picks the newest interactive session", func(t *testing.T) {
 		entrypointFixture(t, "cli", "sdk-cli")
-		out := captureStdout(t, func() { exec("view", "--format", "json") })
+		_, out, _ := exec("view", "--format", "json")
 		var got struct {
 			Meta struct {
 				ID         string `json:"id"`
@@ -752,9 +747,7 @@ func TestViewSkipsHeadless(t *testing.T) {
 		// An id is an explicit request. Second-guessing it would leave headless
 		// sessions unreachable, since the listing hides them too.
 		entrypointFixture(t, "cli", "sdk-cli")
-		out := captureStdout(t, func() {
-			exec("view", "00000001-0000-0000-0000-000000000000", "--format", "json")
-		})
+		_, out, _ := exec("view", "00000001-0000-0000-0000-000000000000", "--format", "json")
 		if !strings.Contains(out, `"entrypoint": "sdk-cli"`) {
 			t.Errorf("a named headless id must still render: %q", out)
 		}
@@ -764,11 +757,7 @@ func TestViewSkipsHeadless(t *testing.T) {
 		// Refusing would be wrong: sessions plainly exist, and unlike a listing
 		// there is no empty result to return.
 		entrypointFixture(t, "sdk-cli", "sdk-cli")
-		// The render path writes to os.Stdout, not the command's out stream, so
-		// the payload comes from captureStdout while exec supplies code and stderr.
-		var code int
-		var errOut string
-		out := captureStdout(t, func() { code, _, errOut = exec("view", "--format", "json") })
+		code, out, errOut := exec("view", "--format", "json")
 		if code != 0 {
 			t.Errorf("exit = %d, want 0", code)
 		}
@@ -800,9 +789,7 @@ func TestNotUsedFlags(t *testing.T) {
 	fixtureProject(t)
 	count := func(t *testing.T, args ...string) int {
 		t.Helper()
-		out := captureStdout(t, func() {
-			exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
-		})
+		_, out, _ := exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
 		var got []map[string]any
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
@@ -838,9 +825,7 @@ func TestViewFrom(t *testing.T) {
 	// session `view` chose — the observable that distinguishes the selectors.
 	resolved := func(t *testing.T, args ...string) string {
 		t.Helper()
-		out := captureStdout(t, func() {
-			exec(append([]string{"view", "--format", "json"}, args...)...)
-		})
+		_, out, _ := exec(append([]string{"view", "--format", "json"}, args...)...)
 		var got struct {
 			Meta struct {
 				Entrypoint string `json:"entrypoint"`
@@ -873,9 +858,7 @@ func TestViewFrom(t *testing.T) {
 		// Rendering a cli session for --from app would present a kind the caller
 		// did not ask for as the one they did.
 		entrypointFixture(t, "cli")
-		var code int
-		var errOut string
-		out := captureStdout(t, func() { code, _, errOut = exec("view", "--from", "app", "--format", "json") })
+		code, out, errOut := exec("view", "--from", "app", "--format", "json")
 		if code != exNoInput {
 			t.Errorf("exit = %d, want %d", code, exNoInput)
 		}
@@ -916,9 +899,7 @@ func TestViewFrom(t *testing.T) {
 // knows. The two disagreeing about the same session is the defect this closes.
 func TestMetaCarriesEntrypoint(t *testing.T) {
 	entrypointFixture(t, "claude-desktop")
-	out := captureStdout(t, func() {
-		exec("view", "00000000-0000-0000-0000-000000000000", "--format", "json")
-	})
+	_, out, _ := exec("view", "00000000-0000-0000-0000-000000000000", "--format", "json")
 	if !strings.Contains(out, `"entrypoint": "claude-desktop"`) {
 		t.Errorf("meta should carry the entrypoint: %q", out)
 	}
@@ -975,9 +956,9 @@ func TestCompletionSkipsHeadless(t *testing.T) {
 func TestBareCommandLists(t *testing.T) {
 	id := fixtureProject(t)
 
-	bare := captureStdout(t, func() { exec() })
-	listed := captureStdout(t, func() { exec("list") })
-	rendered := captureStdout(t, func() { exec(id) })
+	_, bare, _ := exec()
+	_, listed, _ := exec("list")
+	_, rendered, _ := exec(id)
 
 	if bare != listed {
 		t.Errorf("bare `agentry` output must equal `agentry list`\n--- bare ---\n%s\n--- list ---\n%s", bare, listed)
@@ -988,7 +969,7 @@ func TestBareCommandLists(t *testing.T) {
 	if !strings.Contains(bare, id[:8]) {
 		t.Errorf("bare listing should name the session by an id prefix %q\n%s", id[:8], bare)
 	}
-	if byPrefix := captureStdout(t, func() { exec(id[:8]) }); byPrefix != rendered {
+	if _, byPrefix, _ := exec(id[:8]); byPrefix != rendered {
 		t.Errorf("the prefix the listing prints must render the same session as the full id\n--- prefix ---\n%s\n--- full ---\n%s", byPrefix, rendered)
 	}
 	if bare == rendered {
@@ -1006,8 +987,7 @@ func TestBareListFlagsApply(t *testing.T) {
 	// A list flag is accepted on the bare command: `agentry --since today`
 	// lists (exit 0) rather than erroring as an unknown flag. Captured so the
 	// list output does not leak into the test log.
-	var code int
-	captureStdout(t, func() { code, _, _ = exec("--since", "today") })
+	code, _, _ := exec("--since", "today")
 	if code != 0 {
 		t.Errorf("`agentry --since today`: exit = %d, want 0", code)
 	}
@@ -1086,9 +1066,7 @@ func TestRunFlags(t *testing.T) {
 	fixtureProject(t)
 	count := func(t *testing.T, args ...string) int {
 		t.Helper()
-		out := captureStdout(t, func() {
-			exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
-		})
+		_, out, _ := exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
 		var got []map[string]any
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
@@ -1112,7 +1090,7 @@ func TestRunFlags(t *testing.T) {
 	}
 
 	t.Run("the summary carries the model into JSON", func(t *testing.T) {
-		out := captureStdout(t, func() { exec("list", "--limit", "0", "--format", "json") })
+		_, out, _ := exec("list", "--limit", "0", "--format", "json")
 		var got []map[string]any
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatal(err)
@@ -1127,7 +1105,7 @@ func TestRunFlags(t *testing.T) {
 	})
 
 	t.Run("--include model names it in the text table", func(t *testing.T) {
-		out := captureStdout(t, func() { exec("list", "--include", "model") })
+		_, out, _ := exec("list", "--include", "model")
 		if !strings.Contains(out, "claude-opus-4-7") {
 			t.Errorf("output missing the model: %q", out)
 		}
@@ -1135,7 +1113,7 @@ func TestRunFlags(t *testing.T) {
 
 	t.Run("--include all covers the new channel", func(t *testing.T) {
 		// A channel omitted from "all" is one nobody discovers.
-		out := captureStdout(t, func() { exec("list", "--include", "all") })
+		_, out, _ := exec("list", "--include", "all")
 		if !strings.Contains(out, "claude-opus-4-7") {
 			t.Errorf("--include all missing the model: %q", out)
 		}
@@ -1154,7 +1132,7 @@ func TestRunFlags(t *testing.T) {
 		// End to end from the flag string: the fixture holds two assistant text
 		// blocks, so a channel that showed the corpus rather than its last entry
 		// would surface the first one too. The channel is named for showing one.
-		out := captureStdout(t, func() { exec("list", "--include", "last-reply") })
+		_, out, _ := exec("list", "--include", "last-reply")
 		if !strings.Contains(out, "trying to read") {
 			t.Errorf("output missing the final reply: %q", out)
 		}
@@ -1164,7 +1142,7 @@ func TestRunFlags(t *testing.T) {
 	})
 
 	t.Run("--include cost states the spend in the text table", func(t *testing.T) {
-		out := captureStdout(t, func() { exec("list", "--include", "cost") })
+		_, out, _ := exec("list", "--include", "cost")
 		if !strings.Contains(out, "Tokens:") {
 			t.Errorf("output missing the token tally: %q", out)
 		}
@@ -1193,9 +1171,7 @@ func TestReplyMatchesFlag(t *testing.T) {
 	fixtureProject(t)
 	count := func(t *testing.T, args ...string) int {
 		t.Helper()
-		out := captureStdout(t, func() {
-			exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
-		})
+		_, out, _ := exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
 		var got []map[string]any
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
@@ -1231,9 +1207,7 @@ func TestReplyMatchesFlag(t *testing.T) {
 	}
 	// Reply text is filtered on and never shipped: the JSON must not grow a
 	// replies key just because the filter reads one.
-	out := captureStdout(t, func() {
-		exec("list", "--limit", "0", "--format", "json", "--reply-matches", "here is an answer")
-	})
+	_, out, _ := exec("list", "--limit", "0", "--format", "json", "--reply-matches", "here is an answer")
 	if strings.Contains(out, "here is an answer") {
 		t.Errorf("reply text leaked into --format json: %s", out)
 	}
@@ -1295,9 +1269,7 @@ func TestLineBoundsSelect(t *testing.T) {
 	fixtureProject(t)
 	rows := func(t *testing.T, args ...string) int {
 		t.Helper()
-		out := captureStdout(t, func() {
-			exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
-		})
+		_, out, _ := exec(append([]string{"list", "--limit", "0", "--format", "json"}, args...)...)
 		var got []map[string]any
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
@@ -1320,11 +1292,10 @@ func TestLineBoundsSelect(t *testing.T) {
 // whose rows account for one total.
 func TestCostVerbPricesTheProject(t *testing.T) {
 	fixtureProject(t)
-	out := captureStdout(t, func() {
-		if code, _, stderr := exec("cost", "--no-color"); code != 0 {
-			t.Fatalf("exit = %d, stderr = %q", code, stderr)
-		}
-	})
+	code, out, stderr := exec("cost", "--no-color")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
 	for _, want := range []string{
 		"This session", "This folder", "This machine",
 		"an estimate, not a bill", "2026-09-11",
@@ -1342,7 +1313,7 @@ func TestCostVerbPricesTheProject(t *testing.T) {
 
 	// The same fixture project, still the working directory: fixtureProject
 	// resolves its source relative to the package and cannot be called twice.
-	byDay := captureStdout(t, func() { exec("cost", "--by", "day", "--no-color") })
+	_, byDay, _ := exec("cost", "--by", "day", "--no-color")
 	for _, want := range []string{"Day", "Sessions", "Tokens", "Cost", "Total"} {
 		if !strings.Contains(byDay, want) {
 			t.Errorf("cost --by day is missing %q:\n%s", want, byDay)
@@ -1358,7 +1329,7 @@ func TestCostVerbPricesTheProject(t *testing.T) {
 	// three rows rather than collapsing them into one unlabelled figure. The bound
 	// is a date old enough to keep the fixture's sessions, since a row the window
 	// empties is dropped rather than printed as zero.
-	windowed := captureStdout(t, func() { exec("cost", "--since", "2020-01-01", "--no-color") })
+	_, windowed, _ := exec("cost", "--since", "2020-01-01", "--no-color")
 	for _, want := range []string{"This session", "This folder", "This machine"} {
 		if !strings.Contains(windowed, want) {
 			t.Errorf("cost --since dropped the %q row:\n%s", want, windowed)
@@ -1375,8 +1346,7 @@ func TestCostVerbPricesTheProject(t *testing.T) {
 // the machine holds no session, and the exit code is what reports the failure.
 func TestCostJSONAlwaysEmitsObject(t *testing.T) {
 	sessionlessProject(t, false)
-	var code int
-	out := captureStdout(t, func() { code, _, _ = exec("cost", "--format", "json") })
+	code, out, _ := exec("cost", "--format", "json")
 	if code != exNoInput {
 		t.Errorf("exit = %d, want %d (exNoInput)", code, exNoInput)
 	}
@@ -1399,7 +1369,7 @@ func TestCostJSONAlwaysEmitsObject(t *testing.T) {
 
 	// With a selector the roll-up's own object is the contract instead.
 	sessionlessProject(t, false)
-	out = captureStdout(t, func() { exec("cost", "--by", "day", "--format", "json") })
+	_, out, _ = exec("cost", "--by", "day", "--format", "json")
 	var roll struct {
 		By      string `json:"by"`
 		Buckets []any  `json:"buckets"`
@@ -1434,8 +1404,7 @@ func TestCostRejectsAnUnknownAxis(t *testing.T) {
 // machine rows, so it has nothing to report.
 func TestCostReportsExcludedHeadlessSessions(t *testing.T) {
 	entrypointFixture(t, "cli", "sdk-cli", "sdk-cli")
-	var stderr string
-	out := captureStdout(t, func() { _, _, stderr = exec("cost", "--by", "total", "--no-color") })
+	_, out, stderr := exec("cost", "--by", "total", "--no-color")
 	if !strings.Contains(stderr, "2 headless session(s) not priced") {
 		t.Errorf("stderr = %q, want the count of excluded sessions", stderr)
 	}
@@ -1460,7 +1429,7 @@ func TestCostReportsExcludedHeadlessSessions(t *testing.T) {
 // span asked for.
 func TestCostWindowDropsRowsItEmpties(t *testing.T) {
 	fixtureProject(t)
-	out := captureStdout(t, func() { exec("cost", "--until", "2000-01-01", "--no-color") })
+	_, out, _ := exec("cost", "--until", "2000-01-01", "--no-color")
 	for _, gone := range []string{"This session", "This folder"} {
 		if strings.Contains(out, gone) {
 			t.Errorf("a window holding no session still printed the %q row:\n%s", gone, out)
@@ -1522,11 +1491,10 @@ func secondDay(t *testing.T) {
 func TestDayAxisDrawsACalendarWithoutBeingAsked(t *testing.T) {
 	fixtureProject(t)
 	secondDay(t)
-	out := captureStdout(t, func() {
-		if code, _, stderr := exec("cost", "--by", "day", "--no-color"); code != 0 {
-			t.Fatalf("exit = %d, stderr = %q", code, stderr)
-		}
-	})
+	code, out, stderr := exec("cost", "--by", "day", "--no-color")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
 	for _, want := range []string{"Mon", "Sessions", "Total", "an estimate, not a bill"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cost --by day is missing %q:\n%s", want, out)
@@ -1535,7 +1503,7 @@ func TestDayAxisDrawsACalendarWithoutBeingAsked(t *testing.T) {
 
 	// The same selection with the picture turned off, which is what every version
 	// before the default existed printed.
-	off := captureStdout(t, func() { exec("cost", "--by", "day", "--chart", "none", "--no-color") })
+	_, off, _ := exec("cost", "--by", "day", "--chart", "none", "--no-color")
 	if strings.Contains(off, "Mon") {
 		t.Errorf("--chart none drew a picture:\n%s", off)
 	}
@@ -1549,11 +1517,10 @@ func TestDayAxisDrawsACalendarWithoutBeingAsked(t *testing.T) {
 // leaves the three scopes standing, where --by and the scope flags do not.
 func TestChartDoesNotReplaceTheSummary(t *testing.T) {
 	fixtureProject(t)
-	out := captureStdout(t, func() {
-		if code, _, stderr := exec("cost", "--chart", "none", "--no-color"); code != 0 {
-			t.Fatalf("exit = %d, stderr = %q", code, stderr)
-		}
-	})
+	code, out, stderr := exec("cost", "--chart", "none", "--no-color")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
 	for _, want := range []string{"This session", "This folder", "This machine"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cost --chart none dropped the %q row:\n%s", want, out)
@@ -1569,11 +1536,10 @@ func TestChartDoesNotReplaceTheSummary(t *testing.T) {
 // with a session id.
 func TestProjectAxisNamesTheDirectory(t *testing.T) {
 	fixtureProject(t)
-	out := captureStdout(t, func() {
-		if code, _, stderr := exec("cost", "--by", "project", "--no-color"); code != 0 {
-			t.Fatalf("exit = %d, stderr = %q", code, stderr)
-		}
-	})
+	code, out, stderr := exec("cost", "--by", "project", "--no-color")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
 	if !strings.Contains(out, "Project") {
 		t.Errorf("cost --by project did not head its column with Project:\n%s", out)
 	}
@@ -1587,18 +1553,17 @@ func TestCostSummaryShowsMoreThanTheScopes(t *testing.T) {
 	// A bound old enough to keep the fixture's sessions: the machine row's own
 	// default counts thirty days, and these logs are older than that, which would
 	// leave every breakdown empty and the sections absent for the right reason.
-	full := captureStdout(t, func() {
-		if code, _, stderr := exec("cost", "--since", "2020-01-01", "--no-color"); code != 0 {
-			t.Fatalf("exit = %d, stderr = %q", code, stderr)
-		}
-	})
+	code, full, stderr := exec("cost", "--since", "2020-01-01", "--no-color")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
 	for _, want := range []string{"This machine", "Day by day", "Where it went", "What ran it", "On which model"} {
 		if !strings.Contains(full, want) {
 			t.Errorf("bare cost is missing %q:\n%s", want, full)
 		}
 	}
 
-	minimal := captureStdout(t, func() { exec("cost", "--since", "2020-01-01", "--level", "minimal", "--no-color") })
+	_, minimal, _ := exec("cost", "--since", "2020-01-01", "--level", "minimal", "--no-color")
 	if !strings.Contains(minimal, "This machine") {
 		t.Errorf("cost --level minimal dropped the scope rows:\n%s", minimal)
 	}
@@ -1648,8 +1613,8 @@ func TestDefaultCapAppliesToBareListingOnly(t *testing.T) {
 	// counts rows without counting the detail lines a channel adds.
 	rows := func(t *testing.T, args ...string) int {
 		t.Helper()
-		out := captureStdout(t, func() { exec(append([]string{"list"}, args...)...) })
-		return strings.Count(out, "2026-06-03")
+		_, out, _ := exec(append([]string{"list"}, args...)...)
+		return strings.Count(out, fixtureDate)
 	}
 
 	if n := rows(t); n != 10 {
@@ -1676,7 +1641,7 @@ func TestDefaultCapAppliesToBareListingOnly(t *testing.T) {
 
 	count := func(t *testing.T, args ...string) int {
 		t.Helper()
-		out := captureStdout(t, func() { exec(append([]string{"list", "--format", "json"}, args...)...) })
+		_, out, _ := exec(append([]string{"list", "--format", "json"}, args...)...)
 		var got []map[string]any
 		if err := json.Unmarshal([]byte(out), &got); err != nil {
 			t.Fatalf("stdout is not valid JSON (%v); got %q", err, out)
@@ -1702,8 +1667,7 @@ func TestDefaultCapAppliesToBareListingOnly(t *testing.T) {
 
 	t.Run("a cap that hid sessions names the remainder on stderr", func(t *testing.T) {
 		// Without the count, ten rows drawn from twelve reads as the whole set.
-		var stderr string
-		out := captureStdout(t, func() { _, _, stderr = exec("list") })
+		_, out, stderr := exec("list")
 		if !strings.Contains(stderr, "2 more session(s)") {
 			t.Errorf("stderr = %q, want the count the cap held back", stderr)
 		}
@@ -1712,13 +1676,7 @@ func TestDefaultCapAppliesToBareListingOnly(t *testing.T) {
 		if !strings.Contains(stderr, "--limit all") {
 			t.Errorf("stderr = %q, want the flag that lists them", stderr)
 		}
-		// The blank line that separates the notice from the last row. This pins the
-		// separator, not the position: the listing writes to os.Stdout while the
-		// notice writes to the command's error writer, so this harness captures the
-		// two into separate buffers and their relative order is not recoverable
-		// here. Moving the call back above the table would keep this assertion
-		// green — the order is checked by running the binary with both streams
-		// merged onto one destination.
+		// The blank line that separates the notice from the last row.
 		if !strings.HasPrefix(stderr, "\n") {
 			t.Errorf("stderr = %q, want a blank line before the notice", stderr)
 		}
@@ -1726,6 +1684,25 @@ func TestDefaultCapAppliesToBareListingOnly(t *testing.T) {
 		// every line must still find a session on every line of stdout.
 		if strings.Contains(out, "more session(s)") {
 			t.Errorf("stdout carries the notice and must not: %q", out)
+		}
+	})
+
+	t.Run("the notice comes after the last row", func(t *testing.T) {
+		// Above the rows it is a banner over content the reader has not reached;
+		// under the last row it reads as the listing's closing word, which is where
+		// a reader wondering whether that was all of them has just arrived. Both
+		// streams go into one buffer because that is what a terminal shows the
+		// reader — with a buffer each, the order is gone before the assertion runs.
+		_, merged := execMerged("list")
+		notice := strings.Index(merged, "more session(s)")
+		if notice < 0 {
+			t.Fatalf("merged output carries no remainder notice: %q", merged)
+		}
+		if lastRow := strings.LastIndex(merged, fixtureDate); lastRow > notice {
+			t.Errorf("the notice interrupts the rows — a row starts at %d, the notice at %d:\n%s", lastRow, notice, merged)
+		}
+		if !strings.Contains(merged, "\n\nagentry: ") {
+			t.Errorf("want a blank line between the last row and the notice:\n%s", merged)
 		}
 	})
 
@@ -1766,8 +1743,7 @@ func TestDefaultCapAppliesToBareListingOnly(t *testing.T) {
 	t.Run("a listing that hid nothing stays quiet", func(t *testing.T) {
 		// A notice on every listing is a notice nobody reads, and there is no
 		// remainder to name once the cap is off.
-		var stderr string
-		captureStdout(t, func() { _, _, stderr = exec("list", "--all-projects") })
+		_, _, stderr := exec("list", "--all-projects")
 		if strings.Contains(stderr, "more session(s)") {
 			t.Errorf("stderr = %q, want no remainder notice when nothing was hidden", stderr)
 		}

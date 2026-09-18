@@ -130,14 +130,14 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 	}
 
 	if format == "json" {
-		if err := render.SessionJSON(os.Stdout, sess); err != nil {
+		if err := render.SessionJSON(cmd.OutOrStdout(), sess); err != nil {
 			return &exitError{code: 1, err: err}
 		}
 		return nil
 	}
 
 	color, width := terminal(*noColor)
-	if err := render.Session(os.Stdout, sess, render.Options{
+	if err := render.Session(cmd.OutOrStdout(), sess, render.Options{
 		Width: width, Color: color, Channels: channels,
 	}); err != nil {
 		return &exitError{code: 1, err: err}

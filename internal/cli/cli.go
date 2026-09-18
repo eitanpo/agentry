@@ -246,6 +246,11 @@ func levenshtein(a, b string) int {
 
 // terminal reports whether to colorize and the render width. Color is on only
 // for a TTY stdout with NO_COLOR unset and --no-color absent.
+//
+// The probe reads the process's own stdout while the renderers write to
+// cmd.OutOrStdout() — the same file in every real invocation. A caller that
+// points the command's writer at some other terminal gets color and width
+// measured for stdout rather than for what it is about to write to.
 func terminal(noColor bool) (color bool, width int) {
 	fd := int(os.Stdout.Fd())
 	isTTY := term.IsTerminal(fd)

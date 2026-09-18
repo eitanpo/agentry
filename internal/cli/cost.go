@@ -237,7 +237,7 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 		// the reason to stderr. The exit code is what separates "nothing matched"
 		// from "nothing to look in" — the rule list --format json follows.
 		if format == "json" {
-			_ = cost.RenderJSON(os.Stdout, cost.Build(nil, by, since, until))
+			_ = cost.RenderJSON(cmd.OutOrStdout(), cost.Build(nil, by, since, until))
 		}
 		return noInputErr(err)
 	}
@@ -278,13 +278,13 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 	}
 
 	if format == "json" {
-		if err := cost.RenderJSON(os.Stdout, report); err != nil {
+		if err := cost.RenderJSON(cmd.OutOrStdout(), report); err != nil {
 			return &exitError{code: 1, err: err}
 		}
 		return nil
 	}
 	color, width := terminal(*noColor)
-	if err := cost.Render(os.Stdout, report, cost.Options{Width: width, Color: color, Chart: chart}); err != nil {
+	if err := cost.Render(cmd.OutOrStdout(), report, cost.Options{Width: width, Color: color, Chart: chart}); err != nil {
 		return &exitError{code: 1, err: err}
 	}
 	return nil
@@ -328,7 +328,7 @@ func runCostSummary(cmd *cobra.Command, noColor *bool, format, from, chart, leve
 		// — built rather than zero-valued, so it carries the price table's date like
 		// every other summary — and the reason goes to stderr with the exit code.
 		if format == "json" {
-			_ = cost.RenderOverviewJSON(os.Stdout, cost.BuildOverview(nil, nil, nil, w))
+			_ = cost.RenderOverviewJSON(cmd.OutOrStdout(), cost.BuildOverview(nil, nil, nil, w))
 		}
 		return noInputErr(err)
 	}
@@ -380,13 +380,13 @@ func runCostSummary(cmd *cobra.Command, noColor *bool, format, from, chart, leve
 
 	o := cost.BuildOverview(session, folder, machine, w)
 	if format == "json" {
-		if err := cost.RenderOverviewJSON(os.Stdout, o); err != nil {
+		if err := cost.RenderOverviewJSON(cmd.OutOrStdout(), o); err != nil {
 			return &exitError{code: 1, err: err}
 		}
 		return nil
 	}
 	color, width := terminal(*noColor)
-	if err := cost.RenderOverview(os.Stdout, o, cost.Options{Width: width, Color: color, Chart: chart, Level: level}); err != nil {
+	if err := cost.RenderOverview(cmd.OutOrStdout(), o, cost.Options{Width: width, Color: color, Chart: chart, Level: level}); err != nil {
 		return &exitError{code: 1, err: err}
 	}
 	return nil
