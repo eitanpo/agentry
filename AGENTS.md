@@ -55,7 +55,7 @@ Commit directly to `main`; do not create a feature branch. This is a solo repo w
 
 This section owns the **bump decision**; [DEVELOPMENT.md](DEVELOPMENT.md) owns the release mechanics and does not restate the policy.
 
-`main.go`'s `var Version` holds the **last published** version — the Makefile and release tags derive from it. It changes **only when publishing a release**, never in a feature commit: feature work leaves it untouched and accumulates under the next version. To publish, bump `var Version` and create the matching `vX.Y.Z` tag in the same step (see the release flow below). So a feature commit states no version; the bump decision is made once, at release, covering everything since the last tag.
+`main.go`'s `var Version` holds the **last published** version — the Makefile and release tags derive from it. It changes **only when publishing a release**, never in a feature commit: feature work leaves it untouched and accumulates under the next version. To publish, bump `var Version` and create the matching `vX.Y.Z` tag in the same release. So a feature commit states no version; the bump decision is made once, at release, covering everything since the last tag.
 
 Choose the bump from everything accumulated since the last tag, under pre-1.0 SemVer:
 
