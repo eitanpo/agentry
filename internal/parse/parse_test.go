@@ -1406,3 +1406,44 @@ func TestSummarizeFailures(t *testing.T) {
 	}
 	assertToolStats(t, sess.Meta.Failures, want)
 }
+
+// TestLoadNameLinkPairing pins the legacy skill-name fallback against the two
+// ways it has gone wrong. The fixture holds an inline "beta" Skill call that
+// spawned nothing, followed by an Agent call owning a sidecar whose log names the
+// skill "beta", then two forked "gamma" calls with two unclaimed "gamma" sidecars:
+//
+//   - the inline call must not take the Agent's sidecar, which would also erase
+//     the Agent's own expansion, since attachSubagent expands each sidecar once;
+//   - the two gamma calls must take different sidecars, not the same one twice.
+//
+// Load runs repeatedly because Go randomizes map iteration order per range, so a
+// pick that read one would vary between calls inside a single test process.
+func TestLoadNameLinkPairing(t *testing.T) {
+	want := []string{"", "owned agent work", "gamma first", "gamma second"}
+	for i := 0; i < 20; i++ {
+		sess, err := Load(filepath.Join("testdata", "namelink.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sess.Turns) != 1 {
+			t.Fatalf("turns = %d, want 1", len(sess.Turns))
+		}
+		var got []string
+		for _, e := range sess.Turns[0].Events {
+			if e.Kind != model.EventTool {
+				continue
+			}
+			text := ""
+			for _, se := range e.Tool.Subagent {
+				if se.Kind == model.EventText {
+					text = se.Text
+					break
+				}
+			}
+			got = append(got, text)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("run %d: expansions = %q, want %q", i, got, want)
+		}
+	}
+}

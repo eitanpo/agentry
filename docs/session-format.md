@@ -56,7 +56,10 @@ under [Entry types](#entry-types).
   the only method that survives a project directory being deleted or renamed.
 - One file per session: `<project>/<session-uuid>.jsonl`. The session id is a full UUID.
 - Subagent sidecars: `<project>/<session-uuid>/subagents/agent-<id>.jsonl`, each with an
-  `agent-<id>.meta.json` sibling. A sidecar is itself session-shaped JSONL. Sidecars
+  `agent-<id>.meta.json` sibling holding `agentType`, `spawnDepth`, an optional
+  `description`, and `toolUseId` — the id of the call that spawned it, present on 183 of the
+  186 sidecars of one 2026-07 session and agreeing with every `toolUseResult.agentId` link
+  there. A sidecar is itself session-shaped JSONL. Sidecars
   dominate the tree — 1,346 of the 1,834 files in the 2026-09-06 sweep, against 488 main
   session logs — so any count over `*.jsonl` is counting mostly subagents unless it excludes
   `*/subagents/*`.

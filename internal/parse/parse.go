@@ -44,6 +44,7 @@ func Load(jsonlPath string) (*model.Session, error) {
 
 	stem := strings.TrimSuffix(filepath.Base(jsonlPath), filepath.Ext(jsonlPath))
 	subs := loadSubagents(subagentDir(jsonlPath))
+	nameLinks := sidecarNameLinks(entries, subs)
 	eps := entrypoints(entries)
 	effs := efforts(entries)
 	ms := models(entries)
@@ -95,7 +96,7 @@ func Load(jsonlPath string) (*model.Session, error) {
 			Prompt: t.prompt,
 			Start:  t.start,
 			End:    t.end,
-			Events: buildEvents(t.entries, subs, map[string]bool{}),
+			Events: buildEvents(t.entries, subs, nameLinks, map[string]bool{}),
 		}
 		turn.Usage, turn.ToolCount, turn.ErrorCount = turnMetrics(t.entries, subs)
 		sess.Turns = append(sess.Turns, turn)
@@ -1673,6 +1674,109 @@ func agentIDMap(entries []entry) map[string]string { return sidecarIDs(entries, 
 // expansion.
 func skillSidecarMap(entries []entry) map[string]string { return sidecarIDs(entries, "Skill") }
 
+// unlinkedSkillCall is a Skill tool_use carrying no structured sidecar id — the
+// only calls the legacy name fallback may pair.
+type unlinkedSkillCall struct {
+	toolUseID string
+	skill     string
+	at        time.Time
+}
+
+// sidecarNameLinks pairs the session's Skill calls that carry no structured
+// sidecar id with the sidecars no structured id claims, once for the whole
+// session, and returns tool_use id → sidecar key.
+//
+// Two properties the per-call map scan it replaces had neither of. It is a
+// function of the data rather than of Go's randomized map order, so two runs over
+// one log render identically. And it never hands a sidecar to a call that did not
+// spawn it: a sidecar named by any log's toolUseResult.agentId already has an
+// owner, and giving it to a same-named Skill call stole it — attachSubagent marks
+// every expansion in seen, so the owning Agent call then rendered as a bare leaf
+// and its whole subtree left the transcript. Real sessions make that the normal
+// case, not the corner one: of the 186 sidecars under session f59b7024, 185 are
+// claimed by a structured link, while all 105 of its Skill calls without one are
+// inline skills that spawned nothing and must stay leaves.
+//
+// What remains for the fallback is the pre-structured forked skill: an unclaimed
+// sidecar whose own first entry names the skill. Calls are paired in log order
+// against candidates in start order, each sidecar used once, and only with a
+// sidecar that started at or after the call — a spawn cannot precede its caller.
+func sidecarNameLinks(entries []entry, subs map[string]*subagent) map[string]string {
+	keys := make([]string, 0, len(subs))
+	for key := range subs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	logs := make([][]entry, 0, len(subs)+1)
+	logs = append(logs, entries)
+	for _, key := range keys {
+		logs = append(logs, subs[key].entries)
+	}
+
+	claimed := map[string]bool{}
+	var calls []unlinkedSkillCall
+	for _, log := range logs {
+		linked := skillSidecarMap(log)
+		for _, key := range agentIDMap(log) {
+			claimed[key] = true
+		}
+		for _, key := range linked {
+			claimed[key] = true
+		}
+		for _, e := range log {
+			if e.typ != "assistant" {
+				continue
+			}
+			for _, b := range e.blocks {
+				if b.typ != "tool_use" || b.name != "Skill" || linked[b.id] != "" {
+					continue
+				}
+				if skill, _ := b.input["skill"].(string); skill != "" {
+					calls = append(calls, unlinkedSkillCall{toolUseID: b.id, skill: skill, at: e.t})
+				}
+			}
+		}
+	}
+
+	// Candidates keep their start order per skill name, so the pairing below
+	// consumes the oldest unused sidecar first.
+	candidates := map[string][]string{}
+	for _, key := range keys {
+		if claimed[key] || subs[key].skillName == "" {
+			continue
+		}
+		candidates[subs[key].skillName] = append(candidates[subs[key].skillName], key)
+	}
+	for skill := range candidates {
+		ids := candidates[skill]
+		sort.SliceStable(ids, func(i, j int) bool {
+			return firstStamp(subs[ids[i]].entries).Before(firstStamp(subs[ids[j]].entries))
+		})
+	}
+
+	sort.SliceStable(calls, func(i, j int) bool {
+		if !calls[i].at.Equal(calls[j].at) {
+			return calls[i].at.Before(calls[j].at)
+		}
+		return calls[i].toolUseID < calls[j].toolUseID
+	})
+
+	out := map[string]string{}
+	used := map[string]bool{}
+	for _, c := range calls {
+		for _, key := range candidates[c.skill] {
+			if used[key] || firstStamp(subs[key].entries).Before(c.at) {
+				continue
+			}
+			used[key] = true
+			out[c.toolUseID] = key
+			break
+		}
+	}
+	return out
+}
+
 // ── Subagents ────────────────────────────────────────────────────────────
 
 type subagent struct {
@@ -1842,7 +1946,7 @@ func userPrompt(e entry) (string, bool) {
 // buildEvents flattens an assistant stream into ordered events. seen holds the
 // subagent ids already expanded on the current path, breaking reference cycles
 // (a skill subagent can match itself by name).
-func buildEvents(entries []entry, subs map[string]*subagent, seen map[string]bool) []model.Event {
+func buildEvents(entries []entry, subs map[string]*subagent, nameLinks map[string]string, seen map[string]bool) []model.Event {
 	results := toolResultMap(entries)
 	agents := agentIDMap(entries)
 	skills := skillSidecarMap(entries)
@@ -1876,7 +1980,7 @@ func buildEvents(entries []entry, subs map[string]*subagent, seen map[string]boo
 					Start:    e.t,
 					End:      res.end,
 				}
-				attachSubagent(tool, b, agents, skills, subs, seen)
+				attachSubagent(tool, b, agents, skills, nameLinks, subs, seen)
 				out = append(out, model.Event{Kind: model.EventTool, Tool: tool})
 			}
 		}
@@ -1887,10 +1991,11 @@ func buildEvents(entries []entry, subs map[string]*subagent, seen map[string]boo
 // attachSubagent fills tool.Subagent for Agent and forked-Skill calls that
 // spawned a sidecar. Agent and forked-Skill links resolve by id (the structured
 // agentId, see sidecarIDs); for a Skill with no id link it falls back to matching
-// a sidecar by skill name (pre-structured forked logs). An inline skill — which
-// runs in the main chain and writes no sidecar — matches nothing and renders as a
-// leaf call, its work staying inline in the transcript.
-func attachSubagent(tool *model.Tool, b block, agents, skills map[string]string, subs map[string]*subagent, seen map[string]bool) {
+// a sidecar by skill name (pre-structured forked logs), precomputed once per
+// session by sidecarNameLinks. An inline skill — which runs in the main chain and
+// writes no sidecar — matches nothing and renders as a leaf call, its work staying
+// inline in the transcript.
+func attachSubagent(tool *model.Tool, b block, agents, skills, nameLinks map[string]string, subs map[string]*subagent, seen map[string]bool) {
 	key := ""
 	switch b.name {
 	case "Agent":
@@ -1898,21 +2003,14 @@ func attachSubagent(tool *model.Tool, b block, agents, skills map[string]string,
 	case "Skill":
 		key = skills[b.id]
 		if key == "" {
-			if skill, _ := b.input["skill"].(string); skill != "" {
-				for id, s := range subs {
-					if s.skillName == skill {
-						key = id
-						break
-					}
-				}
-			}
+			key = nameLinks[b.id]
 		}
 	}
 	if key == "" || seen[key] || subs[key] == nil {
 		return
 	}
 	seen[key] = true
-	tool.Subagent = buildEvents(subs[key].entries, subs, seen)
+	tool.Subagent = buildEvents(subs[key].entries, subs, nameLinks, seen)
 }
 
 func turnMetrics(entries []entry, subs map[string]*subagent) (u model.Usage, tools, errs int) {

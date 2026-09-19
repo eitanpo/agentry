@@ -172,3 +172,23 @@ seam — it names a config directory whose `projects` subdirectory `locate.Proje
 `CLAUDE_CONFIG_DIR=<scratch>` compare two runs over a corpus that cannot move. Repeated runs
 against a frozen tree are byte-identical; unfrozen runs minutes or milliseconds apart are not,
 and no in-package fixture reproduces the difference, because the moving input is the cause.
+
+## Pairing a spawning call to its sidecar
+
+**A fallback that guesses an owner steals from the call that has one.** `attachSubagent`'s
+legacy path matched a Skill call with no structured sidecar id to any sidecar whose log named
+the same skill. Most sidecars carry that name because the subagent *loaded* the skill, not
+because the skill forked them — so the match hit sidecars an `Agent` call already owned via
+`toolUseResult.agentId`, and because every expansion is recorded in `seen`, the owner then
+rendered as a bare leaf and its whole subtree left the transcript. Measured on one 47MB
+session: 185 of 186 sidecars were claimed by a structured link, all 105 Skill calls lacking
+one were inline skills that spawned nothing, and the render was both nondeterministic (the
+match ranged a map) and inflated, showing 386 expansions for 186 sidecars. `sidecarNameLinks`
+now computes the pairing once per session, excluding every sidecar a structured link claims,
+pairing what remains in log order against start order, each sidecar used once. A fallback
+belongs only where no authoritative link exists; make it prove that before it picks.
+
+**Nondeterminism in a tree render can come from the parse, not the printer.** Suppressing
+nested output (`--no-subagents`) did not stabilize the digest, because what varied was whether
+a call was considered to *have* a subagent at all. When repeated renders differ, bisect by
+which layer still varies once a surface is suppressed, not by re-reading the renderer.
