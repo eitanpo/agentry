@@ -1802,3 +1802,36 @@ func TestSessionJSONLCarriesWhatJSONCarries(t *testing.T) {
 		t.Errorf("stream carries %d events, the model has %d", events, want)
 	}
 }
+
+// TestSessionJSONEmptyTurnsIsAnArray pins the render path to the normalization
+// the listing and both roll-up shapes already do: an empty top-level collection
+// marshals as [] rather than null. A session with no turns is a real outcome,
+// and null gave the document's primary collection a second shape that every
+// consumer had to branch on — one that crashed a corpus sweep in practice.
+func TestSessionJSONEmptyTurnsIsAnArray(t *testing.T) {
+	sess := &model.Session{Meta: model.Meta{ID: "s1"}}
+	var b strings.Builder
+	if err := SessionJSON(&b, sess); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), `"turns": null`) {
+		t.Errorf("empty turns marshalled as null:\n%s", b.String())
+	}
+	var got struct {
+		Turns []model.Turn `json:"turns"`
+	}
+	if err := json.Unmarshal([]byte(b.String()), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Turns == nil {
+		t.Error("turns key is absent or null; a consumer iterating it cannot do so unguarded")
+	}
+	if len(got.Turns) != 0 {
+		t.Errorf("turns = %v, want empty", got.Turns)
+	}
+	// Normalizing must not reach back into the caller's session: the other
+	// emitters take their payload by value, this one takes a pointer.
+	if sess.Turns != nil {
+		t.Error("serializing mutated the caller's session")
+	}
+}

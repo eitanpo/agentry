@@ -94,6 +94,21 @@ type renderer struct {
 // piping into jq. It emits the complete model regardless of verbosity or color,
 // which shape only the styled text view.
 func SessionJSON(w io.Writer, s *model.Session) error {
+	if s.Turns == nil {
+		// An empty array, not null. A session with no turns is a real outcome — a
+		// log holding only bookkeeping entries produces one — and marshalling it as
+		// null gives the document's primary collection a second shape that every
+		// consumer has to branch on. The listing and both roll-up shapes already
+		// normalize this way; the render path was the one that did not, and a
+		// consumer iterating turns crashed on the difference.
+		// Copied rather than assigned through: the other three emitters take their
+		// payload by value, so normalizing is local to them. This one takes a
+		// pointer, and a serializer that edits its caller's session is a side
+		// effect nothing at the call site would expect.
+		normalized := *s
+		normalized.Turns = []model.Turn{}
+		s = &normalized
+	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
