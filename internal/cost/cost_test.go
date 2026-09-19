@@ -2,8 +2,10 @@ package cost
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -967,5 +969,131 @@ func TestSummaryJSONCarriesNoSeries(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(buf.String()), "daily") {
 		t.Errorf("summary JSON = %q, want no day series", buf.String())
+	}
+}
+
+// jsonlTypes decodes a stream and returns each record's type, failing on any
+// line that is not a standalone JSON value.
+func jsonlTypes(t *testing.T, s string) []string {
+	t.Helper()
+	var types []string
+	for i, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("line %d is not a standalone JSON value: %v\n%s", i+1, err, line)
+		}
+		types = append(types, rec["type"].(string))
+		if rec["tool"] != "claude-code" {
+			t.Errorf("line %d lost its producer", i+1)
+		}
+		if _, ok := rec["sessionId"]; ok {
+			t.Errorf("line %d carries a sessionId; a roll-up row aggregates many sessions", i+1)
+		}
+	}
+	return types
+}
+
+// TestRenderJSONLReport pins the roll-up's line form: the document-level fields
+// once on a header record, then one record per bucket, then the total. This is
+// the shape that lets two agents' roll-ups be merged with cat, which a document
+// cannot be.
+func TestRenderJSONLReport(t *testing.T) {
+	r := Report{
+		By:             ByDay,
+		Buckets:        []Bucket{{Key: "2026-07-11", Sessions: 1}, {Key: "2026-07-12", Sessions: 2}},
+		Total:          Bucket{Sessions: 3},
+		PricesVerified: "2026-09-11",
+	}
+	var b bytes.Buffer
+	if err := RenderJSONL(&b, r); err != nil {
+		t.Fatal(err)
+	}
+	got := jsonlTypes(t, b.String())
+	want := []string{"report", "bucket", "bucket", "total"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("record types = %v, want %v", got, want)
+	}
+	if strings.Count(b.String(), "pricesVerified") != 1 {
+		t.Error("pricesVerified is repeated per bucket instead of carried once on the header")
+	}
+}
+
+// TestRenderJSONLOverview pins the summary's line form: a header holding the
+// document-level fields, then one record per scope panel.
+func TestRenderJSONLOverview(t *testing.T) {
+	o := Overview{
+		Scopes:         []Scope{{Scope: "session"}, {Scope: "folder"}, {Scope: "machine"}},
+		PricesVerified: "2026-09-11",
+	}
+	var b bytes.Buffer
+	if err := RenderOverviewJSONL(&b, o); err != nil {
+		t.Fatal(err)
+	}
+	got := jsonlTypes(t, b.String())
+	want := []string{"overview", "scope", "scope", "scope"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("record types = %v, want %v", got, want)
+	}
+}
+
+// jsonTags returns the json field names a struct type serializes, by tag rather
+// than by Go name — the tag is what a consumer sees.
+func jsonTags(t *testing.T, v any) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	rt := reflect.TypeOf(v)
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		// An unexported field is deliberately out of the serialized form —
+		// Overview keeps its four breakdown series that way — so it is not a fact
+		// either format carries.
+		if !f.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "" {
+			t.Fatalf("%s.%s has no json tag", rt.Name(), f.Name)
+		}
+		out[name] = true
+	}
+	return out
+}
+
+// TestJSONLHeadersCarryEveryDocumentField pins the two line-format headers
+// against the document shapes they mirror. reportHeader and overviewHeader name
+// their fields a second time, so a field added to Report or Overview reaches
+// --format json and silently misses --format jsonl — the caller sees a
+// well-formed stream with one fact quietly absent, which no other test compares.
+func TestJSONLHeadersCarryEveryDocumentField(t *testing.T) {
+	// The collections are what the stream turns into records of their own; every
+	// other field belongs on the header.
+	for _, tc := range []struct {
+		name         string
+		document     map[string]bool
+		header       map[string]bool
+		asOwnRecords []string
+	}{
+		{"report", jsonTags(t, Report{}), jsonTags(t, reportHeader{}), []string{"buckets", "total"}},
+		{"overview", jsonTags(t, Overview{}), jsonTags(t, overviewHeader{}), []string{"scopes"}},
+	} {
+		for _, collection := range tc.asOwnRecords {
+			if !tc.document[collection] {
+				t.Errorf("%s document has no %q field to turn into records", tc.name, collection)
+			}
+			delete(tc.document, collection)
+			if tc.header[collection] {
+				t.Errorf("%s header carries %q, which the stream emits as records", tc.name, collection)
+			}
+		}
+		for field := range tc.document {
+			if !tc.header[field] {
+				t.Errorf("%s header is missing %q, so --format jsonl drops a fact --format json carries", tc.name, field)
+			}
+		}
+		for field := range tc.header {
+			if !tc.document[field] {
+				t.Errorf("%s header carries %q, which the document does not", tc.name, field)
+			}
+		}
 	}
 }

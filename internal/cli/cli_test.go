@@ -1791,3 +1791,128 @@ func TestMetricsFlagsOnRender(t *testing.T) {
 		})
 	}
 }
+
+// TestUnknownFormatNamesEveryValidName pins that the usage error is derived
+// from the one list of format names rather than spelled again. The list was
+// written by hand in three places before jsonl existed, one of them inside a
+// format string where a search for the name does not find it, so an error
+// offering a format that no longer exists is the failure this guards.
+func TestUnknownFormatNamesEveryValidName(t *testing.T) {
+	_, _, errOut := exec("list", "--format", "yaml")
+	for _, name := range formatNames {
+		if !strings.Contains(errOut, name) {
+			t.Errorf("error does not offer %q:\n%s", name, errOut)
+		}
+	}
+}
+
+// TestUnknownFormatSuggestsNearest pins that a near miss still gets a
+// suggestion, and that jsonl is reachable by one — it is the name a caller
+// typing "jsonlines" or "ndjson" is closest to.
+func TestUnknownFormatSuggestsNearest(t *testing.T) {
+	_, _, errOut := exec("list", "--format", "jsonl1")
+	if !strings.Contains(errOut, `did you mean "jsonl"`) {
+		t.Errorf("no suggestion for a near miss:\n%s", errOut)
+	}
+}
+
+// TestMachineFormatCoversBothNames pins the predicate the format-dependent
+// rules key on. Keying them on the literal "json" is how a second machine
+// format silently inherits the text form's behavior — a jsonl listing capped at
+// ten rows, which no consumer downstream can detect.
+func TestMachineFormatCoversBothNames(t *testing.T) {
+	for _, tc := range []struct {
+		format string
+		want   bool
+	}{{"json", true}, {"jsonl", true}, {"text", false}, {"", false}} {
+		if got := machineFormat(tc.format); got != tc.want {
+			t.Errorf("machineFormat(%q) = %v, want %v", tc.format, got, tc.want)
+		}
+	}
+}
+
+// TestChartRejectionNamesTheFormatPassed pins that the message names the format
+// the caller actually typed. The check was written against json and spelled it
+// in its own text, so a caller who passed jsonl was told about a flag they had
+// not used.
+func TestChartRejectionNamesTheFormatPassed(t *testing.T) {
+	for _, format := range []string{"json", "jsonl"} {
+		_, _, errOut := exec("cost", "--by", "day", "--chart", "line", "--format", format)
+		if !strings.Contains(errOut, "--format "+format) {
+			t.Errorf("--format %s rejection does not name that format:\n%s", format, errOut)
+		}
+	}
+}
+
+// TestFormatHelpListsEveryName pins that the flag's help is derived from the
+// same list as the validator, so a format that is accepted is also advertised.
+func TestFormatHelpListsEveryName(t *testing.T) {
+	_, out, _ := exec("view", "--help")
+	for _, name := range formatNames {
+		if !strings.Contains(out, name) {
+			t.Errorf("view --help does not mention format %q:\n%s", name, out)
+		}
+	}
+}
+
+// manySessionsProject drops n copies of the sample session, each under its own
+// id, into a fresh project — enough to exceed the listing's default cap of ten.
+func manySessionsProject(t *testing.T, n int) {
+	t.Helper()
+	srcAbs, err := filepath.Abs("../parse/testdata/sample.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(srcAbs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	orig := locate.ProjectsRoot
+	locate.ProjectsRoot = root
+	t.Cleanup(func() { locate.ProjectsRoot = orig })
+
+	dir := filepath.Join(root, locate.ProjectDirName(cwd))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("ba6b3ded-475b-4c3a-96fe-%012d", i)
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestJSONLListingIsNotCapped pins the trap this phase was warned about at the
+// call site rather than only in the predicate. The default row cap is lifted for
+// a machine format because a consumer cannot tell ten rows of six hundred from
+// all of them; keyed on the literal "json", a jsonl listing would have inherited
+// the text form's cap and silently answered with ten. An explicit --limit still
+// applies, a caller who names a number having asked for one.
+func TestJSONLListingIsNotCapped(t *testing.T) {
+	const n = 14
+	manySessionsProject(t, n)
+
+	_, out, _ := exec("list", "--format", "jsonl")
+	if got := len(strings.Split(strings.TrimRight(out, "\n"), "\n")); got != n {
+		t.Errorf("bare jsonl listing returned %d rows, want all %d", got, n)
+	}
+
+	_, capped, _ := exec("list", "--format", "jsonl", "--limit", "3")
+	if got := len(strings.Split(strings.TrimRight(capped, "\n"), "\n")); got != 3 {
+		t.Errorf("explicit --limit 3 returned %d rows, want 3", got)
+	}
+
+	// The text form is what the cap is for, so it must still be capped — proving
+	// the change lifted it for the machine format rather than for everyone.
+	_, text, _ := exec("list")
+	if strings.Count(text, "\n") > n {
+		t.Errorf("text listing was not capped:\n%s", text)
+	}
+}

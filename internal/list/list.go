@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/breakdown"
 	"github.com/eitanpo/agentry/internal/entrypoint"
+	"github.com/eitanpo/agentry/internal/jsonl"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/render"
 	"github.com/eitanpo/agentry/internal/spend"
@@ -536,6 +537,20 @@ func RenderJSON(w io.Writer, sums []model.Summary) error {
 	}
 	_, err = w.Write(append(b, '\n'))
 	return err
+}
+
+// RenderJSONL writes the summaries as JSON Lines — one `session` record per
+// row, each carrying its own id in the envelope. The array wrapper disappears,
+// so an empty selection writes nothing at all rather than "[]": there is no
+// wrapper for the empty case to live in, and zero lines is a well-formed stream.
+func RenderJSONL(w io.Writer, sums []model.Summary) error {
+	enc := jsonl.New(w)
+	for _, s := range sums {
+		if err := enc.Emit("session", s.ID, s.Start, s); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // forkGlyph prefixes a fork's title, indenting it under its family's original.

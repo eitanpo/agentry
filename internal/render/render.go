@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/breakdown"
 	"github.com/eitanpo/agentry/internal/entrypoint"
+	"github.com/eitanpo/agentry/internal/jsonl"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/price"
 	"github.com/eitanpo/agentry/internal/spend"
@@ -99,6 +100,91 @@ func SessionJSON(w io.Writer, s *model.Session) error {
 	}
 	_, err = w.Write(append(b, '\n'))
 	return err
+}
+
+// turnRecord is a `turn` line's payload: everything model.Turn carries except
+// its events, which become records of their own. Inlining them would put a
+// delegated session inside one line — the largest such line measures 6,345,214
+// bytes against 81,593 for the largest event — which is the problem the line
+// format exists to avoid, one level down. (Measured 2026-09-19 over the 95
+// measurable sessions on this machine that delegated to a subagent, the corpus
+// that exercises the nesting.)
+type turnRecord struct {
+	Turn       int         `json:"turn"`
+	Prompt     string      `json:"prompt"`
+	Start      time.Time   `json:"start"`
+	End        time.Time   `json:"end"`
+	Usage      model.Usage `json:"usage"`
+	ToolCount  int         `json:"toolCount"`
+	ErrorCount int         `json:"errorCount"`
+}
+
+// eventRecord is an `event` line's payload. depth carries the nesting that
+// model.Event holds structurally: a tool call that spawned a subagent is
+// followed by that subagent's events at depth+1, in document order, so the tree
+// is recovered from depth and order rather than from a parent reference.
+type eventRecord struct {
+	Turn  int `json:"turn"`
+	Depth int `json:"depth"`
+	// Index counts an event's position among its siblings at its own depth, so it
+	// restarts inside every subagent stream and two subagents in one turn both
+	// emit an index 1. It orders a sibling list; it does not identify a record.
+	// The envelope's ordinal is the field that is unique across the stream.
+	Index int             `json:"index"`
+	Kind  model.EventKind `json:"kind"`
+	Text  string          `json:"text,omitempty"`
+	Tool  *model.Tool     `json:"tool,omitempty"`
+}
+
+// SessionJSONL writes the session to w as JSON Lines (`--format jsonl`): a meta
+// record, then per turn a turn record and one record per event. It carries the
+// same facts as SessionJSON and, like it, ignores verbosity and color.
+func SessionJSONL(w io.Writer, s *model.Session) error {
+	enc := jsonl.New(w)
+	id := s.Meta.ID
+	if err := enc.Emit("meta", id, s.Meta.Start, s.Meta); err != nil {
+		return err
+	}
+	for i, t := range s.Turns {
+		n := i + 1
+		rec := turnRecord{
+			Turn: n, Prompt: t.Prompt, Start: t.Start, End: t.End,
+			Usage: t.Usage, ToolCount: t.ToolCount, ErrorCount: t.ErrorCount,
+		}
+		if err := enc.Emit("turn", id, t.Start, rec); err != nil {
+			return err
+		}
+		if err := emitEvents(enc, id, t.Events, n, 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// emitEvents writes one event stream and recurses into any subagent beneath it.
+// The tool is copied without its Subagent field: the nested stream follows as
+// its own records, and leaving it in place would restore the nesting this format
+// removes.
+func emitEvents(enc *jsonl.Encoder, session string, events []model.Event, turn, depth int) error {
+	for i, e := range events {
+		rec := eventRecord{Turn: turn, Depth: depth, Index: i + 1, Kind: e.Kind, Text: e.Text}
+		var nested []model.Event
+		at := time.Time{}
+		if e.Tool != nil {
+			flat := *e.Tool
+			nested = flat.Subagent
+			flat.Subagent = nil
+			rec.Tool = &flat
+			at = e.Tool.Start
+		}
+		if err := enc.Emit("event", session, at, rec); err != nil {
+			return err
+		}
+		if err := emitEvents(enc, session, nested, turn, depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Session writes the styled session to w.

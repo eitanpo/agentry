@@ -135,8 +135,12 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 		return noInputErr(err)
 	}
 
-	if format == "json" {
-		if err := render.SessionJSON(cmd.OutOrStdout(), sess); err != nil {
+	if machineFormat(format) {
+		emit := render.SessionJSON
+		if format == "jsonl" {
+			emit = render.SessionJSONL
+		}
+		if err := emit(cmd.OutOrStdout(), sess); err != nil {
 			return &exitError{code: 1, err: err}
 		}
 		return nil

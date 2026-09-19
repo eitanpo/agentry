@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/eitanpo/agentry/internal/jsonl"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/price"
 	"github.com/eitanpo/agentry/internal/spend"
@@ -546,6 +547,65 @@ func RenderJSON(w io.Writer, r Report) error {
 	}
 	_, err = w.Write(append(b, '\n'))
 	return err
+}
+
+// reportHeader is the `report` line's payload: the roll-up's document-level
+// fields, carried once so no bucket repeats them.
+type reportHeader struct {
+	By             string     `json:"by"`
+	Selection      *Selection `json:"selection,omitempty"`
+	Spread         *Spread    `json:"spread,omitempty"`
+	Recorded       *Recorded  `json:"recorded,omitempty"`
+	UnpricedModels []Unpriced `json:"unpricedModels,omitempty"`
+	PricesVerified string     `json:"pricesVerified"`
+}
+
+// RenderJSONL writes the report as JSON Lines: a report header, one bucket
+// record per row, then the total. Records carry no session id — a bucket
+// aggregates many sessions — so the envelope's tool field is what separates
+// these rows after a merge with another agent's roll-up, which is the case this
+// shape exists for: documents do not concatenate and buckets do.
+func RenderJSONL(w io.Writer, r Report) error {
+	enc := jsonl.New(w)
+	head := reportHeader{
+		By: r.By, Selection: r.Selection, Spread: r.Spread, Recorded: r.Recorded,
+		UnpricedModels: r.UnpricedModels, PricesVerified: r.PricesVerified,
+	}
+	if err := enc.Emit("report", "", time.Time{}, head); err != nil {
+		return err
+	}
+	for _, b := range r.Buckets {
+		if err := enc.Emit("bucket", "", time.Time{}, b); err != nil {
+			return err
+		}
+	}
+	return enc.Emit("total", "", time.Time{}, r.Total)
+}
+
+// overviewHeader is the `overview` line's payload: the summary's
+// document-level fields, the scopes following as records of their own.
+type overviewHeader struct {
+	Recorded       *Recorded  `json:"recorded,omitempty"`
+	UnpricedModels []Unpriced `json:"unpricedModels,omitempty"`
+	PricesVerified string     `json:"pricesVerified"`
+}
+
+// RenderOverviewJSONL writes the three-scope summary as JSON Lines: an overview
+// header, then one scope record per panel.
+func RenderOverviewJSONL(w io.Writer, o Overview) error {
+	enc := jsonl.New(w)
+	head := overviewHeader{
+		Recorded: o.Recorded, UnpricedModels: o.UnpricedModels, PricesVerified: o.PricesVerified,
+	}
+	if err := enc.Emit("overview", "", time.Time{}, head); err != nil {
+		return err
+	}
+	for _, sc := range o.Scopes {
+		if err := enc.Emit("scope", "", time.Time{}, sc); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // column widths: the key column stretches to its contents, the three numeric

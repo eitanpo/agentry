@@ -319,7 +319,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	// no chrome a truncation note could live in, and a consumer cannot tell ten of
 	// six hundred from all six hundred, so a cap there is a wrong answer nothing
 	// downstream can detect.
-	if !cmd.Flags().Changed("limit") && (selecting || format == "json") {
+	if !cmd.Flags().Changed("limit") && (selecting || machineFormat(format)) {
 		limit = 0
 	}
 
@@ -356,6 +356,8 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		// caller sweeping directories can pipe into jq without guarding. The
 		// error still goes to stderr with its exit code: an empty array is not a
 		// claim of success.
+		// jsonl needs no such placeholder: zero lines is already a well-formed
+		// stream, so the same guarantee costs nothing and writes nothing.
 		if format == "json" {
 			_ = list.RenderJSON(cmd.OutOrStdout(), nil)
 		}
@@ -394,8 +396,12 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	if from == "" && len(visible) == 0 && len(sums) > 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "agentry: %d headless session(s) hidden — pass --from all to include them\n", len(sums))
 	}
-	if format == "json" {
-		if err := list.RenderJSON(cmd.OutOrStdout(), selected); err != nil {
+	if machineFormat(format) {
+		emit := list.RenderJSON
+		if format == "jsonl" {
+			emit = list.RenderJSONL
+		}
+		if err := emit(cmd.OutOrStdout(), selected); err != nil {
 			return &exitError{code: 1, err: err}
 		}
 		reportRemainder()

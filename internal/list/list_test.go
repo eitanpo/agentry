@@ -1962,3 +1962,56 @@ func TestRenderOneLineBlockCollapsesOntoTheRule(t *testing.T) {
 		t.Errorf("an empty block must print no bare rule: %q", empty.String())
 	}
 }
+
+// TestRenderJSONL pins the listing's line form: one record per row carrying its
+// own session id in the envelope, and no array wrapper.
+func TestRenderJSONL(t *testing.T) {
+	sums := []model.Summary{
+		{ID: "aaa", Title: "first", NumTurns: 2},
+		{ID: "bbb", Title: "second", NumTurns: 3},
+	}
+	var b strings.Builder
+	if err := RenderJSONL(&b, sums); err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(b.String(), "[") {
+		t.Error("stream is wrapped in an array")
+	}
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2:\n%s", len(lines), b.String())
+	}
+	wantID := []string{"aaa", "bbb"}
+	for i, line := range lines {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("line %d is not a standalone JSON value: %v", i+1, err)
+		}
+		if rec["type"] != "session" {
+			t.Errorf("line %d type = %v, want session", i+1, rec["type"])
+		}
+		if rec["sessionId"] != wantID[i] {
+			t.Errorf("line %d sessionId = %v, want %v", i+1, rec["sessionId"], wantID[i])
+		}
+		if got := int(rec["ordinal"].(float64)); got != i+1 {
+			t.Errorf("line %d ordinal = %d, want %d", i+1, got, i+1)
+		}
+		if rec["payload"].(map[string]any)["title"] != sums[i].Title {
+			t.Errorf("line %d payload lost the title", i+1)
+		}
+	}
+}
+
+// TestRenderJSONLEmptyWritesNothing pins the deliberate difference from the
+// array form. json emits "[]" so a caller can pipe into jq without a guard;
+// zero lines is already a well-formed stream, so jsonl writes nothing rather
+// than inventing a wrapper to leave empty.
+func TestRenderJSONLEmptyWritesNothing(t *testing.T) {
+	var b strings.Builder
+	if err := RenderJSONL(&b, nil); err != nil {
+		t.Fatal(err)
+	}
+	if b.String() != "" {
+		t.Errorf("empty listing wrote %q, want nothing", b.String())
+	}
+}

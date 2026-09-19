@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,23 @@ import (
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/parse"
 )
+
+// emitReport and emitOverview pick the roll-up's writer by format. The cost path
+// has five machine-format branches across two shapes, and inlining the choice at
+// each one is how four of them end up agreeing and the fifth does not.
+func emitReport(w io.Writer, format string, r cost.Report) error {
+	if format == "jsonl" {
+		return cost.RenderJSONL(w, r)
+	}
+	return cost.RenderJSON(w, r)
+}
+
+func emitOverview(w io.Writer, format string, o cost.Overview) error {
+	if format == "jsonl" {
+		return cost.RenderOverviewJSONL(w, o)
+	}
+	return cost.RenderOverviewJSON(w, o)
+}
 
 // newCostCmd is the `cost` verb: price every session's tokens and add the
 // dollars up on one axis. It takes the listing's selection and scope flags and
@@ -116,8 +134,11 @@ func parseChart(cmd *cobra.Command, by, format string, summary bool) (string, er
 	if chart == cost.ChartAuto || chart == cost.ChartNone {
 		return chart, nil
 	}
-	if format == "json" {
-		return "", usageErr("--chart %s cannot be combined with --format json — the object is the same either way", chart)
+	if machineFormat(format) {
+		// Names the format the caller passed, not the one this check was written
+		// against: a message that says "json" to a caller who typed "jsonl" sends
+		// them looking for a flag they did not use.
+		return "", usageErr("--chart %s cannot be combined with --format %s — the records are the same either way", chart, format)
 	}
 	// The summary's machine row is a span of days whatever else was asked, so both
 	// shapes can be drawn of it and neither needs an axis.
@@ -236,8 +257,8 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 		// directory with no project still writes the zeroed report to stdout and
 		// the reason to stderr. The exit code is what separates "nothing matched"
 		// from "nothing to look in" — the rule list --format json follows.
-		if format == "json" {
-			_ = cost.RenderJSON(cmd.OutOrStdout(), cost.Build(nil, by, since, until))
+		if machineFormat(format) {
+			_ = emitReport(cmd.OutOrStdout(), format, cost.Build(nil, by, since, until))
 		}
 		return noInputErr(err)
 	}
@@ -277,8 +298,8 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 		Scope: scopeName(cmd), Since: dayOf(since), Until: dayOf(until),
 	}
 
-	if format == "json" {
-		if err := cost.RenderJSON(cmd.OutOrStdout(), report); err != nil {
+	if machineFormat(format) {
+		if err := emitReport(cmd.OutOrStdout(), format, report); err != nil {
 			return &exitError{code: 1, err: err}
 		}
 		return nil
@@ -327,8 +348,8 @@ func runCostSummary(cmd *cobra.Command, noColor *bool, format, from, chart, leve
 		// one object whatever happened, so a summary of nothing still goes to stdout
 		// — built rather than zero-valued, so it carries the price table's date like
 		// every other summary — and the reason goes to stderr with the exit code.
-		if format == "json" {
-			_ = cost.RenderOverviewJSON(cmd.OutOrStdout(), cost.BuildOverview(nil, nil, nil, w))
+		if machineFormat(format) {
+			_ = emitOverview(cmd.OutOrStdout(), format, cost.BuildOverview(nil, nil, nil, w))
 		}
 		return noInputErr(err)
 	}
@@ -379,8 +400,8 @@ func runCostSummary(cmd *cobra.Command, noColor *bool, format, from, chart, leve
 	}
 
 	o := cost.BuildOverview(session, folder, machine, w)
-	if format == "json" {
-		if err := cost.RenderOverviewJSON(cmd.OutOrStdout(), o); err != nil {
+	if machineFormat(format) {
+		if err := emitOverview(cmd.OutOrStdout(), format, o); err != nil {
 			return &exitError{code: 1, err: err}
 		}
 		return nil

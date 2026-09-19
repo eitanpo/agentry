@@ -42,7 +42,7 @@ var (
 	verbNames    = []string{"view", "list", "cost"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
 	includeNames = []string{"prompts", "tools", "files", "model", "cost", "outputs", "last-reply", "all"}
-	formatNames  = []string{"json", "text"}
+	formatNames  = []string{"json", "jsonl", "text"}
 	// --limit takes a count or this one keyword, so the suggestion set is a single
 	// entry: a mistyped number is arithmetic, not a near-miss on a name.
 	limitNames = []string{"all"}
@@ -69,14 +69,47 @@ func fixedComp(candidates []string) func(*cobra.Command, []string, string) ([]st
 // nearest valid format.
 func parseFormat(cmd *cobra.Command) (string, error) {
 	format, _ := cmd.Flags().GetString("format")
-	switch format {
-	case "", "text", "json":
+	if format == "" {
 		return format, nil
+	}
+	for _, name := range formatNames {
+		if format == name {
+			return format, nil
+		}
 	}
 	if g := nearest(format, formatNames); g != "" {
 		return "", usageErr("--format: unknown format %q — did you mean %q?", format, g)
 	}
-	return "", usageErr("--format: unknown format %q (want: json, text)", format)
+	// Derived from formatNames rather than spelled again: an error offering a
+	// format that no longer exists, or omitting one that does, is invisible to a
+	// search for the name it got wrong.
+	return "", usageErr("--format: unknown format %q (want: %s)", format, strings.Join(formatNames, ", "))
+}
+
+// machineFormat reports whether format is one of the machine-readable forms.
+// Several rules turn on that rather than on a particular spelling — the
+// listing's default cap, --chart's rejection, what an empty result prints — and
+// keying them on the literal "json" is how a second machine format silently
+// inherits the text form's behavior.
+func machineFormat(format string) bool { return format == "json" || format == "jsonl" }
+
+// defaultFormat is what a caller who named no format gets. The flag's own
+// default is the empty string, which every call site renders as this.
+const defaultFormat = "text"
+
+// formatHelp is the --format flag's one-line help, derived from formatNames so
+// the two cannot disagree. The default is held out by name rather than by
+// position in that list, so the name is written once: spelling it again in the
+// trailing "or text" left the help asserting a default that nothing checked
+// against the value the parser actually falls back to.
+func formatHelp() string {
+	others := make([]string, 0, len(formatNames))
+	for _, name := range formatNames {
+		if name != defaultFormat {
+			others = append(others, name)
+		}
+	}
+	return "output format: " + strings.Join(others, ", ") + " or " + defaultFormat + " (default)"
 }
 
 // parseFrom validates the --from selector, shared by the listing and by the

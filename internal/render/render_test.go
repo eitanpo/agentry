@@ -3,6 +3,7 @@ package render
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1547,5 +1548,257 @@ func TestFailedLine(t *testing.T) {
 	}
 	if total != 3 {
 		t.Errorf("Failed line sums to %d, header says 3: %q", total, failedLine)
+	}
+}
+
+// jsonlSession is the fixture the JSON Lines tests share: two turns, a tool call
+// that spawned a subagent which itself delegated, so depth reaches 2 and the
+// flattening has a real tree to reproduce.
+func jsonlSession() *model.Session {
+	return &model.Session{
+		Meta: model.Meta{ID: "s1", Model: "claude-opus-4-8", Usage: model.Usage{Input: 10, Output: 20}},
+		Turns: []model.Turn{{
+			Prompt:    "first",
+			ToolCount: 1,
+			Events: []model.Event{
+				{Kind: model.EventText, Text: "sure"},
+				{Kind: model.EventTool, Tool: &model.Tool{
+					Name: "Agent", Args: "dig",
+					Subagent: []model.Event{
+						{Kind: model.EventText, Text: "child"},
+						{Kind: model.EventTool, Tool: &model.Tool{
+							Name:     "Agent",
+							Subagent: []model.Event{{Kind: model.EventText, Text: "grandchild"}},
+						}},
+					},
+				}},
+			},
+		}, {
+			Prompt: "second",
+			Events: []model.Event{{Kind: model.EventText, Text: "done"}},
+		}},
+	}
+}
+
+// decodeJSONL parses the stream into records, failing on the first line that is
+// not a standalone JSON value — which is the property the format promises.
+func decodeJSONL(t *testing.T, s string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for i, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("line %d is not a standalone JSON value: %v\n%s", i+1, err, line)
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+// TestSessionJSONLEnvelope pins the envelope every record carries: the five keys
+// a consumer reads without knowing the producer, a stream-wide ordinal starting
+// at 1, and the schema written once. A missing tool or sessionId is what makes a
+// concatenated stream unreadable, which is the case the format exists for.
+func TestSessionJSONLEnvelope(t *testing.T) {
+	var b strings.Builder
+	if err := SessionJSONL(&b, jsonlSession()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(b.String(), "[") {
+		t.Error("stream is wrapped in an array")
+	}
+	recs := decodeJSONL(t, b.String())
+	for i, r := range recs {
+		for _, k := range []string{"type", "tool", "sessionId", "ordinal", "payload"} {
+			if _, ok := r[k]; !ok {
+				t.Errorf("record %d missing %q: %v", i+1, k, r)
+			}
+		}
+		if r["tool"] != "claude-code" {
+			t.Errorf("record %d tool = %v, want claude-code", i+1, r["tool"])
+		}
+		if r["sessionId"] != "s1" {
+			t.Errorf("record %d sessionId = %v, want s1", i+1, r["sessionId"])
+		}
+		if got := r["ordinal"].(float64); int(got) != i+1 {
+			t.Errorf("record %d ordinal = %v, want %d", i+1, got, i+1)
+		}
+		if _, ok := r["schema"]; ok != (i == 0) {
+			t.Errorf("record %d schema present = %v, want %v", i+1, ok, i == 0)
+		}
+	}
+}
+
+// TestSessionJSONLTurnsCarryPromptsWithoutEvents pins the split that decides the
+// format's worst line: the prompt lives on the turn record, and the events do
+// not. Inlining them would put a delegated session inside one line.
+func TestSessionJSONLTurnsCarryPromptsWithoutEvents(t *testing.T) {
+	var b strings.Builder
+	if err := SessionJSONL(&b, jsonlSession()); err != nil {
+		t.Fatal(err)
+	}
+	var prompts []string
+	for _, r := range decodeJSONL(t, b.String()) {
+		if r["type"] != "turn" {
+			continue
+		}
+		p := r["payload"].(map[string]any)
+		if _, ok := p["events"]; ok {
+			t.Error("turn record carries its events inline")
+		}
+		prompts = append(prompts, p["prompt"].(string))
+	}
+	if want := []string{"first", "second"}; !reflect.DeepEqual(prompts, want) {
+		t.Errorf("prompts = %v, want %v", prompts, want)
+	}
+}
+
+// TestSessionJSONLDepthReproducesTheTree walks the stream back into a tree and
+// compares it with the model the parser built. Depth plus document order is the
+// only thing carrying the nesting, so this is what proves nothing was dropped
+// and no subagent was reparented.
+func TestSessionJSONLDepthReproducesTheTree(t *testing.T) {
+	sess := jsonlSession()
+	var b strings.Builder
+	if err := SessionJSONL(&b, sess); err != nil {
+		t.Fatal(err)
+	}
+	var flat []map[string]any
+	for _, r := range decodeJSONL(t, b.String()) {
+		if r["type"] == "event" {
+			flat = append(flat, r["payload"].(map[string]any))
+		}
+	}
+	var texts []string
+	var depths []int
+	var turns []int
+	var indexes []int
+	for _, e := range flat {
+		depths = append(depths, int(e["depth"].(float64)))
+		turns = append(turns, int(e["turn"].(float64)))
+		indexes = append(indexes, int(e["index"].(float64)))
+		if s, ok := e["text"].(string); ok {
+			texts = append(texts, s)
+		} else {
+			texts = append(texts, "@"+e["tool"].(map[string]any)["name"].(string))
+		}
+	}
+	wantTexts := []string{"sure", "@Agent", "child", "@Agent", "grandchild", "done"}
+	wantDepth := []int{0, 0, 1, 1, 2, 0}
+	wantTurn := []int{1, 1, 1, 1, 1, 2}
+	wantIndex := []int{1, 2, 1, 2, 1, 1}
+	if !reflect.DeepEqual(texts, wantTexts) {
+		t.Errorf("order = %v, want %v", texts, wantTexts)
+	}
+	if !reflect.DeepEqual(depths, wantDepth) {
+		t.Errorf("depths = %v, want %v", depths, wantDepth)
+	}
+	if !reflect.DeepEqual(turns, wantTurn) {
+		t.Errorf("turns = %v, want %v — a subagent's events keep their parent turn", turns, wantTurn)
+	}
+	// index orders a sibling list and restarts inside each subagent stream, which
+	// is why two records here carry index 1 at three different depths. A reader
+	// who takes it for a per-turn identifier gets collisions, so the spec says
+	// what it counts and this pins it.
+	if !reflect.DeepEqual(indexes, wantIndex) {
+		t.Errorf("indexes = %v, want %v", indexes, wantIndex)
+	}
+	// The nested stream must not also remain inside the tool it hung from, or the
+	// format has both shapes at once and the worst line is unchanged.
+	for _, e := range flat {
+		if tool, ok := e["tool"].(map[string]any); ok {
+			if _, nested := tool["subagent"]; nested {
+				t.Error("event record still nests its subagent stream")
+			}
+		}
+	}
+}
+
+// TestSessionJSONLEmptySession pins that a session with no turns emits its meta
+// record and nothing else — the shape that removes the "turns": null the
+// document form emits, which crashed two consumers.
+func TestSessionJSONLEmptySession(t *testing.T) {
+	var b strings.Builder
+	if err := SessionJSONL(&b, &model.Session{Meta: model.Meta{ID: "s1"}}); err != nil {
+		t.Fatal(err)
+	}
+	recs := decodeJSONL(t, b.String())
+	if len(recs) != 1 || recs[0]["type"] != "meta" {
+		t.Fatalf("want one meta record, got %d: %v", len(recs), recs)
+	}
+	if strings.Contains(b.String(), "null") {
+		t.Errorf("stream carries a null: %s", b.String())
+	}
+}
+
+// TestSessionJSONLCarriesWhatJSONCarries pins that the two machine formats
+// describe the same session. The line form exists to be cheaper to read, not to
+// say less, and the phase that added it must not perturb the document form
+// either — so this compares the facts both ways round rather than freezing one
+// format's bytes, which would fail on every deliberate change instead of only
+// on a divergence.
+func TestSessionJSONLCarriesWhatJSONCarries(t *testing.T) {
+	sess := jsonlSession()
+
+	var doc strings.Builder
+	if err := SessionJSON(&doc, sess); err != nil {
+		t.Fatal(err)
+	}
+	var asDoc struct {
+		Meta  map[string]any `json:"meta"`
+		Turns []struct {
+			Prompt string `json:"prompt"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal([]byte(doc.String()), &asDoc); err != nil {
+		t.Fatal(err)
+	}
+
+	var stream strings.Builder
+	if err := SessionJSONL(&stream, sess); err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]any
+	var prompts []string
+	events := 0
+	for _, r := range decodeJSONL(t, stream.String()) {
+		switch r["type"] {
+		case "meta":
+			meta = r["payload"].(map[string]any)
+		case "turn":
+			prompts = append(prompts, r["payload"].(map[string]any)["prompt"].(string))
+		case "event":
+			events++
+		}
+	}
+
+	if !reflect.DeepEqual(meta, asDoc.Meta) {
+		t.Errorf("meta differs between the formats:\njsonl %v\njson  %v", meta, asDoc.Meta)
+	}
+	var wantPrompts []string
+	for _, turn := range asDoc.Turns {
+		wantPrompts = append(wantPrompts, turn.Prompt)
+	}
+	if !reflect.DeepEqual(prompts, wantPrompts) {
+		t.Errorf("prompts = %v, want %v", prompts, wantPrompts)
+	}
+	// Counted over the tree, since the document nests what the stream flattens.
+	var count func([]model.Event) int
+	count = func(evs []model.Event) int {
+		n := 0
+		for _, e := range evs {
+			n++
+			if e.Tool != nil {
+				n += count(e.Tool.Subagent)
+			}
+		}
+		return n
+	}
+	want := 0
+	for _, turn := range sess.Turns {
+		want += count(turn.Events)
+	}
+	if events != want {
+		t.Errorf("stream carries %d events, the model has %d", events, want)
 	}
 }
