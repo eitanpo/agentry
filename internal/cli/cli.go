@@ -26,11 +26,15 @@ const (
 )
 
 // levels maps each verbosity preset to the channels it enables.
+// levels are the transcript's verbosity presets. The metrics channel is not
+// among them: the footer's aggregate sections print at every level and leave
+// only on --no-metrics, so no level turns them on or off. PRODUCT.md's Verbosity
+// section owns the split.
 var levels = map[string]render.Channels{
 	"minimal":  {},
-	"standard": {Thinking: true, Metrics: true},
-	"detailed": {Thinking: true, Tools: true, Subagents: true, Metrics: true},
-	"full":     {Thinking: true, Tools: true, ToolResults: true, Subagents: true, Metrics: true},
+	"standard": {Thinking: true},
+	"detailed": {Thinking: true, Tools: true, Subagents: true},
+	"full":     {Thinking: true, Tools: true, ToolResults: true, Subagents: true},
 }
 
 // Candidate sets for nearest(): valid verbs, --level values, --include channels.

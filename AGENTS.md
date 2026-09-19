@@ -27,6 +27,21 @@ In your change, name the PRODUCT.md section that specifies the new behavior. If 
 
 Exceptions (code-only, no doc edit): a bug fix that makes code match the existing spec; a refactor with no observable change.
 
+## Budgets that delete facts
+
+A budget is any limit on how much a surface prints: a line count, a column width, a row cap, a verbosity gate. **When a change would drop, truncate, abbreviate or hide a fact the program already holds so that a surface stays inside one, write these four lines in the change and carry them into the report:**
+
+1. **The budget and its source** — the number, and the PRODUCT.md line that sets it. A budget this change introduces, or one no line states, is written `unverified`. One imposed from outside — the column count a terminal reports, a field a format fixes — is written `external`: the limit is not yours, but choosing to delete the fact rather than wrap it or move it to a roomier surface still is. **Name who picked the number you are writing down.** An outside limit you then divide hands you a second budget of your own, and it is the one doing the deleting: the terminal fixes the row's width, you allot the columns inside it, and every one of those widths is `unverified` however tight the row. A change that meets both writes both lines rather than filing the pair as `external`.
+2. **What it deletes** — the fact that stops being printed, and where else a reader who ran this same command in this same format still finds it, or `nowhere`. Another format is not that reader's output: a fact carried only by `--format json` is gone from the text render, so a deletion there answers `nowhere` and takes the consequence the third line weighs.
+3. **The measured cost of one more unit** — render a real session and count what one more line, column or row adds against what that surface already prints.
+4. **The decision** — `budget kept` or `budget relaxed`, in those two words, beside the labels the first two lines produced. The words name the budget rather than the fact, because `kept` alone has been written for both and a reader cannot tell which was meant. Where you write `budget kept`, name what makes relaxing it cost more than the fact it deletes. `budget kept` standing next to `unverified` and `nowhere` contradicts the default below, and the contradiction is the thing this line exists to put on the page.
+
+Keep the budget only where relaxing it costs more than the deleted fact is worth. An `unverified` budget deleting a fact found `nowhere` else loses by default: it is this change's own invention, and agentry prints to a scrolling terminal, where a line costs a reader nothing and a missing fact costs them the answer. The fourth line is where that default is honored or overruled in writing: three lines of correct labelling followed by the cut they argue against is not a decision, and without the word on the page it only looks like one.
+
+Do not run this for a number the user gave you, or a cap whose remainder the output names — `… (85 more files)` deletes nothing. **A limit the user asked for is a number, or a rule that fixes one** — cap it at five, one row per day. A preference is not: keep it short, don't make the default any longer, that's too wide. Whoever picks the number owns it, so a preference leaves the four lines owed in full, and almost every request voices one. Where a limit you were handed still deletes a fact found `nowhere` else, name that fact in the report anyway, the way an instruction to skip a test is honored and recorded: the limit was chosen for you, the silence was not. What the exemption never waives is the authority order: a limit that contradicts a PRODUCT.md line is a spec change, so say that and settle the spec first rather than writing the exception into it as part of the change. PRODUCT.md's CLI conventions section owns what a surface may drop; this section owns what you emit before dropping it.
+
+**Changing what the terminal prints — layout, width behavior, color, glyphs, tables, verbosity — load `/tui-designer` first.** Nothing else fires it here, and every surface this repo has is terminal output.
+
 ## Phases and throwaway design
 
 Work proceeds in phases. Each phase:

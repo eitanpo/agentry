@@ -220,18 +220,20 @@ func resolveChannels(t *testing.T, args ...string) render.Channels {
 
 // TestLevelChannels pins the level→channel ladder (PRODUCT.md §Verbosity):
 // breadth before depth — detailed adds tool *activation* and subagent
-// expansion, full alone adds tool-result bodies; metrics rides from standard up.
-// It also checks per-channel overrides add and subtract on top of a level,
-// including the hyphenated --tool-results flag and its --no- form.
+// expansion, full alone adds tool-result bodies. Metrics is outside the ladder:
+// the footer's aggregate sections print at every level, including minimal, and
+// leave only on --no-metrics. It also checks per-channel overrides add and
+// subtract on top of a level, including the hyphenated --tool-results flag and
+// its --no- form.
 func TestLevelChannels(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
 		want render.Channels
 	}{
-		{"default is minimal", nil, render.Channels{}},
-		{"minimal", []string{"--level", "minimal"}, render.Channels{}},
-		{"standard adds thinking+metrics", []string{"--level", "standard"},
+		{"default is minimal, with the footer on", nil, render.Channels{Metrics: true}},
+		{"minimal keeps the footer", []string{"--level", "minimal"}, render.Channels{Metrics: true}},
+		{"standard adds thinking", []string{"--level", "standard"},
 			render.Channels{Thinking: true, Metrics: true}},
 		{"detailed adds tools+subagents, no results", []string{"--level", "detailed"},
 			render.Channels{Thinking: true, Tools: true, Subagents: true, Metrics: true}},
@@ -239,8 +241,10 @@ func TestLevelChannels(t *testing.T) {
 			render.Channels{Thinking: true, Tools: true, ToolResults: true, Subagents: true, Metrics: true}},
 		{"override subtracts thinking", []string{"--level", "detailed", "--no-thinking"},
 			render.Channels{Tools: true, Subagents: true, Metrics: true}},
-		{"override adds metrics to minimal", []string{"--level", "minimal", "--metrics"},
-			render.Channels{Metrics: true}},
+		{"--no-metrics subtracts the footer's aggregates from minimal", []string{"--level", "minimal", "--no-metrics"},
+			render.Channels{}},
+		{"--no-metrics subtracts them from full too", []string{"--level", "full", "--no-metrics"},
+			render.Channels{Thinking: true, Tools: true, ToolResults: true, Subagents: true}},
 		{"override adds tool-results to detailed", []string{"--level", "detailed", "--tool-results"},
 			render.Channels{Thinking: true, Tools: true, ToolResults: true, Subagents: true, Metrics: true}},
 		{"override subtracts tool-results from full", []string{"--level", "full", "--no-tool-results"},
@@ -1748,4 +1752,42 @@ func TestDefaultCapAppliesToBareListingOnly(t *testing.T) {
 			t.Errorf("stderr = %q, want no remainder notice when nothing was hidden", stderr)
 		}
 	})
+}
+
+// TestMetricsFlagsOnRender pins the two flag rules the footer's ungating leaves
+// behind (PRODUCT.md §Output, §Verbosity): --metrics is gone, because with the
+// sections always printed it could change nothing, and --include belongs to the
+// listing, where it selects detail the render path prints unasked. Both were
+// accepted before this version — the second silently, which left a caller
+// believing detail had been added.
+func TestMetricsFlagsOnRender(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string // substring expected on stderr
+	}{
+		{"--metrics is gone and points at its surviving half", []string{"view", "--metrics"}, "did you mean --no-metrics"},
+		{"--no-metrics is still accepted on a render", []string{"view", "--no-metrics", "--level", "full"}, ""},
+		{"--include beside a session id is refused", []string{"deadbeef", "--include", "files"}, "--include belongs to `agentry list`"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Chdir(t.TempDir()) // no project here: a flag rule must fail before any lookup
+			code, _, stderr := exec(c.args...)
+			if c.want == "" {
+				// The flag parsed; resolution then fails for want of a session, which is
+				// the far side of the check this case is about.
+				if code == exUsage {
+					t.Errorf("accepted flag rejected as usage: %q", stderr)
+				}
+				return
+			}
+			if code != exUsage {
+				t.Errorf("exit = %d, want %d (exUsage); stderr = %q", code, exUsage, stderr)
+			}
+			if !strings.Contains(stderr, c.want) {
+				t.Errorf("stderr = %q, want substring %q", stderr, c.want)
+			}
+		})
+	}
 }

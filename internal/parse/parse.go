@@ -48,6 +48,8 @@ func Load(jsonlPath string) (*model.Session, error) {
 	effs := efforts(entries)
 	ms := models(entries)
 	cost, added, removed := recordedTotals(entries)
+	turns := splitTurns(entries)
+	cwd := sessionCwd(entries)
 
 	sess := &model.Session{
 		Meta: model.Meta{
@@ -64,6 +66,19 @@ func Load(jsonlPath string) (*model.Session, error) {
 			LinesRemoved: removed,
 			PRs:          sessionPRs(entries),
 			Artifacts:    sessionArtifacts(entries),
+			// The footer's own facts, read by the same helpers the listing uses so
+			// that one session's files and tally cannot differ between the two
+			// surfaces. DailyActivity carries the header's active time as well as the
+			// day-by-day rows.
+			Title:         sessionTitle(lastTitleOf(entries, manualTitleTypes...), lastTitleOf(entries, "ai-title"), turns),
+			Cwd:           cwd,
+			Path:          jsonlPath,
+			RootUUID:      rootUUID(entries),
+			Files:         sessionFiles(entries, cwd),
+			DailyActivity: dailyActivity(turns, firstStamp(entries)),
+			Tools:         toolStats(entries),
+			Failures:      failureStats(entries),
+			Denials:       denialStats(entries),
 		},
 	}
 	sess.Meta.Start, sess.Meta.End = timeRange(entries)
@@ -72,9 +87,10 @@ func Load(jsonlPath string) (*model.Session, error) {
 	for _, d := range daily {
 		sess.Meta.Usage.Add(d.Usage)
 	}
+	sess.Meta.DailyUsage = daily
 	sess.Meta.CacheSaving = cacheSaving(daily)
 
-	for _, t := range splitTurns(entries) {
+	for _, t := range turns {
 		turn := model.Turn{
 			Prompt: t.prompt,
 			Start:  t.start,
@@ -124,6 +140,7 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		RootUUID: rootUUID(entries),
 		Cwd:      cwd,
 		Files:    sessionFiles(entries, cwd),
+		Failures: failureStats(entries),
 		Denials:  denialStats(entries),
 		Born:     fileBorn(jsonlPath),
 		// The last value is the session's, matching the last-activity time the
@@ -256,10 +273,43 @@ func sessionSpend(jsonlPath string, entries []entry) ([]model.DailyUsage, model.
 func sessionRecords(entries []entry, subs map[string]*subagent) []usageRecord {
 	fallback := firstStamp(entries)
 	recs := mainTally(entries, fallback).records()
-	for _, s := range subs {
-		recs = append(recs, mainTally(s.entries, fallback).records()...)
+	// Each sidecar is charged to the delegation that spawned it, the way the
+	// listing charges it: an agent axis whose every row reads "main" says nothing
+	// about where a session's money went, and the two paths have to name one
+	// session's spend identically.
+	labels := agentLabels(entries)
+	scans := make(map[string]sidecarScan, len(subs))
+	for key, sub := range subs {
+		scans[key] = sidecarScan{
+			records:  mainTally(sub.entries, fallback).records(),
+			children: sidecarChildren(sub.entries),
+		}
+	}
+	spreadAgentLabels(labels, scans)
+	for key, scan := range scans {
+		label := labels[key]
+		if label == "" {
+			label = unattributedAgent
+		}
+		for i := range scan.records {
+			scan.records[i].agent = label
+		}
+		recs = append(recs, scan.records...)
 	}
 	return recs
+}
+
+// sidecarChildren names the sidecars one already-parsed subagent log spawned —
+// the set readSidecar collects while scanning the file, recovered here from
+// entries Load has already read rather than by opening them again.
+func sidecarChildren(entries []entry) []string {
+	var out []string
+	for _, spawns := range []map[string]string{agentIDMap(entries), skillSidecarMap(entries)} {
+		for _, fileKey := range spawns {
+			out = append(out, fileKey)
+		}
+	}
+	return out
 }
 
 // cacheSaving prices the split for what caching took off the session, nil where no
@@ -1341,6 +1391,45 @@ func toolResultMap(entries []entry) map[string]toolResult {
 		}
 	}
 	return m
+}
+
+// failureStats groups the session's top-level calls that ran and failed, by tool
+// and identity — the counterpart to denialStats, and what tells a reader which
+// tool a header reading "9 failed" is about.
+//
+// A refused call is excluded rather than counted here: the log flags it as an
+// error too, so counting on the flag alone would file a permission boundary that
+// held as something to go fix. Denial is what separates them, the same test the
+// header's two counts make.
+func failureStats(entries []entry) []model.ToolStat {
+	results := toolResultMap(entries)
+	type key struct{ tool, identity string }
+	counts := map[key]int{}
+	var order []key
+	for _, e := range entries {
+		if e.typ != "assistant" {
+			continue
+		}
+		for _, b := range e.blocks {
+			if b.typ != "tool_use" {
+				continue
+			}
+			r, ok := results[b.id]
+			if !ok || !r.isError || r.denial != "" {
+				continue
+			}
+			k := key{b.name, toolIdentity(b.name, b.input)}
+			if counts[k] == 0 {
+				order = append(order, k)
+			}
+			counts[k]++
+		}
+	}
+	out := make([]model.ToolStat, 0, len(order))
+	for _, k := range order {
+		out = append(out, model.ToolStat{Tool: k.tool, Identity: k.identity, Count: counts[k]})
+	}
+	return out
 }
 
 // denialStats groups the session's refused top-level calls by what refused them

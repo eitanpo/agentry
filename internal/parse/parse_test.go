@@ -1324,3 +1324,85 @@ func TestCacheSavingAgreesAcrossBothReadPaths(t *testing.T) {
 		t.Errorf("listing tallied %+v, render tallied %+v", sum.Usage, sess.Meta.Usage)
 	}
 }
+
+// TestLoadDailyUsageMatchesSummarize pins that a render and a listing split one
+// session's spend identically — same day, same model, same delegation. The
+// render path builds the split from sidecars it already parsed while the listing
+// reads them off disk, so the two are separate code paths over one question, and
+// the render path charged every sidecar to the main thread until this version:
+// its agent axis showed one row and answered nothing about where money went.
+func TestLoadDailyUsageMatchesSummarize(t *testing.T) {
+	path := filepath.Join("testdata", "subagent-usage.jsonl")
+	s, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := func(rows []model.DailyUsage) map[string]model.Usage {
+		out := map[string]model.Usage{}
+		for _, r := range rows {
+			out[r.Day+"|"+r.Model+"|"+r.Agent] = r.Usage
+		}
+		return out
+	}
+	want, got := key(s.DailyUsage), key(sess.Meta.DailyUsage)
+	if len(got) != len(want) {
+		t.Fatalf("render split has %d rows, listing has %d: %+v vs %+v", len(got), len(want), sess.Meta.DailyUsage, s.DailyUsage)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("row %q: render %+v, listing %+v", k, got[k], w)
+		}
+	}
+	// The fixture delegates, so at least one row must name something other than
+	// the main thread — without it the comparison above would pass on two equally
+	// unlabelled splits.
+	delegated := false
+	for _, r := range sess.Meta.DailyUsage {
+		if r.Agent != "" {
+			delegated = true
+		}
+	}
+	if !delegated {
+		t.Errorf("no delegated row in %+v; the agent axis would read as one row", sess.Meta.DailyUsage)
+	}
+}
+
+// TestSummarizeFailures pins which calls a session's failure tally holds: the
+// ones that ran and failed, named by tool and identity, with refused calls left
+// out. A refused call carries the log's error flag too, so counting on that flag
+// alone reports a permission boundary that held as something to go fix — and the
+// header's own counts make the same split, on the same field.
+func TestSummarizeFailures(t *testing.T) {
+	path := filepath.Join("testdata", "failures.jsonl")
+	s, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two failing `go` commands collapse into one entry by identity; the failing
+	// Edit is its own; the denied rm and the Read that worked are absent.
+	want := []model.ToolStat{
+		{Tool: "Bash", Identity: "go", Count: 2},
+		{Tool: "Edit", Identity: "/repo/internal/cli/cli.go", Count: 1},
+	}
+	assertToolStats(t, s.Failures, want)
+	for _, f := range s.Failures {
+		if f.Identity == "rm" {
+			t.Errorf("a refused call was counted as a failure: %+v", s.Failures)
+		}
+	}
+	if len(s.Denials) != 1 {
+		t.Errorf("Denials = %+v, want the one refused call", s.Denials)
+	}
+
+	// The render path reads the same log through different code, so the two tally
+	// it identically or one of the surfaces is lying about the same session.
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertToolStats(t, sess.Meta.Failures, want)
+}

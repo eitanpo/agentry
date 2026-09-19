@@ -36,6 +36,7 @@ agentry <uuid>              # render a session by id, or any unambiguous prefix 
 agentry view                # render the most recent session (no id needed)
 agentry view --from sdk     # render the most recent headless run (a hook, `claude -p`)
 agentry cost                # what these sessions cost, computed from their tokens
+agentry <uuid> --no-metrics # render without the footer's aggregate sections
 agentry <uuid> --format json | jq  # the full session model as JSON, for piping
 ```
 
@@ -158,11 +159,38 @@ log cannot tell a long test run from a person who walked away, and uncapped one 
 168 hours. A session's wall-clock span is never divided by, and cost per line changed is not offered
 at all, because Claude Code records line counts for a minority of sessions.
 
-**A rendered session ends with what it produced.** If the session opened a pull request or published
-an artifact, an `Outputs` section after the last turn lists each one, clickable on a terminal — a
-pull request as its URL, an artifact as its title. It is not gated on `--level`, so it shows even at
-`minimal`: an output is an outcome, not working detail. Sessions that produced neither show no
-section. These are the same facts `list --include outputs` and `--opened-pr` read.
+**A rendered session ends with a footer saying what it touched, produced and spent.** After the last
+turn come five sections, each shown only when it has something: `Files` (every file the session
+modified), `Outputs` (each pull request it opened and artifact it published, clickable on a
+terminal), `Tools (by identity)` (which skills, agents and commands ran, how often, and which of them failed or were refused),
+`Cost` (what the session's dollars went to), `Summary (by token cost)` (the per-turn table),
+`Day by day` (turns, active time and cost per day, on a session that ran across more than one) and
+`Session`. None of them is gated on `--level`, so a bare `agentry <uuid>` shows all seven;
+`--no-metrics` drops the four aggregates and keeps the files, the outputs and the closing card.
+
+**Every session gets a dollar figure, and you can tell it from Claude Code's own.** Claude Code
+records a cost for about a third of sessions; agentry prices the rest from their tokens, the same way
+`agentry cost` does. A recorded figure prints as `$12.50` and a computed one as `~$12.50`, and the
+`Cost` section splits the computed total by model, by subagent, per turn, per active hour, and by
+what caching saved. Long lists are capped and name what they left out — the full ones are
+in `--format json`. These are the same facts `list --include files`, `--include tools` and
+`--include outputs` read.
+
+**The last section names the session, so you can act on what you just read.** `Session` closes the
+render with the session's id, its title, the directory it ran in, the conversation root it shares
+with any fork of itself, the log file it was read from, its counts and its spend, then the two
+commands that reach it again —
+`agentry <id>` to re-render it and `claude --resume <id>` to pick it back up. Before this, a render
+named the session nowhere: you had to go back to a listing to find the id of the session you were
+looking at.
+
+**The header says what the session was, the footer what it did.** The box above the transcript gives
+each fact a line: when the session ran, with its **active time** rather than the span from first
+entry to last — locally a session's wall-clock span runs 6× its active time at the median and 89× at
+the ninetieth percentile — then what it ran on, then its turns, tools, subagents, failed calls and
+refused calls, keeping a failure and a refusal apart because they ask for different things, then
+what it spent. A line too long for the box wraps inside it, so a narrow terminal costs you a line
+rather than a field.
 
 **Headless sessions are hidden unless you ask for them.** Anything non-interactive — a `claude -p`
 from a script, a hook, a CI step — writes a session log like any other, and on a machine that uses
@@ -186,7 +214,7 @@ same scope, so an id copied off a listing opens where you read it — no `cd` in
 first — and `agentry view` with no id reaches the whole subtree too, picking the most recently
 written session file rather than the current directory's.
 
-Sessions print oldest-to-newest, so the most recent is at the bottom, next to your prompt. Each row shows the last-activity time (when the session's most recent turn ended — the same recency the list is ordered by), duration, turn count, a title (a name you chose if set — from renaming the session, or from `--name` / `/rename`, whichever the log records last — else Claude Code's own `ai-title` summary, falling back to the first prompt, skipping a leading `/clear`), and its id, shortened to the shortest prefix unique among the rows and never under 8 characters — copy it and pass it to `agentry <id>` to render that session. `--format json` keeps every id in full. A forked session (Claude Code's `--fork-session` / `/branch`) is grouped under the original it was forked from and its title indented with `└─`; while it still carries the original's inherited title it is shown by its first new prompt instead, so the two are distinguishable. A title that just repeats the row's worktree — what you get when one argument names both the worktree and the conversation, as `devx -n plan -w` does — is replaced by the session's first prompt for the same reason: the worktree column already shows it.
+Sessions print oldest-to-newest, so the most recent is at the bottom, next to your prompt. Each row shows the last-activity time (when the session's most recent turn ended — the same recency the list is ordered by), **active time** — how long its turns ran, not the span from its first entry to its last, which locally runs 6× longer at the median — turn count, a title (a name you chose if set — from renaming the session, or from `--name` / `/rename`, whichever the log records last — else Claude Code's own `ai-title` summary, falling back to the first prompt, skipping a leading `/clear`), and its id, shortened to the shortest prefix unique among the rows and never under 8 characters — copy it and pass it to `agentry <id>` to render that session. `--format json` keeps every id in full. A forked session (Claude Code's `--fork-session` / `/branch`) is grouped under the original it was forked from and its title indented with `└─`; while it still carries the original's inherited title it is shown by its first new prompt instead, so the two are distinguishable. A title that just repeats the row's worktree — what you get when one argument names both the worktree and the conversation, as `devx -n plan -w` does — is replaced by the session's first prompt for the same reason: the worktree column already shows it.
 
 ### Options
 

@@ -8,9 +8,16 @@ import (
 	"github.com/eitanpo/agentry/internal/render"
 )
 
-// channelNames are the per-channel overrides, each exposed as --name / --no-name.
-// Single source for both flag registration and render-flag-group detection.
-var channelNames = []string{"thinking", "tools", "tool-results", "subagents", "metrics"}
+// channelNames are the transcript's per-channel overrides, each exposed as
+// --name / --no-name. Single source for both flag registration and
+// render-flag-group detection.
+var channelNames = []string{"thinking", "tools", "tool-results", "subagents"}
+
+// metricsChannel names the footer's three aggregate sections. It is the one
+// channel with no --metrics form: the sections print at every level, so the flag
+// could never change anything, and a flag that changes nothing reads as a
+// setting that failed. Only --no-metrics exists, and it takes all three away.
+const metricsChannel = "metrics"
 
 // newViewCmd is the explicit render verb. It behaves exactly like the bare
 // command but owns the render flags' own help page and is listed in
@@ -46,6 +53,7 @@ func addRenderFlags(cmd *cobra.Command) {
 		cmd.Flags().Bool(ch, false, "show "+ch)
 		cmd.Flags().Bool("no-"+ch, false, "hide "+ch)
 	}
+	cmd.Flags().Bool("no-"+metricsChannel, false, "hide the footer's tool, cost and day tables")
 	// Complete the enum flag to its allowed values instead of filenames.
 	_ = cmd.RegisterFlagCompletionFunc("level", fixedComp(levelNames))
 }
@@ -68,6 +76,9 @@ func isRenderFlag(name string) bool {
 		return true
 	}
 	bare := strings.TrimPrefix(name, "no-")
+	if bare == metricsChannel {
+		return true
+	}
 	for _, ch := range channelNames {
 		if bare == ch {
 			return true
@@ -91,7 +102,11 @@ func channelsFromFlags(cmd *cobra.Command) (render.Channels, error) {
 	applyChannel(&channels.Tools, cmd, "tools")
 	applyChannel(&channels.ToolResults, cmd, "tool-results")
 	applyChannel(&channels.Subagents, cmd, "subagents")
-	applyChannel(&channels.Metrics, cmd, "metrics")
+	// On by default and off only when asked, which is why it is set here rather
+	// than in the levels map: the footer's aggregates are session-level facts, not
+	// transcript detail, so no verbosity level governs them.
+	channels.Metrics = true
+	applyChannel(&channels.Metrics, cmd, metricsChannel)
 	return channels, nil
 }
 

@@ -18,8 +18,10 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/eitanpo/agentry/internal/breakdown"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/eitanpo/agentry/internal/price"
 	"github.com/eitanpo/agentry/internal/spend"
 	"github.com/eitanpo/agentry/internal/trail"
 	"github.com/muesli/termenv"
@@ -36,6 +38,22 @@ const (
 	glyphThinking    = "✻"
 	glyphOK          = "✓"
 	glyphErr         = "✗"
+	minContentWidth  = 20
+	headerPrefix     = "Session · "
+	sectionIndent    = "  " // footer rows, aligned with the per-turn table's
+	// filesShown and identityEntriesShown bound the two footer sections whose
+	// length the session decides. The figures come from the local corpus: files run
+	// to 95 on one session against a median of 6, and tool identities to 175
+	// against a median of 15.
+	filesShown           = 10
+	identityEntriesShown = 8
+	// cardLabelWidth pads the closing card's labels into one column, so the values
+	// beside them line up and the id is selectable as one run of text.
+	cardLabelWidth = 9
+	// dateAndTime dates a header timestamp; timeOnly is the shorter form the end
+	// of a same-day session takes, where repeating the date says nothing.
+	dateAndTime = "Jan 2 15:04"
+	timeOnly    = "15:04"
 )
 
 // Channels selects which optional sections render. Tools gates the per-call
@@ -100,19 +118,27 @@ func Session(w io.Writer, s *model.Session, opts Options) error {
 		b.WriteString("\n")
 		b.WriteString(r.turn(t))
 	}
-	// What the session produced comes after the last turn and before the metrics,
-	// because an output is a result of the session rather than a property of it —
-	// the header says what the session was. It is not gated on a channel: thinking
-	// and tool bodies are hidden at low verbosity because they are the machinery,
-	// and a link to the pull request the session opened is the opposite of
-	// machinery. A session that produced nothing renders nothing here.
-	if out := r.outputs(s); out != "" {
-		b.WriteString("\n")
-		b.WriteString(out)
-	}
+	// The footer: what the session touched and produced, then how it worked. No
+	// section is gated on verbosity — a two-turn session already renders 257 lines
+	// and the per-turn table adds five, so a gate saved a reader nothing they would
+	// notice while costing them the section's existence. Length is bounded by each
+	// section's own cap instead. PRODUCT.md's Output section owns the rule.
+	//
+	// Outcomes lead, so a reader who stops after two sections still has them. The
+	// three aggregates leave together on --no-metrics, which is why they sit last.
+	footer := []string{r.files(s), r.outputs(s)}
 	if opts.Channels.Metrics {
+		footer = append(footer, r.identities(s), r.cost(s), r.summary(s), r.dayByDay(s))
+	}
+	// The card closes the render, so the id a reader needs to cite or resume the
+	// session is the last thing on screen rather than thousands of lines above it.
+	footer = append(footer, r.card(s))
+	for _, section := range footer {
+		if section == "" {
+			continue
+		}
 		b.WriteString("\n")
-		b.WriteString(r.summary(s))
+		b.WriteString(section)
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -147,53 +173,139 @@ func (r *renderer) initStyles() {
 
 func (r *renderer) header(s *model.Session) string {
 	m := s.Meta
-	title := fmt.Sprintf("Session · %s → %s", fmtTime(m.Start), fmtTime(m.End))
-	if d := fmtDuration(m.Start, m.End); d != "" {
-		title += " · " + d
+	// One fact to a line: when the session ran, what it ran on, how big it was,
+	// what it spent. The first two shared a line until this version, and at the
+	// 100-column fallback width that line had no room for the entrypoint and
+	// dropped it — a fact the reader never learned was missing. A line still too
+	// long for the box now wraps inside it, so no width loses a field.
+	lines := []string{r.claude.Render(headerPrefix + when(m))}
+	if ranOn := strings.Join(ranOnParts(m), " · "); ranOn != "" {
+		lines = append(lines, r.claude.Render(ranOn))
 	}
-	// What it ran on, with the transition spelled out when the session switched
-	// models mid-way. A session whose log names no model says nothing: "unknown"
-	// asserted a fact the log does not carry, which is the rule the effort and
-	// entrypoint beside it already follow.
-	if mo := trail.Of(m.Model, m.Models); mo != "" {
-		title += " · " + mo
-	}
-	// How hard the model was run, as a phrase — "high" alone beside a model name
-	// would not say high what. A session that changed effort shows the transition
-	// with the same arrow the entrypoint trail uses.
-	if e := trail.Of(m.Effort, m.Efforts); e != "" {
-		title += " · " + e + " effort"
-	}
-	// Where the session ran, spelled out rather than abbreviated to the "+" the
-	// listing column uses — the header has a line to itself.
-	if t := entrypoint.Trail(m.Entrypoint, m.Entrypoints); t != "" {
-		title += " · " + t
-	}
-
-	tools, errs := 0, 0
-	for _, t := range s.Turns {
-		tools += t.ToolCount
-		errs += t.ErrorCount
-	}
-	counts := []string{
-		plural(len(s.Turns), "turn"), plural(tools, "tool"),
-	}
-	if errs > 0 {
-		counts = append(counts, r.bad.Render(plural(errs, "error")))
-	}
-	if m.NumSubagents > 0 {
-		counts = append(counts, plural(m.NumSubagents, "subagent"))
-	}
-
+	lines = append(lines, strings.Join(r.countParts(s), " · "))
 	// What the session spent, in the wording the listing's cost channel also
 	// prints — one phrasing, so a spend read off a rendered session and one read
 	// off a listing cannot differ.
 	spent := spend.Line(m.Usage, m.CacheSaving, m.CostUSD, m.LinesAdded, m.LinesRemoved)
+	lines = append(lines, r.dim.Render(spent))
+	return r.box(strings.Join(lines, "\n")) + "\n"
+}
 
-	body := r.claude.Render(title) + "\n" +
-		strings.Join(counts, " · ") + "\n" +
-		r.dim.Render(spent)
-	return r.box(body) + "\n"
+// countParts is the session's size, as the header's third line and the closing
+// card both print it. One helper because two surfaces counting one session
+// differently is the failure a reader cannot detect — both look like counts.
+func (r *renderer) countParts(s *model.Session) []string {
+	tools := 0
+	for _, t := range s.Turns {
+		tools += t.ToolCount
+	}
+	parts := []string{plural(len(s.Turns), "turn"), plural(tools, "tool")}
+	if s.Meta.NumSubagents > 0 {
+		parts = append(parts, plural(s.Meta.NumSubagents, "subagent"))
+	}
+	// A call that failed and a call that was never allowed to run ask for
+	// different things — a failure is something to go fix, a refusal is a boundary
+	// that held — so they are counted apart rather than summed into "errors".
+	// Each is dropped when it is zero, the rule every optional figure here follows.
+	failed, denied := failedAndDenied(s)
+	if failed > 0 {
+		parts = append(parts, r.bad.Render(fmt.Sprintf("%d failed", failed)))
+	}
+	if denied > 0 {
+		parts = append(parts, r.dim.Render(fmt.Sprintf("%d denied", denied)))
+	}
+	return parts
+}
+
+// when phrases when the session ran and how long it was working: each clock
+// time dated when the two fall on different days, then the active time — the sum
+// of the turns' own spans — with the day count on a session that spanned more
+// than one.
+//
+// The span between the two timestamps is deliberately absent. Locally a
+// session's wall-clock span runs 6× its active time at the median and 89× at the
+// ninetieth percentile, so printing it reads as the session's duration while
+// measuring how long a terminal stayed open. Both timestamps stay on the line,
+// so a reader who wants the span still has it. PRODUCT.md's header section owns
+// the rule.
+func when(m model.Meta) string {
+	line := fmt.Sprintf("%s → %s", fmtTime(m.Start), fmtTime(m.End))
+	if !m.Start.IsZero() && !m.End.IsZero() {
+		start, end := m.Start.Local(), m.End.Local()
+		endFormat := dateAndTime
+		if start.YearDay() == end.YearDay() && start.Year() == end.Year() {
+			endFormat = timeOnly
+		}
+		line = fmt.Sprintf("%s → %s", start.Format(dateAndTime), end.Format(endFormat))
+	}
+	// No recorded turn means no activity figure, rather than "0m active": the log
+	// does not say how long a session with no turn worked, and the rule the model
+	// and effort follow is to say nothing where the log is silent.
+	if days := len(m.DailyActivity); days > 0 {
+		active := spend.Duration(model.ActiveSeconds(m.DailyActivity)) + " active"
+		if days > 1 {
+			active += " over " + plural(days, "day")
+		}
+		line += " · " + active
+	}
+	return line
+}
+
+// ranOnParts is what the session ran on — the model, the effort it was run at,
+// and where it was started — as the header's second line and the closing card's
+// "ran on" row both print it. One helper for the reason countParts is one: two
+// surfaces describing the same session differently is a disagreement no reader
+// can detect, since each reads as a fact.
+//
+// A field the log does not carry is left out rather than guessed: "unknown"
+// asserted a model the log never named, which is the rule the effort and the
+// entrypoint have always followed. The entrypoint is spelled out in full —
+// "app→cli" rather than the "+" the listing compresses it to, because a line
+// here has room a four-character column does not.
+func ranOnParts(m model.Meta) []string {
+	var parts []string
+	for _, part := range []string{
+		trail.Of(m.Model, m.Models),
+		trailEffort(m),
+		entrypoint.Trail(m.Entrypoint, m.Entrypoints),
+	} {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+// failedAndDenied counts the session's own top-level calls that failed and that
+// were refused, matching the tool count beside them — a call made inside a
+// subagent is not counted, the rule the per-turn tool count already follows.
+//
+// A refusal is tested first and on Denial alone: the log marks a refused call as
+// an error too, so testing IsError first would file every refusal as a failure.
+func failedAndDenied(s *model.Session) (failed, denied int) {
+	for _, t := range s.Turns {
+		f, d := failedAndDeniedIn(t.Events)
+		failed, denied = failed+f, denied+d
+	}
+	return failed, denied
+}
+
+// failedAndDeniedIn counts one stream's own calls, which is what the rule under
+// a turn reports. Nested subagent streams are not walked, so a turn's counts add
+// up to the session's.
+func failedAndDeniedIn(events []model.Event) (failed, denied int) {
+	for _, e := range events {
+		if e.Kind != model.EventTool || e.Tool == nil {
+			continue
+		}
+		switch {
+		case e.Tool.Denial != "":
+			denied++
+		case e.Tool.IsError:
+			failed++
+		}
+	}
+	return failed, denied
 }
 
 func (r *renderer) box(content string) string {
@@ -250,8 +362,15 @@ func (r *renderer) turnClose(t model.Turn) string {
 	if t.ToolCount > 0 {
 		parts = append(parts, plural(t.ToolCount, "tool"))
 	}
-	if t.ErrorCount > 0 {
-		parts = append(parts, r.bad.Render(plural(t.ErrorCount, "error")))
+	// Split the same way the header and the card are: a call that was refused is
+	// not a call that went wrong, and a rule reading "5 errors" sent a reader
+	// looking for five things to fix.
+	failed, denied := failedAndDeniedIn(t.Events)
+	if failed > 0 {
+		parts = append(parts, r.bad.Render(fmt.Sprintf("%d failed", failed)))
+	}
+	if denied > 0 {
+		parts = append(parts, r.dim.Render(fmt.Sprintf("%d denied", denied)))
 	}
 	return assistantIndent + r.dim.Render("╰─ ") + strings.Join(parts, " · ")
 }
@@ -667,6 +786,301 @@ func (r *renderer) outputs(s *model.Session) string {
 	return b.String()
 }
 
+// files lists what the session modified, from Claude Code's own file-history
+// records rather than from tool arguments — so a file a shell command rewrote
+// appears here, and a session whose log carries no such record lists nothing
+// rather than claiming it changed nothing.
+//
+// Capped because the list is unbounded: locally the median session carrying
+// those records touched 6 files and the largest 95, and --format json carries
+// every path, so the cap costs a reader nothing they cannot recover.
+func (r *renderer) files(s *model.Session) string {
+	paths := s.Meta.Files
+	if len(paths) == 0 {
+		return ""
+	}
+	width := max(r.opts.Width-len(sectionIndent), minContentWidth)
+
+	var b strings.Builder
+	b.WriteString(r.dim.Render("── Files ──") + "\n")
+	shown := paths
+	if len(shown) > filesShown {
+		shown = shown[:filesShown]
+	}
+	for _, f := range shown {
+		// Truncated from the left: what distinguishes one modified file from another
+		// is its tail, the same reason the listing's files channel cuts that way.
+		b.WriteString(sectionIndent + truncateLeft(f, width) + "\n")
+	}
+	if rest := len(paths) - len(shown); rest > 0 {
+		b.WriteString(r.dim.Render(fmt.Sprintf("%s…  (%s)", sectionIndent, plural(rest, "more file"))) + "\n")
+	}
+	return b.String()
+}
+
+// identities tallies which skills, agents and commands ran, through the same
+// helper the listing's tools channel calls, so neither surface can report one
+// session's work differently from the other.
+//
+// The per-category cap is not optional: one local session used 175 distinct
+// identities, and an uncapped line would run longer than a small session's whole
+// transcript.
+func (r *renderer) identities(s *model.Session) string {
+	lines := breakdown.Lines(breakdown.Tally{Calls: s.Meta.Tools, Failures: s.Meta.Failures, Denials: s.Meta.Denials}, identityEntriesShown)
+	if len(lines) == 0 {
+		return ""
+	}
+	width := max(r.opts.Width-len(sectionIndent), minContentWidth)
+
+	var b strings.Builder
+	b.WriteString(r.dim.Render("── Tools (by identity) ──") + "\n")
+	for _, line := range lines {
+		b.WriteString(sectionIndent + truncate(line, width) + "\n")
+	}
+	return b.String()
+}
+
+// dayByDay splits the session's turns and active time across the days it ran on.
+//
+// It prints only on a session that spanned more than one day, where the figure a
+// reader wants — four days of work, or four days of leaving a terminal open — is
+// the one a single span cannot give. On a single-day session the header's active
+// figure already says it, and a one-row section would repeat it.
+func (r *renderer) dayByDay(s *model.Session) string {
+	days := s.Meta.DailyActivity
+	if len(days) < 2 {
+		return ""
+	}
+	_, _, byDay, _, _ := priceSession(s.Meta.DailyUsage)
+
+	var b strings.Builder
+	b.WriteString(r.dim.Render("── Day by day ──") + "\n")
+	for _, d := range days {
+		line := fmt.Sprintf("%s%s  %4d %-6s %7s",
+			sectionIndent, d.Day, d.Turns, turnNoun(d.Turns), spend.Duration(d.ActiveSeconds))
+		// A day agentry could price carries what it cost; one it could not carries
+		// nothing, rather than a zero that would read as a free day.
+		if usd := byDay[d.Day]; usd > 0 {
+			line += fmt.Sprintf("  %9s", "~"+spend.USD(usd))
+		}
+		b.WriteString(line + "\n")
+	}
+	return b.String()
+}
+
+// turnNoun is the bare noun plural() would attach to a count, for a column that
+// aligns the number itself and so cannot take the two as one string.
+func turnNoun(n int) string {
+	if n == 1 {
+		return "turn"
+	}
+	return "turns"
+}
+
+// trailEffort phrases the reasoning effort as the header does — "high effort"
+// rather than a bare "high", which beside a model name would not say high what.
+func trailEffort(m model.Meta) string {
+	if e := trail.Of(m.Effort, m.Efforts); e != "" {
+		return e + " effort"
+	}
+	return ""
+}
+
+// card closes the render by naming the session and restating its size: the id to
+// render or resume it by, the words it is called, the directory it ran in, and
+// the conversation root it shares with any fork of itself.
+//
+// It is the one place a header fact is repeated, and the repetition is the
+// point. A large session runs to thousands of lines — one here renders 4,664 —
+// so by the time a reader reaches the end, the header is out of reach exactly
+// when they want to cite, resume or re-render what they just read. Nothing else
+// in the render names the session at all. PRODUCT.md's Output section owns the
+// exception to the header-or-footer rule.
+func (r *renderer) card(s *model.Session) string {
+	m := s.Meta
+	if m.ID == "" {
+		return ""
+	}
+	width := max(r.opts.Width-len(sectionIndent)-cardLabelWidth, minContentWidth)
+
+	var b strings.Builder
+	b.WriteString(r.dim.Render("── Session ──") + "\n")
+	row := func(label, value string, fromLeft bool) {
+		if value == "" {
+			return
+		}
+		if fromLeft {
+			value = truncateLeft(value, width)
+		} else {
+			value = truncate(value, width)
+		}
+		b.WriteString(sectionIndent + r.dim.Render(fmt.Sprintf("%-*s", cardLabelWidth, label)) + value + "\n")
+	}
+	row("id", m.ID, false)
+	row("title", oneLine(m.Title), false)
+	// The directory is cut from the left, like every other path here: what names
+	// one repository against another is the tail.
+	row("project", m.Cwd, true)
+	row("root", m.RootUUID, false)
+	// Cut from the left like the project row: the file's own name is its tail.
+	row("log", m.Path, true)
+	// The header's own four lines, restated in full: a card that named the session
+	// but not when it ran or what it ran on would send a reader back up the very
+	// scroll it exists to spare them.
+	row("when", when(m), false)
+	row("ran on", strings.Join(ranOnParts(m), " · "), false)
+	row("size", strings.Join(r.countParts(s), " · "), false)
+	row("spend", r.dim.Render(spend.Line(m.Usage, m.CacheSaving, m.CostUSD, m.LinesAdded, m.LinesRemoved)), false)
+	// Both commands take the id in full rather than a prefix: the listing can
+	// shorten one because it knows every id beside it, and a single render knows
+	// none of them, so a prefix printed here could name two sessions.
+	row("render", "agentry "+m.ID, false)
+	row("resume", "claude --resume "+m.ID, false)
+	return b.String()
+}
+
+// spent is one axis's share of what the session's tokens are worth: a model, a
+// delegation target, or a day.
+type spent struct {
+	name string
+	usd  float64
+}
+
+// priceSession values the session's tokens at list prices, split the three ways
+// the footer reports. It is agentry's own arithmetic over this log, not Claude
+// Code's record: the two agree within a few percent across the corpus and can
+// differ either way on one session, which is why every figure derived here is
+// printed with a leading "~" and the record is not.
+//
+// Tokens spent on a model agentry holds no price for are left out of every total
+// and named instead, the rule the cost roll-up already follows — counting them
+// at zero would report a session as cheaper than it was.
+func priceSession(daily []model.DailyUsage) (byModel, byAgent []spent, byDay map[string]float64, total float64, unpriced []string) {
+	models, agents := map[string]float64{}, map[string]float64{}
+	byDay = map[string]float64{}
+	seenUnpriced := map[string]bool{}
+	for _, d := range daily {
+		usd, ok := price.Of(d.Model, d.Usage)
+		if !ok {
+			if d.Model != "" && !seenUnpriced[d.Model] {
+				seenUnpriced[d.Model] = true
+				unpriced = append(unpriced, d.Model)
+			}
+			continue
+		}
+		agent := d.Agent
+		if agent == "" {
+			// The main thread is the majority of every session, so it is named rather
+			// than left blank: an axis missing its largest row reads as a breakdown of
+			// the delegated part alone.
+			agent = "main"
+		}
+		models[d.Model] += usd
+		agents[agent] += usd
+		byDay[d.Day] += usd
+		total += usd
+	}
+	return sortedSpend(models), sortedSpend(agents), byDay, total, unpriced
+}
+
+// sortedSpend orders an axis by dollars descending, then by name, so the row a
+// reader wants first is first and two runs of one session print alike.
+func sortedSpend(m map[string]float64) []spent {
+	out := make([]spent, 0, len(m))
+	for name, usd := range m {
+		out = append(out, spent{name, usd})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].usd != out[j].usd {
+			return out[i].usd > out[j].usd
+		}
+		return out[i].name < out[j].name
+	})
+	return out
+}
+
+// joinSpend formats an axis inline, keeping at most max entries and naming the
+// remainder, the way the tool tally caps its own categories.
+func joinSpend(entries []spent, max int) string {
+	shown, hidden := entries, 0
+	if max > 0 && len(entries) > max {
+		shown, hidden = entries[:max], len(entries)-max
+	}
+	parts := make([]string, 0, len(shown)+1)
+	for _, e := range shown {
+		parts = append(parts, fmt.Sprintf("%s ~%s", e.name, spend.USD(e.usd)))
+	}
+	if hidden > 0 {
+		parts = append(parts, fmt.Sprintf("+%d more", hidden))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// cost is the footer's money section: what Claude Code recorded, what this log's
+// tokens are worth at list prices, and which model, which delegation and what
+// unit of work that price went to.
+//
+// It exists because the recorded figure answers the question for a minority of
+// sessions — 116 of 365 locally — and answers only "how much", never "on what".
+// The two figures are printed on separate rows rather than blended: a record and
+// an estimate that differ by a few percent must be tellable apart, which is what
+// the "~" marks.
+func (r *renderer) cost(s *model.Session) string {
+	m := s.Meta
+	byModel, byAgent, _, total, unpriced := priceSession(m.DailyUsage)
+	if m.CostUSD == nil && total == 0 {
+		return ""
+	}
+	width := max(r.opts.Width-len(sectionIndent)-cardLabelWidth, minContentWidth)
+
+	var b strings.Builder
+	b.WriteString(r.dim.Render("── Cost ──") + "\n")
+	row := func(label, value string) {
+		if value == "" {
+			return
+		}
+		b.WriteString(sectionIndent + r.dim.Render(fmt.Sprintf("%-*s", cardLabelWidth, label)) + truncate(value, width) + "\n")
+	}
+	if m.CostUSD != nil {
+		row("recorded", spend.USD(*m.CostUSD))
+	}
+	if total > 0 {
+		row("priced", "~"+spend.USD(total)+r.dim.Render("   at list prices, from this log's tokens"))
+		row("by model", joinSpend(byModel, identityEntriesShown))
+		row("by agent", joinSpend(byAgent, identityEntriesShown))
+
+		// What the money bought, which is the figure that carries between sessions:
+		// a total says what one session cost, a rate says whether it was expensive.
+		var each []string
+		if n := len(s.Turns); n > 0 {
+			each = append(each, "~"+spend.USD(total/float64(n))+" /turn")
+		}
+		if secs := model.ActiveSeconds(m.DailyActivity); secs > 0 {
+			each = append(each, "~"+spend.USD(total/(float64(secs)/3600))+" /active hour")
+		}
+		if m.CacheSaving != nil && m.CacheSaving.SavedUSD() > 0 {
+			each = append(each, "caching saved ~"+spend.USD(m.CacheSaving.SavedUSD()))
+		}
+		row("each", strings.Join(each, "  ·  "))
+	}
+	// Named rather than counted at zero, so a session priced short says so.
+	if len(unpriced) > 0 {
+		row("unpriced", strings.Join(unpriced, ", ")+r.dim.Render("   no list price held for this model"))
+	}
+	return b.String()
+}
+
+// truncateLeft cuts s to limit runes from the left, keeping the tail. Paths are
+// cut this way because the tail is what distinguishes one from another; the
+// listing cuts its own path columns the same way.
+func truncateLeft(s string, limit int) string {
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return "…" + string(r[len(r)-(limit-1):])
+}
+
 // maybeLink hyperlinks text when color is on and leaves it plain when off. The
 // escape is invisible in a terminal but is literal bytes in a pipe or a file, and
 // plain output's contract is plain text.
@@ -719,7 +1133,7 @@ func (r *renderer) summary(s *model.Session) string {
 			pct, spend.Tokens(rw.tok), rw.tools, rw.n, truncate(rw.label, max(r.opts.Width-30, 20))))
 	}
 	if rest := len(rows) - limit; rest > 0 {
-		b.WriteString(r.dim.Render(fmt.Sprintf("  …  (%s)\n", plural(rest, "more step"))))
+		b.WriteString(r.dim.Render(fmt.Sprintf("  …  (%s)", plural(rest, "more step"))) + "\n")
 	}
 	return b.String()
 }

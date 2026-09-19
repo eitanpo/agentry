@@ -60,6 +60,48 @@ type Meta struct {
 	// produced.
 	PRs       []PR       `json:"prs,omitempty"`
 	Artifacts []Artifact `json:"artifacts,omitempty"`
+	// Files, DailyActivity, Tools and Denials mirror the Summary fields of those
+	// names, read by the same helpers, because the footer prints what the
+	// listing's files and tools channels print and the header's active time is the
+	// figure DailyActivity splits by day. Mirroring rather than recomputing is
+	// what keeps one session's files, tally and active time identical whichever
+	// path a caller read them from.
+	// Title, Cwd and RootUUID are how a session is named once the transcript is
+	// read: the words a person calls it by, the repository it ran in, and the
+	// conversation root a fork shares with its parent. They mirror the Summary
+	// fields of those names, resolved by the same helpers, so a session called one
+	// thing in a listing is not called another in its own render.
+	Title    string `json:"title,omitempty"`
+	Cwd      string `json:"cwd,omitempty"`
+	RootUUID string `json:"rootUuid,omitempty"`
+	// Path is the log agentry read, as the locator resolved it. The listing has no
+	// such field: a row there is one of hundreds and the id is how a caller names
+	// it, where a reader of one session's render is often about to go read its log
+	// — and nothing else in the output says which file that is.
+	Path string `json:"path,omitempty"`
+
+	Files         []string        `json:"files,omitempty"`
+	DailyActivity []DailyActivity `json:"dailyActivity,omitempty"`
+	// DailyUsage is the same per-day, per-model, per-delegation split the listing
+	// carries, and it is what the footer's Cost section prices: a total alone
+	// cannot say which model or which subagent spent it.
+	DailyUsage []DailyUsage `json:"dailyUsage,omitempty"`
+	Tools      []ToolStat   `json:"tools,omitempty"`
+	Failures   []ToolStat   `json:"failures,omitempty"`
+	Denials    []DenialStat `json:"denials,omitempty"`
+}
+
+// ActiveSeconds is how long a session's turns ran, summed over the days
+// DailyActivity splits them across. It is the duration both the rendered header
+// and the listing's column report: a session's wall-clock span overstates the
+// work by 6× at the local median and 89× at the ninetieth percentile, because a
+// session left open overnight keeps its span and not its activity.
+func ActiveSeconds(days []DailyActivity) int {
+	total := 0
+	for _, d := range days {
+		total += d.ActiveSeconds
+	}
+	return total
 }
 
 // Summary is a lightweight session descriptor for listing: enough to identify
@@ -106,6 +148,11 @@ type Summary struct {
 	// one edited by a tool. Empty for a session whose log carries no such entries,
 	// which is not a claim that nothing changed.
 	Files []string `json:"files,omitempty"`
+	// Failures groups the top-level calls that ran and failed, by tool and
+	// identity. Separate from Tools for the reason Denials is: a failure is an
+	// outcome of a call, and the same pair appears in both when a tool failed once
+	// and worked twice.
+	Failures []ToolStat `json:"failures,omitempty"`
 	// Denials groups the calls that were refused rather than run. Separate from
 	// Tools because a denial is an outcome, not another call: the same (tool,
 	// identity) pair can appear in both.

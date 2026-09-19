@@ -2,6 +2,7 @@ package render
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -812,4 +813,739 @@ func TestHeaderCost(t *testing.T) {
 			t.Errorf("a session with no cost record must show no dollar figure: %q", b.String())
 		}
 	})
+}
+
+// ── Header: what the session was ───────────────────────────────────────────
+
+// headerOf returns the boxed header alone, so an assertion about the header
+// cannot be satisfied by text from a turn below it — "denied" appears on a tool
+// line too, and "active" could appear in a prompt.
+func headerOf(out string) string {
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		if strings.Contains(l, "╯") { // the box's bottom-right corner
+			return strings.Join(lines[:i+1], "\n")
+		}
+	}
+	return out
+}
+
+func renderHeader(t *testing.T, s *model.Session, width int) string {
+	t.Helper()
+	var b strings.Builder
+	if err := Session(&b, s, Options{Width: width, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	return headerOf(b.String())
+}
+
+// TestHeaderActiveTime pins the header's first line (PRODUCT.md §Output): dated
+// clock times, the active time in place of the wall-clock span, and the day
+// count only on a session that spanned more than one day. The span is the
+// regression this guards — locally it runs 6× the active time at the median and
+// 89× at the ninetieth percentile, so a header showing it misreports the work.
+func TestHeaderActiveTime(t *testing.T) {
+	sameDay := &model.Session{
+		Meta: model.Meta{
+			Start:         time.Date(2026, 9, 18, 9, 12, 0, 0, time.Local),
+			End:           time.Date(2026, 9, 18, 11, 40, 0, 0, time.Local),
+			DailyActivity: []model.DailyActivity{{Day: "2026-09-18", Turns: 1, ActiveSeconds: 2520}},
+		},
+		Turns: []model.Turn{{Prompt: "hi"}},
+	}
+	across4Days := &model.Session{
+		Meta: model.Meta{
+			Start: time.Date(2026, 9, 15, 18, 3, 0, 0, time.Local),
+			End:   time.Date(2026, 9, 18, 12, 32, 0, 0, time.Local),
+			DailyActivity: []model.DailyActivity{
+				{Day: "2026-09-15", Turns: 5, ActiveSeconds: 900},
+				{Day: "2026-09-16", Turns: 5, ActiveSeconds: 900},
+				{Day: "2026-09-17", Turns: 6, ActiveSeconds: 900},
+				{Day: "2026-09-18", Turns: 14, ActiveSeconds: 1140},
+			},
+		},
+		Turns: []model.Turn{{Prompt: "hi"}},
+	}
+
+	t.Run("a same-day session dates the start and not the end", func(t *testing.T) {
+		got := renderHeader(t, sameDay, 100)
+		if !strings.Contains(got, "Sep 18 09:12 → 11:40") {
+			t.Errorf("times wrong: %q", got)
+		}
+		if !strings.Contains(got, "42m active") {
+			t.Errorf("no active figure: %q", got)
+		}
+		if strings.Contains(got, "over") {
+			t.Errorf("single-day session must name no day count: %q", got)
+		}
+		if strings.Contains(got, "2h28m") { // the wall-clock span
+			t.Errorf("wall-clock span is not printed: %q", got)
+		}
+	})
+
+	t.Run("a multi-day session dates both ends and counts the days", func(t *testing.T) {
+		got := renderHeader(t, across4Days, 120)
+		if !strings.Contains(got, "Sep 15 18:03 → Sep 18 12:32") {
+			t.Errorf("times wrong: %q", got)
+		}
+		if !strings.Contains(got, "1h04m active over 4 days") {
+			t.Errorf("active figure or day count wrong: %q", got)
+		}
+		if strings.Contains(got, "66h") { // the wall-clock span, 66h29m
+			t.Errorf("wall-clock span is not printed: %q", got)
+		}
+	})
+
+	t.Run("a session with no recorded activity names no active time", func(t *testing.T) {
+		// Saying nothing, rather than "0m active": the log does not record how long
+		// such a session worked, and a zero would assert that it worked for none.
+		got := renderHeader(t, minimalSession(), 100)
+		if strings.Contains(got, "active") {
+			t.Errorf("active figure invented: %q", got)
+		}
+	})
+}
+
+// TestHeaderFailedAndDenied pins the split (PRODUCT.md §Output): a call that ran
+// and failed is counted apart from one that was refused, because they ask for
+// different things. The log marks a refusal as an error too, so a single count
+// filed 70 of 365 local sessions' refusals as failures.
+func TestHeaderFailedAndDenied(t *testing.T) {
+	sess := &model.Session{
+		Meta: model.Meta{ID: "s1"},
+		Turns: []model.Turn{{
+			Prompt: "go",
+			Events: []model.Event{
+				{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", IsError: true}},
+				{Kind: model.EventTool, Tool: &model.Tool{Name: "Write", IsError: true, Denial: "permission-rule"}},
+				{Kind: model.EventTool, Tool: &model.Tool{Name: "Read"}},
+			},
+		}},
+	}
+
+	t.Run("each is counted on its own", func(t *testing.T) {
+		got := renderHeader(t, sess, 100)
+		for _, want := range []string{"1 failed", "1 denied"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("header missing %q: %q", want, got)
+			}
+		}
+		if strings.Contains(got, "2 failed") {
+			t.Errorf("a refused call was counted as a failure: %q", got)
+		}
+	})
+
+	t.Run("a clean session shows neither count", func(t *testing.T) {
+		got := renderHeader(t, minimalSession(), 100)
+		if strings.Contains(got, "failed") || strings.Contains(got, "denied") {
+			t.Errorf("zero counts must be dropped: %q", got)
+		}
+	})
+}
+
+// TestHeaderKeepsEveryField pins the four-line header (PRODUCT.md §Output):
+// when the session ran and what it ran on sit on lines of their own, and no
+// terminal width drops a field. The regression it guards is what line two
+// replaced — one identity line at the 100-column fallback width had no room for
+// the entrypoint and deleted it, and a reader saw nothing saying so.
+func TestHeaderKeepsEveryField(t *testing.T) {
+	sess := &model.Session{
+		Meta: model.Meta{
+			Model:      "claude-opus-5",
+			Effort:     "high",
+			Entrypoint: "cli",
+			// A real local session, whose identity line came to 102 columns against
+			// the 96 the fallback width leaves inside the box.
+			Start: time.Date(2026, 9, 15, 18, 3, 0, 0, time.Local),
+			End:   time.Date(2026, 9, 18, 12, 32, 0, 0, time.Local),
+			DailyActivity: []model.DailyActivity{
+				{Day: "2026-09-15", Turns: 5, ActiveSeconds: 1200},
+				{Day: "2026-09-16", Turns: 5, ActiveSeconds: 1200},
+				{Day: "2026-09-17", Turns: 6, ActiveSeconds: 1200},
+				{Day: "2026-09-18", Turns: 14, ActiveSeconds: 1140},
+			},
+		},
+		Turns: []model.Turn{{Prompt: "hi"}},
+	}
+
+	t.Run("when and what it ran on are separate lines", func(t *testing.T) {
+		got := renderHeader(t, sess, 100)
+		var timeLine, ranOnLine string
+		for _, l := range strings.Split(got, "\n") {
+			if strings.Contains(l, "Sep 15 18:03") {
+				timeLine = l
+			}
+			if strings.Contains(l, "claude-opus-5") {
+				ranOnLine = l
+			}
+		}
+		if timeLine == "" || ranOnLine == "" {
+			t.Fatalf("header lost a line: %q", got)
+		}
+		if timeLine == ranOnLine {
+			t.Errorf("times and model share a line: %q", timeLine)
+		}
+		if !strings.Contains(ranOnLine, "high effort") || !strings.Contains(ranOnLine, "cli") {
+			t.Errorf("second line must carry effort and entrypoint: %q", ranOnLine)
+		}
+	})
+
+	// The width a render falls back to when stdout is not a terminal, which is
+	// where the old single line ran out of room.
+	t.Run("the fallback width keeps the entrypoint", func(t *testing.T) {
+		got := renderHeader(t, sess, 100)
+		for _, want := range []string{"Sep 15 18:03", "1h19m active over 4 days", "claude-opus-5", "high effort", "cli"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("header dropped %q: %q", want, got)
+			}
+		}
+	})
+
+	// Narrower than the second line needs: it wraps inside the box, which costs a
+	// line and keeps every field, where dropping cost the field and said nothing.
+	t.Run("a narrow terminal wraps rather than dropping", func(t *testing.T) {
+		got := renderHeader(t, sess, 34)
+		for _, want := range []string{"Sep 15 18:03", "1h19m", "claude-opus-5", "effort", "cli"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("width 34 dropped %q: %q", want, got)
+			}
+		}
+	})
+
+	t.Run("a session whose log names none of them prints no second line", func(t *testing.T) {
+		got := renderHeader(t, minimalSession(), 100)
+		if strings.Contains(got, "effort") || strings.Contains(got, "unknown") {
+			t.Errorf("header invented a field the log does not carry: %q", got)
+		}
+	})
+}
+
+// ── Footer: what the session did ───────────────────────────────────────────
+
+// footerSession carries content for all five footer sections: files it modified,
+// outputs it produced, tools by identity, turns to rank, and two days to split.
+func footerSession() *model.Session {
+	return &model.Session{
+		Meta: model.Meta{
+			ID:    "s1",
+			Files: []string{"/repo/internal/render/render.go", "/repo/PRODUCT.md"},
+			PRs:   []model.PR{{Repository: "eitanpo/agentry", Number: 14, URL: "https://github.com/eitanpo/agentry/pull/14"}},
+			Tools: []model.ToolStat{
+				{Tool: "Skill", Identity: "coding-guidelines", Count: 1},
+				{Tool: "Bash", Identity: "grep", Count: 21},
+			},
+			Denials: []model.DenialStat{{Kind: "permission-rule", Tool: "Write", Identity: "/etc/hosts", Count: 1}},
+			DailyActivity: []model.DailyActivity{
+				{Day: "2026-09-17", Turns: 1, ActiveSeconds: 600},
+				{Day: "2026-09-18", Turns: 1, ActiveSeconds: 900},
+			},
+		},
+		Turns: []model.Turn{
+			{Prompt: "first", Usage: model.Usage{Input: 10, Output: 100}},
+			{Prompt: "second", Usage: model.Usage{Input: 20, Output: 200}},
+		},
+	}
+}
+
+// TestFooterSections pins the footer (PRODUCT.md §Output): five sections in a
+// fixed order, none of them gated on verbosity, and the three aggregates leaving
+// together on --no-metrics. The ungating is the regression this guards: gating
+// cost five lines out of 257 and hid the sections from anyone who never typed
+// the flag.
+func TestFooterSections(t *testing.T) {
+	order := []string{
+		"── Files ──",
+		"── Outputs ──",
+		"── Tools (by identity) ──",
+		"── Summary (by token cost) ──",
+		"── Day by day ──",
+	}
+
+	t.Run("all five print at minimal verbosity, in order", func(t *testing.T) {
+		// Channels{Metrics: true} is what the CLI resolves at every level, including
+		// minimal — TestLevelChannels pins that half.
+		var b strings.Builder
+		if err := Session(&b, footerSession(), Options{Width: 100, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		at := -1
+		for _, heading := range order {
+			i := strings.Index(out, heading)
+			if i < 0 {
+				t.Fatalf("no %q section: %q", heading, out)
+			}
+			if i < at {
+				t.Errorf("%q is out of order: %q", heading, out)
+			}
+			at = i
+		}
+	})
+
+	t.Run("--no-metrics drops the three aggregates and keeps the outcomes", func(t *testing.T) {
+		var b strings.Builder
+		if err := Session(&b, footerSession(), Options{Width: 100, Color: false, Channels: Channels{}}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		for _, want := range []string{"── Files ──", "── Outputs ──"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%q must survive --no-metrics: %q", want, out)
+			}
+		}
+		for _, gone := range order[2:] {
+			if strings.Contains(out, gone) {
+				t.Errorf("%q must leave with --no-metrics: %q", gone, out)
+			}
+		}
+	})
+
+	t.Run("a session with no files draws no Files section", func(t *testing.T) {
+		sess := footerSession()
+		sess.Meta.Files = nil
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.String(), "── Files ──") {
+			t.Errorf("empty section drawn: %q", b.String())
+		}
+	})
+
+	t.Run("a single-day session draws no Day by day section", func(t *testing.T) {
+		// The header's active figure already says it, and one row would repeat it.
+		sess := footerSession()
+		sess.Meta.DailyActivity = sess.Meta.DailyActivity[:1]
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.String(), "── Day by day ──") {
+			t.Errorf("one-day session drew the section: %q", b.String())
+		}
+	})
+
+	t.Run("a session with nothing to report draws no footer at all", func(t *testing.T) {
+		var b strings.Builder
+		bare := &model.Session{Meta: model.Meta{ID: "s1"}}
+		if err := Session(&b, bare, Options{Width: 100, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		for _, heading := range order {
+			if strings.Contains(b.String(), heading) {
+				t.Errorf("%q drawn around nothing: %q", heading, b.String())
+			}
+		}
+	})
+}
+
+// TestFooterCaps pins the two sections whose length the session decides: files
+// run to 95 on one local session and tool identities to 175, so each is capped
+// and says what it left out rather than being gated away.
+func TestFooterCaps(t *testing.T) {
+	t.Run("Files shows ten paths and names the remainder", func(t *testing.T) {
+		sess := footerSession()
+		sess.Meta.Files = nil
+		for i := 0; i < 12; i++ {
+			sess.Meta.Files = append(sess.Meta.Files, fmt.Sprintf("/repo/file%02d.go", i))
+		}
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		if !strings.Contains(out, "file09.go") || strings.Contains(out, "file10.go") {
+			t.Errorf("cap is not ten paths: %q", out)
+		}
+		if !strings.Contains(out, "(2 more files)") {
+			t.Errorf("remainder not named: %q", out)
+		}
+	})
+
+	t.Run("a tool category shows eight entries and names the remainder", func(t *testing.T) {
+		sess := footerSession()
+		sess.Meta.Tools = nil
+		for i := 0; i < 10; i++ {
+			sess.Meta.Tools = append(sess.Meta.Tools, model.ToolStat{
+				Tool: "Bash", Identity: fmt.Sprintf("cmd%02d", i), Count: 10 - i,
+			})
+		}
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 200, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		if !strings.Contains(out, "cmd07 ×3") || strings.Contains(out, "cmd08") {
+			t.Errorf("cap is not eight entries: %q", out)
+		}
+		if !strings.Contains(out, "+2 more") {
+			t.Errorf("remainder not named: %q", out)
+		}
+	})
+}
+
+// TestSessionJSONCarriesFooterFacts pins that the render path's JSON carries
+// what the footer prints, uncapped. Without it the spec's claim that the two
+// paths carry the same per-session fields is false, and the only way to read one
+// session's files back out is the listing.
+func TestSessionJSONCarriesFooterFacts(t *testing.T) {
+	var b strings.Builder
+	if err := SessionJSON(&b, footerSession()); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(b.String()), &got); err != nil {
+		t.Fatal(err)
+	}
+	meta := got["meta"].(map[string]any)
+	files, ok := meta["files"].([]any)
+	if !ok || len(files) != 2 {
+		t.Errorf("meta.files missing or short: %q", b.String())
+	}
+	if days, ok := meta["dailyActivity"].([]any); !ok || len(days) != 2 {
+		t.Errorf("meta.dailyActivity missing or short: %q", b.String())
+	}
+}
+
+// TestFooterHasNoBlankPaddedLines guards an artifact the footer made visible: a
+// newline inside a styled string makes the style pad the empty line after it, so
+// a section's remainder line was followed by a line of spaces. It cost nothing
+// while the per-turn table was the last thing rendered and printed a whitespace
+// line between sections once the footer had more below it.
+func TestFooterHasNoBlankPaddedLines(t *testing.T) {
+	sess := footerSession()
+	sess.Meta.Files = nil
+	for i := 0; i < 12; i++ { // enough files to draw a remainder line
+		sess.Meta.Files = append(sess.Meta.Files, fmt.Sprintf("/repo/file%02d.go", i))
+	}
+	for _, color := range []bool{false, true} {
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 100, Color: color, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(b.String(), "\n") {
+			if line != "" && strings.TrimSpace(line) == "" {
+				t.Errorf("color=%v line %d is whitespace only: %q", color, i, line)
+			}
+		}
+	}
+}
+
+// TestSessionCard pins the footer's closing section (PRODUCT.md §Output): the
+// render names the session it just showed. Until this section existed it named
+// it nowhere, so a reader at the bottom of a 4,664-line render had to go back to
+// a listing to find the id of what they were reading.
+func TestSessionCard(t *testing.T) {
+	sess := footerSession()
+	sess.Meta.ID = "7a8a84e4-7e68-4e4a-9549-4047e0c7a48d"
+	sess.Meta.Title = "the footer phase"
+	sess.Meta.Cwd = "/Users/ethanpo/Projects/me/agentry"
+	sess.Meta.RootUUID = "84a562af-5ae3-4f49-93bd-1c4b28b377c1"
+	sess.Meta.Path = "/Users/ethanpo/.claude/projects/-Users-ethanpo-Projects-me-agentry/7a8a84e4.jsonl"
+	sess.Meta.NumSubagents = 2
+	sess.Meta.Usage = model.Usage{Input: 30, Output: 300} // the header's own totals, which the card restates
+	sess.Meta.Model = "claude-opus-5"
+	sess.Meta.Effort = "high"
+	sess.Meta.Entrypoint = "cli"
+	sess.Meta.Start = time.Date(2026, 9, 17, 9, 12, 0, 0, time.Local)
+	sess.Meta.End = time.Date(2026, 9, 18, 11, 40, 0, 0, time.Local)
+
+	render := func(t *testing.T, ch Channels) string {
+		t.Helper()
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 120, Color: false, Channels: ch}); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	t.Run("it names the session every way the log does", func(t *testing.T) {
+		out := render(t, Channels{Metrics: true})
+		for _, want := range []string{
+			"── Session ──",
+			"id       7a8a84e4-7e68-4e4a-9549-4047e0c7a48d",
+			"title    the footer phase",
+			"project  /Users/ethanpo/Projects/me/agentry",
+			"root     84a562af-5ae3-4f49-93bd-1c4b28b377c1",
+			"log      /Users/ethanpo/.claude/projects/-Users-ethanpo-Projects-me-agentry/7a8a84e4.jsonl",
+			"when     Sep 17 09:12 → Sep 18 11:40 · 25m active over 2 days",
+			"ran on   claude-opus-5 · high effort · cli",
+			"render   agentry 7a8a84e4-7e68-4e4a-9549-4047e0c7a48d",
+			"resume   claude --resume 7a8a84e4-7e68-4e4a-9549-4047e0c7a48d",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("card missing %q: %q", want, out)
+			}
+		}
+	})
+
+	t.Run("it restates the header's size and spend", func(t *testing.T) {
+		// The restatement is the point: on a long session the header has scrolled
+		// away by the time a reader decides what to do with what they read. Counted
+		// twice in the output, so a card that dropped either line fails here.
+		out := render(t, Channels{Metrics: true})
+		for _, line := range []string{"2 turns · 0 tools · 2 subagents", "Tokens: 30 in / 300 out"} {
+			if n := strings.Count(out, line); n != 2 {
+				t.Errorf("%q appears %d times, want 2 (header and card): %q", line, n, out)
+			}
+		}
+	})
+
+	t.Run("it is the last section, and --no-metrics keeps it", func(t *testing.T) {
+		// An id is how a reader acts on the render, not detail about the work, so
+		// the flag that drops the three tables must not drop the card with them.
+		out := render(t, Channels{})
+		card := strings.Index(out, "── Session ──")
+		if card < 0 {
+			t.Fatalf("--no-metrics dropped the card: %q", out)
+		}
+		for _, earlier := range []string{"── Files ──", "── Outputs ──"} {
+			if i := strings.Index(out, earlier); i < 0 || i > card {
+				t.Errorf("%q must come before the card: %q", earlier, out)
+			}
+		}
+		if rest := out[card:]; strings.Count(rest, "── ") != 1 {
+			t.Errorf("the card must be the last section: %q", rest)
+		}
+	})
+
+	t.Run("a session the log named nothing shows no naming rows", func(t *testing.T) {
+		bare := footerSession()
+		bare.Meta.ID = "s1"
+		var b strings.Builder
+		if err := Session(&b, bare, Options{Width: 120, Color: false, Channels: Channels{}}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		if !strings.Contains(out, "id       s1") {
+			t.Fatalf("card missing its id: %q", out)
+		}
+		for _, absent := range []string{"title  ", "project", "root   ", "log    "} {
+			if strings.Contains(out, absent) {
+				t.Errorf("empty row %q drawn: %q", absent, out)
+			}
+		}
+	})
+}
+
+// TestSessionJSONCarriesNamingHandles pins that the naming rows are readable
+// without parsing the text view, which is what an agent piping --format json
+// needs to refer to the session it just read.
+func TestSessionJSONCarriesNamingHandles(t *testing.T) {
+	sess := footerSession()
+	sess.Meta.Title = "the footer phase"
+	sess.Meta.Cwd = "/repo"
+	sess.Meta.RootUUID = "84a562af"
+	sess.Meta.Path = "/logs/s1.jsonl"
+	var b strings.Builder
+	if err := SessionJSON(&b, sess); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(b.String()), &got); err != nil {
+		t.Fatal(err)
+	}
+	meta := got["meta"].(map[string]any)
+	for key, want := range map[string]string{"title": "the footer phase", "cwd": "/repo", "rootUuid": "84a562af", "path": "/logs/s1.jsonl"} {
+		if meta[key] != want {
+			t.Errorf("meta.%s = %v, want %q", key, meta[key], want)
+		}
+	}
+}
+
+// TestTurnRuleSplitsFailedAndDenied pins the rule beneath each turn
+// (PRODUCT.md §Output): it counts a refused call apart from a failed one, the
+// same split the header and the card make, so the turns' figures add up to the
+// header's. A rule reading "2 errors" sent a reader looking for two things to
+// fix where one was a permission boundary holding.
+func TestTurnRuleSplitsFailedAndDenied(t *testing.T) {
+	sess := &model.Session{
+		Meta: model.Meta{ID: "s1"},
+		Turns: []model.Turn{{
+			Prompt:    "go",
+			ToolCount: 3,
+			Events: []model.Event{
+				{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", IsError: true}},
+				{Kind: model.EventTool, Tool: &model.Tool{Name: "Write", IsError: true, Denial: "permission-rule"}},
+				{Kind: model.EventTool, Tool: &model.Tool{Name: "Read"}},
+			},
+		}},
+	}
+	var b strings.Builder
+	if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{}}); err != nil {
+		t.Fatal(err)
+	}
+	rule := ""
+	for _, line := range strings.Split(b.String(), "\n") {
+		if strings.Contains(line, "╰─ ") && strings.Contains(line, "tool") {
+			rule = line
+		}
+	}
+	if rule == "" {
+		t.Fatalf("no per-turn rule in %q", b.String())
+	}
+	for _, want := range []string{"3 tools", "1 failed", "1 denied"} {
+		if !strings.Contains(rule, want) {
+			t.Errorf("rule %q missing %q", rule, want)
+		}
+	}
+	if strings.Contains(rule, "error") {
+		t.Errorf("rule still reports errors as one count: %q", rule)
+	}
+}
+
+// TestCostSection pins the footer's money section (PRODUCT.md §Output): what
+// Claude Code recorded, what agentry prices the same tokens at, and which model,
+// which delegation and what unit of work that price went to. The recorded figure
+// is missing on two thirds of local sessions, so a footer carrying only it
+// answered "what did this cost" for a minority of renders.
+//
+// Dollar amounts are not asserted: the rate table is versioned and a rate change
+// must not fail this test. What is asserted is which rows appear and how each
+// figure is marked.
+func TestCostSection(t *testing.T) {
+	priced := func() *model.Session {
+		s := footerSession()
+		recorded := 12.50
+		s.Meta.CostUSD = &recorded
+		s.Meta.DailyActivity = []model.DailyActivity{
+			{Day: "2026-09-17", Turns: 1, ActiveSeconds: 600},
+			{Day: "2026-09-18", Turns: 1, ActiveSeconds: 900},
+		}
+		s.Meta.DailyUsage = []model.DailyUsage{
+			{Day: "2026-09-17", Model: "claude-opus-5", Usage: model.Usage{Input: 20000, Output: 40000}},
+			{Day: "2026-09-18", Model: "claude-opus-5", Agent: "general-purpose", Usage: model.Usage{Input: 5000, Output: 9000}},
+		}
+		return s
+	}
+
+	t.Run("it separates the record from the price agentry computed", func(t *testing.T) {
+		var b strings.Builder
+		if err := Session(&b, priced(), Options{Width: 120, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		if !strings.Contains(out, "── Cost ──") {
+			t.Fatalf("no Cost section: %q", out)
+		}
+		if !strings.Contains(out, "recorded $12.50") {
+			t.Errorf("the record must print unmarked, as Claude Code's own figure: %q", out)
+		}
+		for _, want := range []string{"priced   ~$", "by model claude-opus-5 ~$", "by agent main ~$", "general-purpose ~$", "/turn", "/active hour"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("Cost section missing %q: %q", want, out)
+			}
+		}
+	})
+
+	t.Run("a day carries what that day cost", func(t *testing.T) {
+		var b strings.Builder
+		if err := Session(&b, priced(), Options{Width: 120, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		day := ""
+		for _, line := range strings.Split(b.String(), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "2026-09-17") {
+				day = line
+			}
+		}
+		if !strings.Contains(day, "~$") {
+			t.Errorf("day row carries no price: %q", day)
+		}
+	})
+
+	t.Run("a model with no rate is named, not counted as free", func(t *testing.T) {
+		sess := priced()
+		sess.Meta.DailyUsage = append(sess.Meta.DailyUsage, model.DailyUsage{
+			Day: "2026-09-18", Model: "claude-not-in-the-table-9", Usage: model.Usage{Input: 1000, Output: 2000},
+		})
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 120, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(b.String(), "unpriced claude-not-in-the-table-9") {
+			t.Errorf("unpriced model not named: %q", b.String())
+		}
+	})
+
+	t.Run("a session with neither a record nor priceable tokens draws no section", func(t *testing.T) {
+		sess := footerSession()
+		sess.Meta.CostUSD = nil
+		sess.Meta.DailyUsage = nil
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 120, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.String(), "── Cost ──") {
+			t.Errorf("empty section drawn: %q", b.String())
+		}
+	})
+
+	t.Run("--no-metrics takes it with the other aggregates", func(t *testing.T) {
+		var b strings.Builder
+		if err := Session(&b, priced(), Options{Width: 120, Color: false, Channels: Channels{}}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.String(), "── Cost ──") {
+			t.Errorf("Cost survived --no-metrics: %q", b.String())
+		}
+	})
+}
+
+// TestFailedLine pins that the footer names which tools failed (PRODUCT.md
+// §Output): the header counts failures, and until this line existed nothing said
+// where to look. It also pins that the line and the header count the same calls
+// — they are read from different places, the line from the parser's tally and
+// the count from the event stream, so nothing but a test keeps them equal.
+func TestFailedLine(t *testing.T) {
+	sess := footerSession()
+	sess.Meta.Failures = []model.ToolStat{
+		{Tool: "Bash", Identity: "go", Count: 2},
+		{Tool: "Edit", Identity: "/repo/internal/cli/cli.go", Count: 1},
+	}
+	sess.Turns = []model.Turn{{
+		Prompt:    "run the checks",
+		ToolCount: 4,
+		Events: []model.Event{
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", Identity: "go", IsError: true}},
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", Identity: "go", IsError: true}},
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Edit", Identity: "/repo/internal/cli/cli.go", IsError: true}},
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Write", Identity: "/etc/hosts", IsError: true, Denial: "permission-rule"}},
+		},
+	}}
+	var b strings.Builder
+	if err := Session(&b, sess, Options{Width: 120, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	if !strings.Contains(out, "Failed  Bash/go ×2, Edit/cli.go ×1") {
+		t.Errorf("Failed line missing or misshaped: %q", out)
+	}
+	// The refused call belongs to the Denied line, not this one.
+	if strings.Contains(out, "Failed") && strings.Contains(out, "Failed  Write") {
+		t.Errorf("a refused call was named as a failure: %q", out)
+	}
+	if !strings.Contains(headerOf(out), "3 failed") || !strings.Contains(headerOf(out), "1 denied") {
+		t.Errorf("header counts wrong: %q", headerOf(out))
+	}
+
+	// The line's own counts add up to the number the header reports.
+	failedLine := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Failed  ") {
+			failedLine = line
+		}
+	}
+	total := 0
+	for _, part := range strings.Split(failedLine, "×")[1:] {
+		n := 0
+		if _, err := fmt.Sscanf(part, "%d", &n); err != nil {
+			t.Fatalf("unreadable count in %q: %v", failedLine, err)
+		}
+		total += n
+	}
+	if total != 3 {
+		t.Errorf("Failed line sums to %d, header says 3: %q", total, failedLine)
+	}
 }

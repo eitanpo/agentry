@@ -100,7 +100,6 @@ func TestSelect(t *testing.T) {
 }
 
 func TestFmtDur(t *testing.T) {
-	base := time.Date(2026, 6, 3, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
 		secs int
 		want string
@@ -111,16 +110,30 @@ func TestFmtDur(t *testing.T) {
 		{27*3600 + 14*60, "27h14m"},
 	}
 	for _, tt := range tests {
-		got := fmtDur(base, base.Add(time.Duration(tt.secs)*time.Second))
-		if got != tt.want {
+		if got := fmtDur(tt.secs); got != tt.want {
 			t.Errorf("fmtDur(%ds) = %q, want %q", tt.secs, got, tt.want)
 		}
 	}
-	if got := fmtDur(time.Time{}, base); got != "" {
-		t.Errorf("fmtDur(zero start) = %q, want empty", got)
-	}
-	if got := fmtDur(base, base.Add(-time.Hour)); got != "" {
+	if got := fmtDur(-3600); got != "" {
 		t.Errorf("fmtDur(negative) = %q, want empty", got)
+	}
+}
+
+// TestFmtActive pins the duration column's source (PRODUCT.md §Listing
+// sessions): the turns' own spans, not the span from first entry to last. The
+// column reported the latter until this version, which on one local session read
+// 66h28m for an hour of work.
+func TestFmtActive(t *testing.T) {
+	days := []model.DailyActivity{
+		{Day: "2026-09-17", Turns: 3, ActiveSeconds: 1800},
+		{Day: "2026-09-18", Turns: 4, ActiveSeconds: 900},
+	}
+	if got, want := fmtActive(days), "45m"; got != want {
+		t.Errorf("fmtActive = %q, want %q (the two days summed)", got, want)
+	}
+	// A log with no turn records says nothing, rather than claiming no work.
+	if got := fmtActive(nil); got != "" {
+		t.Errorf("fmtActive(no records) = %q, want empty", got)
 	}
 }
 
@@ -132,6 +145,9 @@ func TestRenderPlain(t *testing.T) {
 			End:      time.Date(2026, 6, 3, 14, 50, 0, 0, time.UTC),
 			NumTurns: 12,
 			Title:    "first\nline only",
+			// The duration column reads the turns' own spans, so a row needs activity
+			// records to show one — the span between Start and End is not it.
+			DailyActivity: []model.DailyActivity{{Day: "2026-06-03", Turns: 12, ActiveSeconds: 45 * 60}},
 		},
 	}
 	var b strings.Builder
@@ -896,8 +912,9 @@ func TestFilterByFile(t *testing.T) {
 	}
 }
 
-// TestRenderIncludeEditsAndDenials pins the two dimensions the tools breakdown
-// used to drop: which files a session edited, and which calls never ran.
+// TestRenderIncludeEditsAndDenials pins the three dimensions the tools breakdown
+// used to drop: which files a session edited, which calls failed, and which
+// never ran at all.
 func TestRenderIncludeEditsAndDenials(t *testing.T) {
 	sums := []model.Summary{
 		{ID: "s1", Title: "do work",
@@ -905,6 +922,10 @@ func TestRenderIncludeEditsAndDenials(t *testing.T) {
 				{Tool: "Edit", Identity: "/repo/internal/list/list.go", Count: 3},
 				{Tool: "Write", Identity: "/repo/docs/notes.md", Count: 1},
 				{Tool: "Bash", Identity: "git", Count: 4},
+			},
+			Failures: []model.ToolStat{
+				{Tool: "Bash", Identity: "go", Count: 2},
+				{Tool: "Edit", Identity: "/repo/internal/cli/cli.go", Count: 1},
 			},
 			Denials: []model.DenialStat{
 				{Kind: "permission-rule", Tool: "Bash", Identity: "rm", Count: 2},
@@ -945,6 +966,13 @@ func TestRenderIncludeEditsAndDenials(t *testing.T) {
 			t.Errorf("colliding base names not disambiguated, missing %q: %q", want, c.String())
 		}
 	}
+	// Failures name the call that broke, so a count of them has somewhere to point.
+	for _, want := range []string{"Failed", "Bash/go ×2", "Edit/cli.go ×1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+
 	// Denials name what refused the call, so an auto-allow decision has a source.
 	for _, want := range []string{"Denied", "permission-rule: Bash/rm ×2", "user-rejected: Edit/main.go ×1"} {
 		if !strings.Contains(out, want) {
@@ -959,8 +987,8 @@ func TestRenderIncludeEditsAndDenials(t *testing.T) {
 		Options{Width: 120, Color: false, Tools: true}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(clean.String(), "Denied") {
-		t.Errorf("no denials should print no Denied line: %q", clean.String())
+	if strings.Contains(clean.String(), "Denied") || strings.Contains(clean.String(), "Failed") {
+		t.Errorf("a session with neither outcome should print neither line: %q", clean.String())
 	}
 }
 

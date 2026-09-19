@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -18,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/eitanpo/agentry/internal/breakdown"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/render"
@@ -748,7 +748,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		}
 		fmt.Fprintf(&b, "%s  %s  %s  %s%s%s  %s\n",
 			meta.Render(when),
-			meta.Render(fmt.Sprintf("%*s", durW, fmtDur(s.Start, s.End))),
+			meta.Render(fmt.Sprintf("%*s", durW, fmtActive(s.DailyActivity))),
 			dim.Render(fmt.Sprintf("%*dt", turnsW-1, s.NumTurns)),
 			from,
 			proj,
@@ -791,7 +791,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			detail = append(detail, render.Reply(s.Replies[len(s.Replies)-1], promptW, opts.Color)...)
 		}
 		if opts.Tools {
-			for _, line := range toolLines(s.Tools, s.Denials) {
+			for _, line := range breakdown.Lines(breakdown.Tally{Calls: s.Tools, Failures: s.Failures, Denials: s.Denials}, 0) {
 				detail = append(detail, dim.Render(truncate(line, promptW)))
 			}
 		}
@@ -868,108 +868,6 @@ func artifactLine(a model.Artifact) string {
 	return strings.TrimSpace(a.Title + "  " + a.Key())
 }
 
-// toolLines renders a session's tool breakdown as one line per non-empty
-// category: Skills / Agents / Bash labelled by identity, Other by tool name.
-// Entries within a line are ordered by count descending, then name ascending.
-func toolLines(stats []model.ToolStat, denials []model.DenialStat) []string {
-	var skills, agents, bash, edits, other []model.ToolStat
-	for _, st := range stats {
-		switch st.Tool {
-		case "Skill":
-			skills = append(skills, st)
-		case "Agent":
-			agents = append(agents, st)
-		case "Bash":
-			bash = append(bash, st)
-		case "Edit", "Write":
-			edits = append(edits, st)
-		default:
-			other = append(other, st)
-		}
-	}
-	var lines []string
-	emit := func(label string, group []model.ToolStat, label2 func(model.ToolStat) string) {
-		if len(group) == 0 {
-			return
-		}
-		name := func(st model.ToolStat) string {
-			if label2 != nil {
-				return label2(st)
-			}
-			if st.Identity == "" {
-				return "?"
-			}
-			return st.Identity
-		}
-		sort.SliceStable(group, func(i, j int) bool {
-			if group[i].Count != group[j].Count {
-				return group[i].Count > group[j].Count
-			}
-			return name(group[i]) < name(group[j])
-		})
-		parts := make([]string, len(group))
-		for i, st := range group {
-			parts[i] = fmt.Sprintf("%s ×%d", name(st), st.Count)
-		}
-		lines = append(lines, fmt.Sprintf("%-7s %s", label, strings.Join(parts, ", ")))
-	}
-	byTool := func(st model.ToolStat) string { return st.Tool }
-	// Edits are shortened: the table has one line to spend, and a column of
-	// repeated directory prefixes distinguishes nothing. --format json keeps the
-	// full path, so the compression costs a reader nothing they cannot recover —
-	// the same trade Bash makes in showing a program, not its whole command line.
-	// Shortening stops at whatever is unique within this session, so two files
-	// sharing a base name stay two entries the reader can tell apart.
-	editPaths := map[string]bool{}
-	for _, st := range edits {
-		if st.Identity != "" {
-			editPaths[st.Identity] = true
-		}
-	}
-	editLabels := shortestUniqueLabels(editPaths)
-	byPath := func(st model.ToolStat) string {
-		if l := editLabels[st.Identity]; l != "" {
-			return l
-		}
-		return "?"
-	}
-	emit("Skills", skills, nil)
-	emit("Agents", agents, nil)
-	emit("Bash", bash, nil)
-	emit("Edits", edits, byPath)
-	emit("Other", other, byTool)
-	if line := denialLine(denials); line != "" {
-		lines = append(lines, line)
-	}
-	return lines
-}
-
-// denialLine reports the calls that were refused and by what, grouped kind by
-// kind. It is part of the tools block because a denial is an outcome of a call,
-// but it is not a ToolStat: the same call can both run and be refused in one
-// session, and collapsing the two would report neither honestly.
-func denialLine(denials []model.DenialStat) string {
-	if len(denials) == 0 {
-		return ""
-	}
-	sorted := append([]model.DenialStat(nil), denials...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if sorted[i].Count != sorted[j].Count {
-			return sorted[i].Count > sorted[j].Count
-		}
-		return sorted[i].Kind < sorted[j].Kind
-	})
-	parts := make([]string, len(sorted))
-	for i, d := range sorted {
-		what := d.Tool
-		if d.Identity != "" {
-			what += "/" + filepath.Base(d.Identity)
-		}
-		parts[i] = fmt.Sprintf("%s: %s ×%d", d.Kind, what, d.Count)
-	}
-	return fmt.Sprintf("%-7s %s", "Denied", strings.Join(parts, ", "))
-}
-
 // varyingTags maps session id to its entrypoint tag, but only when the listing
 // spans more than one — the same rule the project column uses, so a listing of a
 // single kind keeps the layout it had before entrypoints were shown. nil is the
@@ -1041,7 +939,7 @@ func projectLabels(sums []model.Summary) map[string]string {
 	if len(roots) < 2 {
 		return nil
 	}
-	rootLabels := shortestUniqueLabels(roots)
+	rootLabels := breakdown.ShortestUniqueLabels(roots)
 	labels := make(map[string]string, len(byCwd))
 	for cwd, root := range byCwd {
 		labels[cwd] = rootLabels[root]
@@ -1243,51 +1141,6 @@ func abbrevID(id string, n int) string {
 	return id[:n]
 }
 
-// shortestUniqueLabels maps each path to the shortest suffix of its components
-// that no other path in the set shares: "list.go" where that names one file,
-// "cli/list.go" and "list/list.go" where two files would otherwise print
-// identically. Shared by the project column and the Edits breakdown — two places
-// shortening paths for one table have to shorten them the same way, and a bare
-// base name is a label that silently merges distinct things on screen.
-func shortestUniqueLabels(paths map[string]bool) map[string]string {
-	labels := make(map[string]string, len(paths))
-	for p := range paths {
-		parts := strings.Split(strings.Trim(p, string(filepath.Separator)), string(filepath.Separator))
-		// Grow the suffix until no other path yields the same one. A path that is
-		// a suffix of another (/a/b vs /x/a/b) exhausts its components first and
-		// keeps the whole thing, which is already unique.
-		label := p
-		for n := 1; n <= len(parts); n++ {
-			cand := strings.Join(parts[len(parts)-n:], "/")
-			if uniqueSuffix(paths, p, cand) {
-				label = cand
-				break
-			}
-		}
-		labels[p] = label
-	}
-	return labels
-}
-
-// uniqueSuffix reports whether cand identifies self alone among paths — no other
-// path ends in the same components.
-func uniqueSuffix(paths map[string]bool, self, cand string) bool {
-	for p := range paths {
-		if p == self {
-			continue
-		}
-		parts := strings.Split(strings.Trim(p, string(filepath.Separator)), string(filepath.Separator))
-		n := strings.Count(cand, "/") + 1
-		if n > len(parts) {
-			continue
-		}
-		if strings.Join(parts[len(parts)-n:], "/") == cand {
-			return false
-		}
-	}
-	return true
-}
-
 // pad right-fills s with spaces to width display columns (rune count). s is
 // assumed already truncated to <= width.
 func pad(s string, width int) string {
@@ -1297,13 +1150,23 @@ func pad(s string, width int) string {
 	return s
 }
 
-// fmtDur renders a session's first-prompt-to-last-output span compactly:
-// "45m", "2h05m", or "8s"; empty when either bound is unknown.
-func fmtDur(start, end time.Time) string {
-	if start.IsZero() || end.IsZero() {
+// fmtActive renders the duration column: how long the session's turns ran, not
+// the span from its first entry to its last. That span reported how long a
+// terminal stayed open — locally it runs 6× the active time at the median and
+// 89× at the ninetieth percentile, and one session read 66h28m for an hour of
+// recorded work. A session whose log carries no turn records shows nothing
+// rather than "0m", the rule every column here follows for a fact the log does
+// not carry. The rendered header names the same figure, from the same sum.
+func fmtActive(days []model.DailyActivity) string {
+	if len(days) == 0 {
 		return ""
 	}
-	secs := int(end.Sub(start).Seconds())
+	return fmtDur(model.ActiveSeconds(days))
+}
+
+// fmtDur renders a span of seconds compactly:
+// "45m", "2h05m", or "8s"; empty when either bound is unknown.
+func fmtDur(secs int) string {
 	if secs < 0 {
 		return ""
 	}

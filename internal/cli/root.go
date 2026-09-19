@@ -100,6 +100,12 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 		if cmd.Flags().Changed("from") {
 			return usageErr("--from cannot be combined with a session id: %q already names the session to render", id)
 		}
+		// --include is the listing's. The render path prints the same facts in its
+		// footer without being asked, and it accepted the flag silently until this
+		// version — which left a caller believing detail had been added.
+		if cmd.Flags().Changed("include") {
+			return usageErr("--include belongs to `agentry list`: a rendered session already ends with its files, outputs and tool tally")
+		}
 	}
 
 	cwd, err := os.Getwd()
