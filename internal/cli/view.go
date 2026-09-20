@@ -64,7 +64,7 @@ func addRenderFlags(cmd *cobra.Command) {
 // command that emits output registers it once (the root, which carries both the
 // render and list flag sets, must not double-register it).
 func addFormatFlag(cmd *cobra.Command) {
-	cmd.Flags().String("format", "", formatHelp())
+	cmd.Flags().String("format", defaultFormat, formatHelp())
 	_ = cmd.RegisterFlagCompletionFunc("format", fixedComp(formatNames))
 }
 

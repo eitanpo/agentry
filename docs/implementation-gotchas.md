@@ -192,3 +192,12 @@ belongs only where no authoritative link exists; make it prove that before it pi
 nested output (`--no-subagents`) did not stabilize the digest, because what varied was whether
 a call was considered to *have* a subagent at all. When repeated renders differ, bisect by
 which layer still varies once a surface is suppressed, not by re-reading the renderer.
+
+## Refusing a run without taking `--help` with it
+
+**Cobra settles `--help` and `--version` before it reaches `PersistentPreRunE`.** That
+ordering is what lets a bad settings file refuse every verb while those two flags keep
+answering: the refusal lives in the hook rather than in an early exit from `Execute`. It also
+cuts the other way — a hook is the wrong place for anything help output depends on. Flag
+defaults are the case in point: help is rendered from `DefValue`, so the settings file has to
+be planted on the flags while the tree is being built, not in a hook that help never runs.

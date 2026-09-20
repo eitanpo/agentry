@@ -15,14 +15,17 @@ import (
 	"github.com/spf13/pflag"
 	"golang.org/x/term"
 
+	"github.com/eitanpo/agentry/internal/config"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/render"
 )
 
 // sysexits.h codes.
 const (
-	exUsage   = 64 // command-line usage error
-	exNoInput = 66 // input (project/session) does not exist
+	exUsage      = 64 // command-line usage error
+	exNoInput    = 66 // input (project/session) does not exist
+	exConfig     = 78 // the settings file is unreadable, or says something agentry cannot honor
+	exCantCreate = 73 // a file could not be written, or is already there
 )
 
 // levels maps each verbosity preset to the channels it enables.
@@ -39,7 +42,7 @@ var levels = map[string]render.Channels{
 
 // Candidate sets for nearest(): valid verbs, --level values, --include channels.
 var (
-	verbNames    = []string{"view", "list", "cost"}
+	verbNames    = []string{"view", "list", "cost", "config"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
 	includeNames = []string{"prompts", "tools", "files", "model", "cost", "outputs", "last-reply", "all"}
 	formatNames  = []string{"json", "jsonl", "text"}
@@ -93,23 +96,17 @@ func parseFormat(cmd *cobra.Command) (string, error) {
 // inherits the text form's behavior.
 func machineFormat(format string) bool { return format == "json" || format == "jsonl" }
 
-// defaultFormat is what a caller who named no format gets. The flag's own
-// default is the empty string, which every call site renders as this.
+// defaultFormat is what a caller who named no format gets, and is the flag's own
+// default so that help prints it. An empty default would leave pflag with
+// nothing to print and the help text asserting a default of its own, which then
+// contradicts the settings file the moment one sets this key.
 const defaultFormat = "text"
 
 // formatHelp is the --format flag's one-line help, derived from formatNames so
-// the two cannot disagree. The default is held out by name rather than by
-// position in that list, so the name is written once: spelling it again in the
-// trailing "or text" left the help asserting a default that nothing checked
-// against the value the parser actually falls back to.
+// the two cannot disagree. It names no default: pflag prints the flag's own,
+// which is the one a caller actually gets, file or no file.
 func formatHelp() string {
-	others := make([]string, 0, len(formatNames))
-	for _, name := range formatNames {
-		if name != defaultFormat {
-			others = append(others, name)
-		}
-	}
-	return "output format: " + strings.Join(others, ", ") + " or " + defaultFormat + " (default)"
+	return "output format: " + strings.Join(formatNames[:len(formatNames)-1], ", ") + " or " + formatNames[len(formatNames)-1]
 }
 
 // parseFrom validates the --from selector, shared by the listing and by the
@@ -148,8 +145,39 @@ func noInputErr(err error) error {
 
 // Execute builds the command tree and runs it, returning the process exit code.
 // version is injected from main (ldflags target main.Version).
+//
+// The settings file is read and checked before the tree is built, because its
+// values become the flags' defaults and a flag's default has to be right before
+// anything parses a command line against it. A file agentry cannot honor stops
+// the run here, whatever verb was typed: the message names the file and the key,
+// which is the whole of the repair.
 func Execute(version string) int {
-	return run(newRootCmd(version), os.Args[1:])
+	settings, err := config.Load()
+	if err == nil {
+		err = validateConfig(settings)
+	}
+	return run(newTree(version, settings, err), os.Args[1:])
+}
+
+// newTree builds the command tree for what reading the settings file produced.
+// A file agentry cannot honor yields a tree that refuses every verb with that
+// error — as a run-time refusal rather than an early exit, so `--help` and
+// `--version` still answer. Cobra settles both before it reaches this hook, and
+// a caller repairing their settings file is exactly who needs to look something
+// up.
+func newTree(version string, settings *config.Settings, loadErr error) *cobra.Command {
+	if loadErr != nil {
+		settings = nil
+	}
+	root := newRootCmd(version, settings)
+	if loadErr != nil {
+		var ee *exitError
+		if !errors.As(loadErr, &ee) {
+			loadErr = &exitError{code: exConfig, err: loadErr}
+		}
+		root.PersistentPreRunE = func(*cobra.Command, []string) error { return loadErr }
+	}
+	return root
 }
 
 // run executes an assembled command tree with explicit args and maps the

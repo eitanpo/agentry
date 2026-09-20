@@ -85,7 +85,7 @@ func TestLooksLikeID(t *testing.T) {
 // exec runs an isolated command tree with the given args, returning the exit
 // code and whatever was written to stdout and stderr.
 func exec(args ...string) (code int, stdout, stderr string) {
-	root := newRootCmd("test")
+	root := newRootCmd("test", nil)
 	var out, errBuf bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&errBuf)
@@ -99,7 +99,7 @@ func exec(args ...string) (code int, stdout, stderr string) {
 // in the same place, and an assertion that the note is separated from the rows
 // passes either way.
 func execMerged(args ...string) (code int, merged string) {
-	root := newRootCmd("test")
+	root := newRootCmd("test", nil)
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(&buf)
@@ -779,7 +779,7 @@ func TestViewSkipsHeadless(t *testing.T) {
 // the failure this catches is a --not-used-* that parses, accepts a value, and
 // narrows nothing — which looks like "no session matched" from the outside.
 func TestNotUsedFlags(t *testing.T) {
-	root := newRootCmd("test")
+	root := newRootCmd("test", nil)
 	for _, u := range usageFilters {
 		if root.Flags().Lookup(u.flag) == nil {
 			t.Errorf("--%s is not registered", u.flag)
@@ -1060,7 +1060,7 @@ func TestCompTitle(t *testing.T) {
 // exist, they select on what the session ran on, and the channel shows it. The
 // fixture session ran on claude-opus-4-7 and records no effort.
 func TestRunFlags(t *testing.T) {
-	root := newRootCmd("test")
+	root := newRootCmd("test", nil)
 	for _, f := range []string{"model", "effort"} {
 		if root.Flags().Lookup(f) == nil {
 			t.Errorf("--%s is not registered", f)
@@ -1158,7 +1158,7 @@ func TestRunFlags(t *testing.T) {
 // suggested by name while the help still listed three channels, so the only
 // place a user reads the channels from was the one place missing one.
 func TestIncludeHelpNamesEveryChannel(t *testing.T) {
-	usage := newRootCmd("test").Flags().Lookup("include").Usage
+	usage := newRootCmd("test", nil).Flags().Lookup("include").Usage
 	for _, ch := range includeNames {
 		if !strings.Contains(usage, ch) {
 			t.Errorf("--include help %q does not name the %q channel", usage, ch)

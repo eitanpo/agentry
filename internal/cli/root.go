@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/eitanpo/agentry/internal/config"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/locate"
 	"github.com/eitanpo/agentry/internal/parse"
@@ -19,7 +20,12 @@ import (
 // it carries both flag sets — the list selectors and the render toggles. noColor
 // is shared by reference into the verbs so the persistent flag has one backing
 // value.
-func newRootCmd(version string) *cobra.Command {
+//
+// settings is the caller's already-checked settings file, or nil for none. Its
+// values are planted as flag defaults once every flag exists, so the tree the
+// caller's command line is parsed against already defaults to what they asked
+// for; a flag they pass still wins, because passing it is what Changed means.
+func newRootCmd(version string, settings *config.Settings) *cobra.Command {
 	var noColor bool
 
 	root := &cobra.Command{
@@ -63,9 +69,18 @@ func newRootCmd(version string) *cobra.Command {
 	cobra.AddTemplateFunc("otherLocalFlagUsages", otherLocalFlagUsages)
 	root.SetUsageTemplate(usageTemplate)
 
-	root.AddCommand(newViewCmd(&noColor))
-	root.AddCommand(newListCmd(&noColor))
-	root.AddCommand(newCostCmd(&noColor))
+	tree := verbs{
+		root: root,
+		view: newViewCmd(&noColor),
+		list: newListCmd(&noColor),
+		cost: newCostCmd(&noColor),
+	}
+	root.AddCommand(tree.view, tree.list, tree.cost)
+	// Read before applying, since applying overwrites the very values `agentry
+	// config` reports as the built-in ones.
+	defaults := builtinDefaults(tree)
+	applyConfig(settings, tree)
+	root.AddCommand(newConfigCmd(settings, defaults))
 	return root
 }
 

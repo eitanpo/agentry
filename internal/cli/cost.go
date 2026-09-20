@@ -73,7 +73,7 @@ func newCostCmd(noColor *bool) *cobra.Command {
 	// rests on, which is why this default differs from the render path's: asking
 	// what you are spending is asking for the picture, not for a second command.
 	cmd.Flags().String("level", "standard", "how much the summary shows: minimal|standard")
-	_ = cmd.RegisterFlagCompletionFunc("level", fixedComp([]string{cost.LevelMinimal, "standard"}))
+	_ = cmd.RegisterFlagCompletionFunc("level", fixedComp(costLevelNames))
 	_ = cmd.RegisterFlagCompletionFunc("chart", fixedComp(cost.Charts))
 	cmd.Flags().String("since", "", "only spend on or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
 	cmd.Flags().String("until", "", "only spend on or before WHEN")
@@ -83,6 +83,12 @@ func newCostCmd(noColor *bool) *cobra.Command {
 	addFormatFlag(cmd)
 	return cmd
 }
+
+// costLevelNames are the two values `cost --level` takes. Held in one place
+// because the flag's completion and the settings file's check must offer and
+// accept the same pair — the render path's --level takes four values, and a set
+// spelled twice is how one of them comes to accept "full".
+var costLevelNames = []string{cost.LevelMinimal, "standard"}
 
 // parseBy validates --by, naming the nearest axis on a typo like every other
 // enum flag.

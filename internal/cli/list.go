@@ -70,7 +70,7 @@ func addListFlags(cmd *cobra.Command) {
 // lookup resolves to — and `view` carries none of the other selectors. The root
 // gets it through addListFlags and must not register it twice.
 func addFromFlag(cmd *cobra.Command) {
-	cmd.Flags().String("from", "", "where the session ran: cli, app, sdk, all (default: everything but sdk)")
+	cmd.Flags().String("from", "", "where the session ran: cli, app, sdk, all; unset means everything but sdk")
 	// Complete the enum flag to its allowed values instead of filenames.
 	_ = cmd.RegisterFlagCompletionFunc("from", fixedComp(entrypoint.Names))
 }
@@ -202,18 +202,30 @@ func parseChanged(cmd *cobra.Command) (list.Changed, error) {
 // with six hundred rows.
 func parseLimit(cmd *cobra.Command) (int, error) {
 	raw, _ := cmd.Flags().GetString("limit")
+	n, err := parseLimitValue(raw)
+	if err != nil {
+		return 0, usageErr("--limit: %v", err)
+	}
+	return n, nil
+}
+
+// parseLimitValue turns one --limit value into the cap it asks for, naming no
+// flag in its errors. The settings file can set this default too, and a caller
+// who mistyped a line in a file must not be sent looking for a flag they never
+// passed; parseLimit puts the flag's name back for the command-line path.
+func parseLimitValue(raw string) (int, error) {
 	if raw == "all" || raw == "0" {
 		return 0, nil
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil {
 		if g := nearest(raw, limitNames); g != "" {
-			return 0, usageErr("--limit: %q is neither a count nor a keyword — did you mean %q?", raw, g)
+			return 0, fmt.Errorf("%q is neither a count nor a keyword — did you mean %q?", raw, g)
 		}
-		return 0, usageErr("--limit: %q is neither a count nor %q", raw, "all")
+		return 0, fmt.Errorf("%q is neither a count nor %q", raw, "all")
 	}
 	if n < 0 {
-		return 0, usageErr("--limit: %d is negative — pass a count, or %q for no cap", n, "all")
+		return 0, fmt.Errorf("%d is negative — pass a count, or %q for no cap", n, "all")
 	}
 	return n, nil
 }
