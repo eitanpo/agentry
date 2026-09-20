@@ -91,8 +91,8 @@ awkward to undo.
    machine ends up running the version just shipped. Refreshing the local install is part of the
    release target, not a separate step to remember.
 
-The cask lands at `Casks/agentry.rb` in the tap. macOS binaries are unsigned, so the cask's
-post-install hook strips the quarantine attribute. Linux has no cask — `go install` instead.
+The cask lands at `Casks/agentry.rb` in the tap. macOS binaries are unsigned, so the cask strips
+the quarantine attribute with a postflight step at install time. Linux has no cask — `go install` instead.
 
 The `--snapshot` cask under `dist/homebrew/` is **not** representative: its `version` is
 `<last-tag>-SNAPSHOT-<sha>` and its download URLs are pinned to the previous tag. Only the

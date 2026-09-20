@@ -64,9 +64,20 @@ homebrew_casks:
       bash: completions/agentry.bash
       zsh: completions/agentry.zsh
       fish: completions/agentry.fish
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/agentry"]
-          end
+    # Strip the macOS quarantine attribute from the unsigned binary at install
+    # time. Written as a `postflight_steps` stanza in custom_block rather than
+    # through `hooks.post.install`: GoReleaser 2.18.2 hardcodes the wrapper
+    # `postflight do` for that hook, Homebrew deprecated `postflight` in favour
+    # of `postflight_steps`, and no released GoReleaser can emit the new form.
+    # `chdir` already resolves to the staged path, so the relative argument
+    # avoids a `{{staged_path}}` token that GoReleaser's own template pass would
+    # try to evaluate.
+    # The OS.mac? guard is carried over from the hook this replaces: the cask
+    # also carries linux URLs, and /usr/bin/xattr exists only on macOS, so an
+    # unguarded step fails the install on a Linux brew instead of doing nothing.
+    custom_block: |
+      if OS.mac?
+        postflight_steps do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "agentry"], chdir: "."
+        end
+      end
