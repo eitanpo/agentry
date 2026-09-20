@@ -473,7 +473,43 @@ func (r *renderer) turnClose(t model.Turn) string {
 	if denied > 0 {
 		parts = append(parts, r.dim.Render(fmt.Sprintf("%d denied", denied)))
 	}
+	parts = append(parts, r.turnSpend(t)...)
 	return assistantIndent + r.dim.Render("╰─ ") + strings.Join(parts, " · ")
+}
+
+// turnSpend is what the turn's tokens came to, phrased the way the header
+// phrases the session's so a reader meets one wording twice rather than two.
+// The header answers what the whole session spent; without this a reader with a
+// turn in front of them has to find that turn's row in the summary table below
+// to learn what it cost, and the table carries no cache share or dollars at all.
+//
+// Each field is dropped where the log does not support it: no tokens on a turn
+// that made no request, no cache share where nothing was cached or read back —
+// the rule the header follows — and no dollars for a turn whose models agentry
+// holds no rate for, since zero would read as free rather than as unpriced.
+func (r *renderer) turnSpend(t model.Turn) []string {
+	u := t.Usage
+	if u == (model.Usage{}) {
+		return nil
+	}
+	out := []string{fmt.Sprintf("%s in / %s out", spend.Tokens(u.Input), spend.Tokens(u.Output))}
+	// Nothing sent to be cached and nothing read back means there is no share to
+	// report, where a printed 0% reads as a measurement of caching that did not
+	// happen. The header's own wording states this rule; its condition also
+	// admits a turn with input and no cache at all, which prints that 0%.
+	if u.CacheRead+u.CacheCreate > 0 {
+		in := u.Input + u.CacheRead + u.CacheCreate
+		out = append(out, fmt.Sprintf("cache %.0f%%", float64(u.CacheRead)/float64(in)*100))
+	}
+	if t.CostUSD != nil {
+		// The tilde marks a figure agentry computed, which is what separates it
+		// everywhere from Claude Code's own recorded total.
+		out = append(out, "~"+spend.USD(*t.CostUSD))
+	}
+	for i := range out {
+		out[i] = r.dim.Render(out[i])
+	}
+	return out
 }
 
 // events renders an assistant event stream, each line carrying the left-bar

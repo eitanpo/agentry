@@ -60,7 +60,7 @@ func TestLineRoundsToTheCent(t *testing.T) {
 func TestLineShowsLinesChanged(t *testing.T) {
 	cost, add, rem := 17.25, 342, 8
 	got := Line(model.Usage{Input: 5, Output: 9}, nil, &cost, &add, &rem)
-	if want := "Tokens: 5 in / 9 out  ·  cache 0%  ·  $17.25  ·  +342/-8"; got != want {
+	if want := "Tokens: 5 in / 9 out  ·  $17.25  ·  +342/-8"; got != want {
 		t.Errorf("Line = %q, want %q", got, want)
 	}
 
@@ -124,6 +124,29 @@ func TestLineShowsWhatCachingSavedBesideTheCacheShare(t *testing.T) {
 	if strings.Contains(Line(u, &saving, nil, nil, nil), "$") {
 		t.Error("the saved share must carry no currency: the line's only $ is Claude Code's record")
 	}
+}
+
+// TestLineOmitsTheCacheShareOnAnUncachedSession pins the distinction between a
+// session whose caching did nothing for it and one that attempted none. A
+// "cache 0%" on the second reads as a measurement of caching that ran, where
+// the truth is that nothing was written to cache and nothing read back.
+//
+// No local session reaches this — of 714 sessions the 103 holding no cache
+// counters hold no uncached input either — so this test is the only thing
+// keeping the header and the per-turn rule from diverging on one that does.
+func TestLineOmitsTheCacheShareOnAnUncachedSession(t *testing.T) {
+	saving := model.CacheSaving{WithCacheUSD: 3, WithoutCacheUSD: 12}
+	got := Line(model.Usage{Input: 5000, Output: 900}, &saving, nil, nil, nil)
+	if want := "Tokens: 5.0k in / 900 out"; got != want {
+		t.Errorf("Line on an uncached session = %q, want %q", got, want)
+	}
+
+	t.Run("a cache write alone still shows the share", func(t *testing.T) {
+		got := Line(model.Usage{Input: 5000, CacheCreate: 5000}, nil, nil, nil, nil)
+		if want := "Tokens: 5.0k in / 0 out  ·  cache 0%"; got != want {
+			t.Errorf("Line = %q, want %q; a written cache was attempted", got, want)
+		}
+	})
 }
 
 // TestLineOmitsTheSavingItCannotPrice pins the distinction between a session

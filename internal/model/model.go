@@ -395,6 +395,11 @@ type Turn struct {
 	Usage      Usage     `json:"usage"`      // tokens spent in this turn, including its subagents
 	ToolCount  int       `json:"toolCount"`  // top-level tool calls in this turn
 	ErrorCount int       `json:"errorCount"` // top-level tool calls that errored
+	// CostUSD is what this turn's tokens are worth at agentry's list prices,
+	// priced per model before summing. Nil where no response in the turn ran on a
+	// model agentry holds a rate for, which is a different fact from costing
+	// nothing and is printed as nothing rather than as zero.
+	CostUSD *float64 `json:"costUSD,omitempty"`
 }
 
 // EventKind discriminates the Event union.

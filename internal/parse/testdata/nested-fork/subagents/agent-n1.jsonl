@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-09-10T11:00:03Z","agentId":"n1","isMeta":true,"message":{"role":"user","content":"look it up"}}
+{"type":"assistant","uuid":"n1a","requestId":"req_n1","timestamp":"2026-09-10T11:00:10Z","agentId":"n1","message":{"role":"assistant","model":"claude-sonnet-5","usage":{"input_tokens":4,"output_tokens":200},"content":[{"type":"tool_use","id":"t2","name":"Skill","input":{"skill":"read-url"}}]}}
+{"type":"user","timestamp":"2026-09-10T11:01:30Z","agentId":"n1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","is_error":false,"content":"fetched"}]}}

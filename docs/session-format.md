@@ -673,11 +673,12 @@ written only for material attached to a turn, so neither absence proves anything
 to confirm, not to decide.
 
 A `user` entry's string content is a human-typed prompt **unless** it is
-system-injected. Injected markers include `<local-command-caveat>`, `<bash-input>`,
+system-injected. Injected markers include `<local-command-caveat>`,
 `<bash-stdout>`, `<bash-stderr>`, `<local-command-stdout>`,
 `Base directory for this skill:`, and `<task-notification>` (the harness's
 background-task event/completion reports — a `user` entry wrapping `<task-id>`,
-`<status>`, `<summary>`, `<output-file>`, not anything the human typed). Slash
+`<status>`, `<summary>`, `<output-file>`, not anything the human typed).
+`<bash-input>` is **not** one of them — see the typed-shell-command note below. Slash
 commands appear as `<command-name>…</command-name>` / `<command-args>…</command-args>`.
 The leading slash in `<command-name>` is **inconsistent**: built-ins carry it (`/clear`,
 `/compact`, `/refine`), custom commands do not (`sonar`, `exa`, `agent-guidelines`). So
@@ -714,9 +715,80 @@ A `tool_use` that spawns a child session writes a sidecar; stitching maps the ca
     line (base name = skill name); the parser falls back to matching by that name for
     pre-structured logs that lack `agentId`. Name-matching is ambiguous when the same
     skill forks more than once in a session, so the `agentId` is preferred.
+- **A slash command the user typed forks with no `tool_use` anywhere.** When the skill
+  behind it sets `context: fork`, the harness runs it directly: the main log holds the
+  typed text as an ordinary `user` entry and the printed result as a
+  `type: "system"`, `subtype: "local_command"` entry wrapping `<local-command-stdout>`,
+  and neither is a tool call. Every stitch key above is therefore absent, and the link
+  that remains is `promptId` — the sidecar's first entry repeats the value the typed
+  `user` entry carries. Charging such a sidecar to its prompt is what keeps its tokens
+  out of the unattributed row; a session predating `promptId` offers no link at all.
+- **A prompt's text is a JSON string in the command-line client and a list of text
+  blocks in the software development kit.** Both carry the same thing, and a reader
+  that accepts only the string shape opens no turn at all on an SDK session. Locally
+  1,169 `user` entries hold text blocks and 62,017 hold `tool_result` blocks in the same
+  array shape, so the test has to be that *every* block is text — an entry mixing text
+  with a result is a result. Of the 1,169, 568 are `turnCompanion`, 538 carry an
+  injected marker, and 27 are `[Request interrupted by user]` or its
+  `[Request interrupted by user for tool use]` variant, which the harness writes where a
+  reply was cut short and which is not a prompt either.
+- **`<bash-input>` wraps what a person typed, not injected material.** A shell command
+  run in the session with `!` writes two `user` entries: the command as
+  `<bash-input>…</bash-input>`, then its two streams in a second entry. Grouping the
+  first with the injected markers drops a turn somebody took, and any assistant reply
+  that follows is then charged to whichever prompt came before — or dropped with its
+  tokens where the command ran before the session's first prompt. Locally 56 of 714
+  session logs carry one, 116 commands in all. Each is preceded by a finished assistant
+  reply (101), another such command (8), or nothing at all (7) — never by a tool call
+  awaiting its result, so treating one as a turn boundary never cuts a reply in two.
+- **Match these wrappers against the whole entry, not as a substring.** A compaction
+  summary quotes them when it summarizes a session that ran a command — four local
+  summaries do — and a subagent hand-back quoting one does the same. All 116 local
+  command entries are exactly `<bash-input>…</bash-input>` with nothing around it.
+- **The output entry has three shapes, and both streams are never full at once.**
+  Locally: 105 entries carry both wrappers with `stdout` filled and `stderr` empty, 10
+  carry both with `stderr` filled and `stdout` empty, and 1 carries `<bash-stderr>`
+  alone with no `stdout` wrapper at all. Command lengths run to a median of 42 bytes and
+  a maximum of 174; captured `stdout` to a median of 78 and a maximum of 2,215, and a
+  payload over roughly 100KB is replaced by a `<persisted-output>` block naming the file
+  it was written to instead.
+- **One `promptId` can cover two submissions, so it does not identify a turn.** A typed
+  slash command and a shell command queued behind it are written with the same value —
+  the harness stamps the id of the message being processed, and the queued command joins
+  it. A map keyed by `promptId` therefore answers two turns with the same forked sidecar.
+  Locally 6 of 189 sessions holding sidecars have two turns sharing an id; on 5 the
+  sidecar is also reachable through a real `tool_use`, so only 1 was ambiguous. Charge
+  such a sidecar to the earlier turn and nothing to the later one.
+- **A log can carry the same entry twice, byte for byte.** One local session of 715
+  repeats 853 of its 2,532 `uuid`-bearing entries — twenty whole turns written again
+  under fresh `promptId` values, every repeat identical to its first copy in `message`.
+  Deduplicate on `uuid` while reading, or the repeats render as a second conversation
+  and are counted again everywhere a per-turn figure is produced. Only 2 of 715 local
+  sessions repeat any entry, the second just 6, so this is rare rather than routine.
+- **`isMeta` alone does not mark harness material; `isMeta` with `sourceToolUseID`
+  does.** 187 local prompts a person typed carry `isMeta`, so refusing on it deletes
+  real turns. The pair — set together on a re-invocation notice, an inlined skill body,
+  an expanded slash command — appears on 1,080 local entries and on no typed prompt.
+- **A forked skill a subagent starts is linked by name, not by a structured id.** The
+  session-wide pairing resolves it and marks the sidecar claimed, so a walk that follows
+  only `toolUseResult.agentId` and the Skill id map finds the log claimed and
+  unreachable at once, and nothing accounts for it. Five local sessions hold such a
+  nested fork.
+- **A local command's output carries terminal escapes.** The `local_command` entry's
+  `content` is what the command wrote to the terminal, wrapper included
+  (`<local-command-stdout>…</local-command-stdout>`), and commands that style their own
+  output leave CSI codes in it — locally the three largest such payloads are `/context`
+  renders whose headings are bold. The payload is also laid out for a fixed width, so it
+  is captured text to print, not markdown to reflow. Sizes over 220 local records: median
+  185 bytes, ninetieth percentile ~1,000, largest 10,032.
 - Because inline skills inject the `Base directory for this skill:` marker into the main
   chain, that marker now appears in **both** main-chain and sidecar files — sidecar
   skill-name detection must read only `agent-*.jsonl`, not the main log.
+- **Inside a sidecar the marker only names the log when it is on the log's first entry.**
+  A subagent that loads a skill of its own writes the same marker partway through, and
+  its own name is an agent type: 277 of 1,809 local sidecars are that shape against 373
+  that open with the marker. Reading any occurrence names a `general-purpose` subagent
+  after whatever skill it happened to load.
 - Subagents nest recursively; a sidecar may itself contain `Agent`/`Skill` calls. Guard
   against reference cycles — see [implementation-gotchas.md](implementation-gotchas.md).
 - A sidecar for a **context-inheriting** subagent (the `fork` agent type) opens with a

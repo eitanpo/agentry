@@ -1,0 +1,6 @@
+{"type":"user","uuid":"u1","timestamp":"2026-09-10T10:00:00Z","promptId":"p1","message":{"role":"user","content":"fix the parser"}}
+{"type":"assistant","uuid":"u2","requestId":"req_1","timestamp":"2026-09-10T10:00:05Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":4,"output_tokens":300},"content":[{"type":"text","text":"Fixed."}]}}
+{"type":"user","uuid":"u3","timestamp":"2026-09-10T10:00:10Z","isMeta":true,"sourceToolUseID":"t9","message":{"role":"user","content":"Skill /coding-guidelines was loaded earlier; this is a NEW invocation and you must follow it."}}
+{"type":"assistant","uuid":"u4","requestId":"req_2","timestamp":"2026-09-10T10:00:15Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":5,"output_tokens":120},"content":[{"type":"text","text":"Noted."}]}}
+{"type":"user","uuid":"u1","timestamp":"2026-09-10T10:00:00Z","promptId":"p2","message":{"role":"user","content":"fix the parser"}}
+{"type":"assistant","uuid":"u2","requestId":"req_1","timestamp":"2026-09-10T10:00:05Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":4,"output_tokens":300},"content":[{"type":"text","text":"Fixed."}]}}

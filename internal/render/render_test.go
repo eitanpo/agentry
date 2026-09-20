@@ -1835,3 +1835,74 @@ func TestSessionJSONEmptyTurnsIsAnArray(t *testing.T) {
 		t.Error("serializing mutated the caller's session")
 	}
 }
+
+// TestTurnRuleCarriesSpend pins the three spend fields the rule closes with and
+// the case each is dropped in. Without them the only per-turn spend on the page
+// is the summary table's token column, which has neither cache share nor dollars
+// and sits far below the turn it describes.
+func TestTurnRuleCarriesSpend(t *testing.T) {
+	usd := 0.5
+	cases := []struct {
+		name  string
+		turn  model.Turn
+		want  []string
+		avoid []string
+	}{
+		{
+			name: "tokens, cache share and dollars",
+			turn: model.Turn{
+				Prompt:  "go",
+				Usage:   model.Usage{Input: 6, Output: 5200, CacheRead: 294, CacheCreate: 0},
+				CostUSD: &usd,
+			},
+			want: []string{"6 in / 5.2k out", "cache 98%", "~$0.50"},
+		},
+		{
+			name: "no cache share where nothing was cached",
+			turn: model.Turn{Prompt: "go", Usage: model.Usage{Input: 10, Output: 20}, CostUSD: &usd},
+			want: []string{"10 in / 20 out", "~$0.50"},
+			// Input alone is the denominator, so a share would read 0% and claim a
+			// measurement where the log supports none.
+			avoid: []string{"cache "},
+		},
+		{
+			name:  "no dollars for a turn agentry cannot price",
+			turn:  model.Turn{Prompt: "go", Usage: model.Usage{Input: 10, Output: 20}},
+			want:  []string{"10 in / 20 out"},
+			avoid: []string{"$"},
+		},
+		{
+			name:  "nothing at all for a turn that made no request",
+			turn:  model.Turn{Prompt: "go"},
+			avoid: []string{" in / ", "cache ", "$"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var b strings.Builder
+			sess := &model.Session{Meta: model.Meta{ID: "s1"}, Turns: []model.Turn{c.turn}}
+			if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{}}); err != nil {
+				t.Fatal(err)
+			}
+			rule := ""
+			for _, line := range strings.Split(b.String(), "\n") {
+				if strings.Contains(line, "╰─ ") {
+					rule = line
+				}
+			}
+			if rule == "" {
+				t.Fatalf("no per-turn rule in %q", b.String())
+			}
+			for _, w := range c.want {
+				if !strings.Contains(rule, w) {
+					t.Errorf("rule %q missing %q", rule, w)
+				}
+			}
+			for _, a := range c.avoid {
+				if strings.Contains(rule, a) {
+					t.Errorf("rule %q should not carry %q", rule, a)
+				}
+			}
+		})
+	}
+}

@@ -1,0 +1,5 @@
+{"type":"user","timestamp":"2026-08-02T15:41:00Z","promptId":"q1","message":{"role":"user","content":"<command-name>/commit</command-name><command-args></command-args>"}}
+{"type":"system","subtype":"local_command","timestamp":"2026-08-02T15:41:40Z","content":"<local-command-stdout>Committed 3 files.</local-command-stdout>"}
+{"type":"user","timestamp":"2026-08-02T15:42:00Z","promptId":"q1","message":{"role":"user","content":"<bash-input>git push</bash-input>"}}
+{"type":"user","timestamp":"2026-08-02T15:42:02Z","message":{"role":"user","content":"<bash-stdout>Everything up-to-date</bash-stdout><bash-stderr></bash-stderr>"}}
+{"type":"assistant","requestId":"req_push","timestamp":"2026-08-02T15:42:05Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":4,"output_tokens":556},"content":[{"type":"text","text":"Nothing to push — the commit is already upstream."}]}}

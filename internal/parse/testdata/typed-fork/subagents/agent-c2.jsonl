@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-05-27T10:00:06Z","promptId":"p1","agentId":"c2","isMeta":true,"message":{"role":"user","content":"Base directory for this skill: /home/u/.claude/skills/lookup\n\n# Lookup\n\nSearch the web."}}
+{"type":"assistant","timestamp":"2026-05-27T10:00:20Z","requestId":"req_c2","uuid":"c2a","agentId":"c2","message":{"role":"assistant","model":"claude-sonnet-5","usage":{"input_tokens":5,"output_tokens":500},"content":[{"type":"text","text":"Found it."}]}}

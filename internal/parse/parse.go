@@ -7,6 +7,7 @@ package parse
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -29,10 +30,17 @@ import (
 var agentIDRe = regexp.MustCompile(`agentId:\s*(\S+)`)
 
 // injectedMarkers identify user entries that are system-injected, not typed.
+// The wrapper around a typed shell command is deliberately absent: it holds what
+// a person pressed, and typedShellCommand reads it as the prompt it is. The two
+// wrappers around that command's output stay, since the harness wrote those.
 var injectedMarkers = []string{
-	"<local-command-caveat>", "<bash-stdout>", "<bash-stderr>",
-	"<bash-input>", "Base directory for this skill:", "<local-command-stdout>",
+	"<local-command-caveat>", shellOutOpen, shellErrOpen,
+	"Base directory for this skill:", "<local-command-stdout>",
 	"<task-notification>", // harness-injected background-task event/completion, not a typed prompt
+	// What Claude Code writes where a reply was cut short. It covers the plain
+	// form and the "for tool use" one, 27 local entries between them, and reading
+	// either as a prompt would open a turn out of somebody pressing escape.
+	"[Request interrupted by user",
 }
 
 // Load parses the session at jsonlPath into a Session.
@@ -51,6 +59,9 @@ func Load(jsonlPath string) (*model.Session, error) {
 	cost, added, removed := recordedTotals(entries)
 	turns := splitTurns(entries)
 	cwd := sessionCwd(entries)
+	scans := scansOfSubagents(subs, nameLinks, firstStamp(entries))
+	typedPerTurn := typedCommandForks(turns, scans, spawnedSidecars(entries, scans))
+	typedNames := skillsInTurnOrder(typedPerTurn)
 
 	sess := &model.Session{
 		Meta: model.Meta{
@@ -77,28 +88,33 @@ func Load(jsonlPath string) (*model.Session, error) {
 			RootUUID:      rootUUID(entries),
 			Files:         sessionFiles(entries, cwd),
 			DailyActivity: dailyActivity(turns, firstStamp(entries)),
-			Tools:         toolStats(entries),
+			Tools:         toolStats(entries, typedNames),
 			Failures:      failureStats(entries),
 			Denials:       denialStats(entries),
 		},
 	}
 	sess.Meta.Start, sess.Meta.End = timeRange(entries)
 
-	daily := groupDaily(sessionRecords(entries, subs))
+	daily := groupDaily(labelledRecords(entries, scans, firstStamp(entries)))
 	for _, d := range daily {
 		sess.Meta.Usage.Add(d.Usage)
 	}
 	sess.Meta.DailyUsage = daily
 	sess.Meta.CacheSaving = cacheSaving(daily)
 
-	for _, t := range turns {
+	forksPerTurn := unclaimedForks(turns, entries, subs, nameLinks)
+	for i, t := range turns {
 		turn := model.Turn{
 			Prompt: t.prompt,
 			Start:  t.start,
 			End:    t.end,
 			Events: buildEvents(t.entries, subs, nameLinks, map[string]bool{}),
 		}
-		turn.Usage, turn.ToolCount, turn.ErrorCount = turnMetrics(t.entries, subs)
+		// The fork leads the turn and the printed reply follows it, the order a
+		// turn that called a tool and then answered already reads in.
+		turn.Events = append(forkEvents(typedPerTurn[i], subs, nameLinks, localCommandOutputs(t.entries)), turn.Events...)
+		tm := turnMetrics(t, subs, nameLinks, forksPerTurn[i], len(typedPerTurn[i]))
+		turn.Usage, turn.ToolCount, turn.ErrorCount, turn.CostUSD = tm.usage, tm.tools, tm.errors, tm.costUSD
 		sess.Turns = append(sess.Turns, turn)
 	}
 	return sess, nil
@@ -121,7 +137,9 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 	ms := models(entries)
 	cwd := sessionCwd(entries)
 	cost, added, removed := recordedTotals(entries)
-	daily, usage := sessionSpend(jsonlPath, entries)
+	scans := readSidecarScans(jsonlPath, firstStamp(entries))
+	typed := typedCommandForks(turns, scans, spawnedSidecars(entries, scans))
+	daily, usage := sessionSpend(entries, scans)
 	var prompts []string
 	for _, tn := range turns {
 		if !isClearCmd(tn.prompt) {
@@ -135,7 +153,7 @@ func Summarize(jsonlPath string) (model.Summary, error) {
 		Title:    sessionTitle(lastTitleOf(entries, manualTitleTypes...), lastTitleOf(entries, "ai-title"), turns),
 		Prompts:  prompts,
 		NumTurns: len(turns),
-		Tools:    toolStats(entries),
+		Tools:    toolStats(entries, skillsInTurnOrder(typed)),
 		Commands: bashCommands(entries),
 		Replies:  replyTexts(entries),
 		RootUUID: rootUUID(entries),
@@ -236,27 +254,8 @@ func subagentDir(jsonlPath string) string {
 // One tally per file, not one for the session: a request id is unique to its own
 // log, and a shared tally would let a sidecar's response displace a main-thread
 // response that happened to key the same, dropping tokens the session spent.
-func sessionSpend(jsonlPath string, entries []entry) ([]model.DailyUsage, model.Usage) {
-	fallback := firstStamp(entries)
-	recs := mainTally(entries, fallback).records()
-	labels := agentLabels(entries)
-	paths, _ := filepath.Glob(filepath.Join(subagentDir(jsonlPath), "agent-*.jsonl"))
-	scans := make(map[string]sidecarScan, len(paths))
-	for _, p := range paths {
-		scans[strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))] = readSidecar(p, fallback)
-	}
-	spreadAgentLabels(labels, scans)
-	for key, scan := range scans {
-		label := labels[key]
-		if label == "" {
-			label = unattributedAgent
-		}
-		for i := range scan.records {
-			scan.records[i].agent = label
-		}
-		recs = append(recs, scan.records...)
-	}
-	daily := groupDaily(recs)
+func sessionSpend(entries []entry, scans map[string]sidecarScan) ([]model.DailyUsage, model.Usage) {
+	daily := groupDaily(labelledRecords(entries, scans, firstStamp(entries)))
 	var total model.Usage
 	for _, d := range daily {
 		total.Add(d.Usage)
@@ -264,28 +263,48 @@ func sessionSpend(jsonlPath string, entries []entry) ([]model.DailyUsage, model.
 	return daily, total
 }
 
-// sessionRecords is every response the session spent tokens on, the main thread's
-// and every subagent's. Each log is deduplicated on its own tally, since a request
-// id is unique to its log and a shared one would let a sidecar's response displace
-// a main-thread response that happened to key the same.
-//
-// Load's counterpart to what sessionSpend reads off disk for Summarize, taking the
-// sidecars Load already parsed rather than opening them a second time.
-func sessionRecords(entries []entry, subs map[string]*subagent) []usageRecord {
-	fallback := firstStamp(entries)
-	recs := mainTally(entries, fallback).records()
-	// Each sidecar is charged to the delegation that spawned it, the way the
-	// listing charges it: an agent axis whose every row reads "main" says nothing
-	// about where a session's money went, and the two paths have to name one
-	// session's spend identically.
-	labels := agentLabels(entries)
+// readSidecarScans reads every sidecar beside a session log. Summarize is
+// otherwise deliberately cheap, and this is the one place it opens files the
+// main log does not name — sidecars run to roughly 60% of a project tree's
+// bytes. It is paid anyway, because a tally that silently dropped delegated work
+// would answer the cost question wrong for exactly the sessions that cost the
+// most.
+func readSidecarScans(jsonlPath string, fallback time.Time) map[string]sidecarScan {
+	paths, _ := filepath.Glob(filepath.Join(subagentDir(jsonlPath), "agent-*.jsonl"))
+	scans := make(map[string]sidecarScan, len(paths))
+	for _, p := range paths {
+		scans[strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))] = readSidecar(p, fallback)
+	}
+	return scans
+}
+
+// scansOfSubagents is readSidecarScans' counterpart for Load, which has already
+// parsed every sidecar and must not open them a second time. Both produce the
+// same shape, so everything downstream reads one session identically whichever
+// path built it.
+func scansOfSubagents(subs map[string]*subagent, nameLinks map[string]string, fallback time.Time) map[string]sidecarScan {
 	scans := make(map[string]sidecarScan, len(subs))
 	for key, sub := range subs {
 		scans[key] = sidecarScan{
 			records:  mainTally(sub.entries, fallback).records(),
-			children: sidecarChildren(sub.entries),
+			children: sidecarChildren(sub.entries, nameLinks),
+			skill:    sub.forkedSkill,
+			promptID: sub.promptID,
+			start:    firstStamp(sub.entries),
 		}
 	}
+	return scans
+}
+
+// labelledRecords is every response the session spent tokens on, the main
+// thread's and every sidecar's, each named by the delegation it was spent under.
+// An agent axis whose every row reads "main" says nothing about where a session's
+// money went, and the listing and the render have to name one session's spend
+// identically, so both reach this through the same scans.
+func labelledRecords(entries []entry, scans map[string]sidecarScan, fallback time.Time) []usageRecord {
+	recs := mainTally(entries, fallback).records()
+	labels := agentLabels(entries)
+	nameUnclaimedForks(labels, scans)
 	spreadAgentLabels(labels, scans)
 	for key, scan := range scans {
 		label := labels[key]
@@ -303,11 +322,28 @@ func sessionRecords(entries []entry, subs map[string]*subagent) []usageRecord {
 // sidecarChildren names the sidecars one already-parsed subagent log spawned —
 // the set readSidecar collects while scanning the file, recovered here from
 // entries Load has already read rather than by opening them again.
-func sidecarChildren(entries []entry) []string {
+func sidecarChildren(entries []entry, nameLinks map[string]string) []string {
 	var out []string
 	for _, spawns := range []map[string]string{agentIDMap(entries), skillSidecarMap(entries)} {
 		for _, fileKey := range spawns {
 			out = append(out, fileKey)
+		}
+	}
+	// A forked skill a subagent started of its own accord is paired to its call
+	// by name rather than by a structured id, and that pairing marks the log
+	// claimed. Reading only the structured maps here left such a log claimed and
+	// unreachable at once, so nothing charged it to anything: five local sessions
+	// lose a nested fork that way, one of them 121,257 output tokens. nameLinks
+	// is keyed across every log in the session, so only calls this log made may
+	// take from it.
+	for _, e := range entries {
+		for _, b := range e.blocks {
+			if b.typ != "tool_use" {
+				continue
+			}
+			if key, ok := nameLinks[b.id]; ok {
+				out = append(out, key)
+			}
 		}
 	}
 	return out
@@ -324,11 +360,11 @@ func cacheSaving(daily []model.DailyUsage) *model.CacheSaving {
 	return &c
 }
 
-// unattributedAgent labels a sidecar whose spawning call is not in the main log.
-// A subagent that delegates again writes its child's sidecar beside the session's
-// own, while the call that made it lives in the subagent's log — so the label is
-// recoverable only by reading every sidecar, which the cheap pass does not do.
-// Naming the tokens keeps the agent axis summing to the session total.
+// unattributedAgent labels a sidecar that no spawn record points at and whose
+// own opening entry names no skill either, which is what is left once
+// spreadAgentLabels has followed the chains and nameUnclaimedForks has read the
+// forks' own markers. Naming the tokens keeps the agent axis summing to the
+// session total.
 const unattributedAgent = "(unattributed)"
 
 // agentLabels maps each subagent sidecar's file key ("agent-xxx") to the name of
@@ -355,6 +391,170 @@ func agentLabels(entries []entry) map[string]string {
 		}
 	}
 	return out
+}
+
+// typedCommandSkills names the skill of every fork a caller started by typing
+// its slash command, in the order those prompts were typed. Three conditions,
+// all required, and the third is what makes the set countable as invocations.
+//
+// The log has to name the sidecar nowhere — no spawning call in the main log,
+// no parent sidecar listing it as a child. The sidecar's own opening entry has
+// to name a skill, which is what a forked skill's log begins with. And the
+// prompt it was forked under has to be that skill's slash command.
+//
+// Without the third condition the set also holds forked Skill calls in logs
+// written before the structured link existed, which a name pairing claims and
+// which the tally therefore already counts through their call — 17 of the 117
+// unclaimed skill-opening sidecars on this machine are that shape, and counting
+// them here would report each of them twice. Their prompts are ordinary prose,
+// so the condition excludes every one.
+//
+// An alias typed for a skill under another name is not counted, since nothing
+// in the log relates the two. That undercounts where the cost axis does not,
+// and the axis is right to be laxer: naming money spent needs no invocation.
+func typedCommandForks(turns []rawTurn, scans map[string]sidecarScan, spawned map[string]bool) [][]typedFork {
+	keys := make([]string, 0, len(scans))
+	for key, scan := range scans {
+		if spawned[key] || scan.skill == "" || scan.promptID == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	// Sorted so two runs over one log produce the same order, which iterating
+	// the map would not.
+	sort.Strings(keys)
+	byPrompt := turnOfPrompt(turns)
+	out := make([][]typedFork, len(turns))
+	for _, key := range keys {
+		scan := scans[key]
+		i := ownerTurn(turns, byPrompt, scan.promptID, scan.start)
+		if i < 0 || slashCommandName(turns[i].prompt) != scan.skill {
+			continue
+		}
+		out[i] = append(out[i], typedFork{key: key, skill: scan.skill})
+	}
+	return out
+}
+
+// typedFork is one log a typed slash command started: the sidecar holding it,
+// and the skill that ran.
+type typedFork struct{ key, skill string }
+
+// turnOfPrompt indexes the turns by the prompt id each was submitted under,
+// keeping the earliest where two share one.
+//
+// A prompt id does not identify a turn. Claude Code writes the same one on a
+// typed command and on a shell command queued behind it, so two turns answer to
+// it; one local session of 715 is that shape, and charging both drew a forked
+// skill's call twice, counted it twice in the tools tally, and added its 1,483
+// output tokens to two turns. The earliest of the two is the submission that
+// actually started the fork.
+func turnOfPrompt(turns []rawTurn) map[string]int {
+	out := map[string]int{}
+	for i, t := range turns {
+		if t.promptID == "" {
+			continue
+		}
+		if _, taken := out[t.promptID]; !taken {
+			out[t.promptID] = i
+		}
+	}
+	return out
+}
+
+// ownerTurn is the turn a forked log belongs to, or -1 where none does.
+//
+// The prompt id decides it wherever the main log records that submission. Where
+// it does not — 7 local sessions hold a sidecar stamped with an id no user entry
+// in their main log carries — the fork falls to the last turn that had already
+// started when it began, which is the turn it ran inside. A log carrying no
+// prompt id at all is placed nowhere: nothing ties it to a turn, and landing it
+// on whichever turn spans the gap would invent an attribution rather than find
+// one.
+func ownerTurn(turns []rawTurn, byPrompt map[string]int, promptID string, start time.Time) int {
+	if promptID == "" {
+		return -1
+	}
+	if i, ok := byPrompt[promptID]; ok {
+		return i
+	}
+	owner := -1
+	for i, t := range turns {
+		if !t.start.After(start) {
+			owner = i
+		}
+	}
+	if owner < 0 && len(turns) > 0 {
+		return 0
+	}
+	return owner
+}
+
+// skillsInTurnOrder flattens the typed commands into the order they were typed,
+// which is the order the tally lists them in. A map would otherwise hand two
+// runs over one log two different orders.
+func skillsInTurnOrder(perTurn [][]typedFork) []string {
+	var out []string
+	for _, forks := range perTurn {
+		for _, f := range forks {
+			out = append(out, f.skill)
+		}
+	}
+	return out
+}
+
+// slashCommandName is the command a prompt invokes, empty when the prompt is
+// not one. The name is the first word after the slash; everything following it
+// is the command's arguments.
+func slashCommandName(prompt string) string {
+	if !strings.HasPrefix(prompt, "/") {
+		return ""
+	}
+	name, _, _ := strings.Cut(strings.TrimPrefix(prompt, "/"), " ")
+	return strings.TrimSpace(name)
+}
+
+// spawnedSidecars names every sidecar some record in the session points at —
+// a spawning call in the main log, or a parent sidecar naming it as its child.
+func spawnedSidecars(entries []entry, scans map[string]sidecarScan) map[string]bool {
+	out := make(map[string]bool, len(scans))
+	for _, spawns := range []map[string]string{agentIDMap(entries), skillSidecarMap(entries)} {
+		for _, key := range spawns {
+			out[key] = true
+		}
+	}
+	for _, scan := range scans {
+		for _, child := range scan.children {
+			out[child] = true
+		}
+	}
+	return out
+}
+
+// nameUnclaimedForks names each sidecar that no spawn record in the session
+// points at with the skill its own log declares. A slash command the caller
+// typed forks exactly as a Skill call does and writes its log the same way, but
+// nothing in the main log is a tool call, so every map keyed on one misses it
+// and its tokens land on the unattributed row — which names no skill anyone can
+// decide to stop running.
+//
+// It runs before spreadAgentLabels and skips a sidecar some log spawned, so a
+// nested skill keeps taking the name of the call the session itself made rather
+// than its own. What is left is the fork nobody claims, whose only naming is the
+// marker line Claude Code wrote into it.
+func nameUnclaimedForks(labels map[string]string, scans map[string]sidecarScan) {
+	spawned := make(map[string]bool, len(scans))
+	for _, scan := range scans {
+		for _, child := range scan.children {
+			spawned[child] = true
+		}
+	}
+	for key, scan := range scans {
+		if labels[key] != "" || spawned[key] || scan.skill == "" {
+			continue
+		}
+		labels[key] = spawnLabel("Skill", scan.skill)
+	}
 }
 
 // spreadAgentLabels carries each delegation's name down the chain it started, so
@@ -484,6 +684,9 @@ type usageOnly struct {
 	// delegated reply once per content block.
 	RequestID string `json:"requestId"`
 	UUID      string `json:"uuid"`
+	// PromptID pairs the log with the prompt that forked it, which is what a
+	// typed slash command leaves in place of a spawning call.
+	PromptID string `json:"promptId"`
 	// ToolUseResult is raw because a result is an object on a delegation and a
 	// plain string on plenty of other tools; decoding it as an object would fail
 	// the whole line and lose the usage beside it.
@@ -491,14 +694,29 @@ type usageOnly struct {
 	Message       struct {
 		Model string   `json:"model"`
 		Usage rawUsage `json:"usage"`
+		// Content is raw because it is a string on the entry carrying the skill
+		// marker and an array on every other; decoding it as a string would fail
+		// the whole line and lose the usage beside it.
+		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 }
 
-// sidecarScan is one subagent log read once: the responses it holds, and the
-// keys of the logs it delegated to in turn.
+// sidecarScan is one subagent log read once: the responses it holds, the keys of
+// the logs it delegated to in turn, and the skill its own first entry names.
 type sidecarScan struct {
 	records  []usageRecord
 	children []string
+	// skill is what the log says about itself, which is the only naming available
+	// for a fork no spawn record points at. Empty on a subagent log, which names
+	// an agent type rather than a skill.
+	skill string
+	// promptID is the prompt this log was forked under. It pairs the log with the
+	// turn that started it, which is the only pairing a typed slash command
+	// leaves behind.
+	promptID string
+	// start is when the log's first entry was written, which places a fork whose
+	// prompt id names a submission the main log does not record.
+	start time.Time
 }
 
 // readSidecar tallies one subagent log and notes every log it spawned in turn,
@@ -517,6 +735,7 @@ func readSidecar(path string, fallback time.Time) sidecarScan {
 	}
 	defer f.Close()
 	var t usageTally
+	first := true
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // sidecars hold large tool results too
 	for sc.Scan() {
@@ -533,6 +752,21 @@ func readSidecar(path string, fallback time.Time) sidecarScan {
 		}
 		if id := sidecarAgentID(re.ToolUseResult); id != "" {
 			out.children = append(out.children, "agent-"+id)
+		}
+		// First line only, and tested on the raw bytes before the content is
+		// decoded: the marker names the log when the log opens with it, and 277
+		// of the 1,809 local sidecars are subagents that loaded a skill partway
+		// through, whose own name is an agent type rather than that skill.
+		if first {
+			first = false
+			out.promptID = re.PromptID
+			out.start, _ = time.Parse(time.RFC3339, re.Timestamp)
+			if bytes.Contains(sc.Bytes(), []byte(skillMarker)) {
+				var text string
+				if json.Unmarshal(re.Message.Content, &text) == nil {
+					out.skill = skillFromText(text)
+				}
+			}
 		}
 	}
 	out.records = t.records()
@@ -703,10 +937,21 @@ func replyTexts(entries []entry) []string {
 // preserving first-seen order so output is stable before the renderer sorts it.
 // It counts only the main thread's calls — subagent sidecars are not loaded —
 // matching the top-level population of turnMetrics.
-func toolStats(entries []entry) []model.ToolStat {
+// toolStats counts a session's top-level calls by identity. typed names the
+// skills a caller invoked by typing their slash commands, which make no tool
+// call for the loop below to see; they are counted here so that a skill the
+// transcript shows expanding is also a row in the tally, and so that selecting
+// sessions by the skill they used finds the ones that typed it.
+func toolStats(entries []entry, typed []string) []model.ToolStat {
 	type key struct{ tool, identity string }
 	counts := map[key]int{}
 	var order []key
+	bump := func(k key) {
+		if counts[k] == 0 {
+			order = append(order, k)
+		}
+		counts[k]++
+	}
 	for _, e := range entries {
 		if e.typ != "assistant" {
 			continue
@@ -715,12 +960,13 @@ func toolStats(entries []entry) []model.ToolStat {
 			if b.typ != "tool_use" {
 				continue
 			}
-			k := key{b.name, toolIdentity(b.name, b.input)}
-			if counts[k] == 0 {
-				order = append(order, k)
-			}
-			counts[k]++
+			bump(key{b.name, toolIdentity(b.name, b.input)})
 		}
+	}
+	// After the calls the model made, since a typed command sits outside their
+	// order: it belongs to a prompt rather than to a position in a reply.
+	for _, skill := range typed {
+		bump(key{"Skill", skill})
 	}
 	out := make([]model.ToolStat, 0, len(order))
 	for _, k := range order {
@@ -826,7 +1072,7 @@ func sessionTitle(manualTitle, aiTitle string, turns []rawTurn) string {
 		return t
 	}
 	for _, t := range turns {
-		if !isClearCmd(t.prompt) {
+		if !isClearCmd(t.prompt) && !isTypedShell(t.prompt) {
 			return t.prompt
 		}
 	}
@@ -834,6 +1080,15 @@ func sessionTitle(manualTitle, aiTitle string, turns []rawTurn) string {
 		return turns[0].prompt
 	}
 	return ""
+}
+
+// isTypedShell reports whether a turn prompt is a shell command the caller ran
+// with "!", which names what someone ran rather than what the session was for.
+// It matches the prefix userPrompt writes; a prompt a person typed beginning
+// with the same two characters would be skipped too, which costs that session
+// its next prompt as a title and no more.
+func isTypedShell(prompt string) bool {
+	return strings.HasPrefix(prompt, shellPromptPrefix)
 }
 
 // isClearCmd reports whether a turn prompt is the /clear command. userPrompt
@@ -894,8 +1149,22 @@ type entry struct {
 	// requestID names the API response this assistant entry came from, the key a
 	// token tally groups by. Empty on non-assistant entries and on older logs.
 	requestID string
+	// promptID names the prompt submission an entry belongs to. Claude Code writes
+	// it on user entries only, and writes the same value into the first entry of a
+	// log that prompt forked — the one link between a typed slash command and the
+	// session it spawned, since a typed command makes no tool call.
+	promptID string
 	// turnCompanion marks harness-attached material filed as a user entry.
 	turnCompanion bool
+	// harnessReminder marks a user entry the harness attached to a tool call —
+	// a skill body, a re-invocation notice — which older logs file under the
+	// user's name with no turnCompanion flag.
+	harnessReminder bool
+	// localCommandOutput is what a local_command system entry printed, unwrapped
+	// from its marker. Empty on every other entry. A slash command the caller
+	// typed leaves this and nothing else in the main log, so it is that turn's
+	// whole visible reply.
+	localCommandOutput string
 	// cost is the running totals a cost-state entry carries. Nil on every other
 	// entry type, which is what makes "the log recorded none" a single check.
 	cost *costState
@@ -951,10 +1220,26 @@ type rawEntry struct {
 	// response's usage on each, so this is what a token tally groups by. Absent on
 	// entries Claude Code composed itself and on logs predating the field.
 	RequestID string `json:"requestId"`
+	// PromptID names the prompt submission an entry belongs to, on user entries
+	// only. A forked log repeats its parent prompt's value on its first entry,
+	// which is what pairs a fork with the turn that started it.
+	PromptID string `json:"promptId"`
+	// Subtype and Content carry a system entry's kind and its payload. The one
+	// kind read here is local_command, whose content is what the harness printed
+	// to the terminal — for a slash command the caller typed, the only record of
+	// the turn's reply the main log holds. Content is raw because other system
+	// kinds put an object here and a string decode would fail the whole line.
+	Subtype string          `json:"subtype"`
+	Content json.RawMessage `json:"content"`
 	// TurnCompanion marks a user entry as material the harness attached to the
 	// turn rather than anything a person typed. Claude Code's own prompt test
 	// refuses to count an entry carrying it; written since 2.1.236.
 	TurnCompanion bool `json:"turnCompanion"`
+	// IsMeta and SourceToolUseID together mark a reminder the harness attached to
+	// a tool call. IsMeta alone does not: 187 local prompts a person typed carry
+	// it, and refusing on it would delete their turns.
+	IsMeta          bool   `json:"isMeta"`
+	SourceToolUseID string `json:"sourceToolUseID"`
 	// TotalCostUSD, TotalLinesAdded and TotalLinesRemoved are the session's totals
 	// so far, all three on a cost-state entry. Every local record carries all
 	// three, so their presence is the entry's presence and costState reads them
@@ -1015,6 +1300,182 @@ type rawBlock struct {
 	Content   json.RawMessage `json:"content"`
 }
 
+const (
+	// localCommandSubtype marks the system entry holding what a locally-run slash
+	// command printed to the terminal.
+	localCommandSubtype = "local_command"
+	localCommandOpen    = "<local-command-stdout>"
+	localCommandClose   = "</local-command-stdout>"
+)
+
+// unwrapLocalCommand strips the marker Claude Code wraps a local command's
+// output in, and the terminal escapes the command wrote into it. Text carrying
+// no marker keeps its body, since the wrapper is the harness's framing rather
+// than part of what the command said.
+func unwrapLocalCommand(text string) string {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, localCommandOpen) {
+		text = strings.TrimPrefix(text, localCommandOpen)
+		text = strings.TrimSuffix(strings.TrimSpace(text), localCommandClose)
+	}
+	return strings.TrimSpace(stripEscapes(text))
+}
+
+const (
+	// A shell command run in the session with "!" reaches the log as two user
+	// entries: the command in shellInputOpen, and both its output streams in a
+	// second entry. Only the first was typed.
+	shellInputOpen  = "<bash-input>"
+	shellInputClose = "</bash-input>"
+	shellOutOpen    = "<bash-stdout>"
+	shellOutClose   = "</bash-stdout>"
+	shellErrOpen    = "<bash-stderr>"
+	shellErrClose   = "</bash-stderr>"
+	// shellPromptPrefix marks such a command in the prompt list, so a reader can
+	// tell what someone ran from what they asked.
+	shellPromptPrefix = "! "
+)
+
+// typedShellCommand returns the command a caller ran in the session with "!",
+// for a user entry whose whole content is the wrapper around it.
+//
+// The test is the entry in full rather than a substring, because a compaction
+// summary quotes these wrappers whenever it summarizes a session that ran one —
+// four local summaries do — and reading a quotation as a command would open a
+// turn nobody took and title the session after it.
+func typedShellCommand(content string) (string, bool) {
+	rest, ok := strings.CutPrefix(content, shellInputOpen)
+	if !ok {
+		return "", false
+	}
+	cmd, ok := strings.CutSuffix(rest, shellInputClose)
+	if !ok {
+		return "", false
+	}
+	cmd = strings.TrimSpace(cmd)
+	return cmd, cmd != ""
+}
+
+// shellOutput splits what a typed shell command printed into its two streams,
+// reporting false for any other content. Either wrapper can be absent — one
+// local entry carries standard error alone — and the two are returned apart
+// rather than joined, because the log records them as separate strings and
+// printing one block would claim an interleaving it does not hold.
+func shellOutput(content string) (out, errOut string, ok bool) {
+	rest := content
+	if body, cut := strings.CutPrefix(rest, shellOutOpen); cut {
+		i := strings.Index(body, shellOutClose)
+		if i < 0 {
+			return "", "", false
+		}
+		out, rest = body[:i], body[i+len(shellOutClose):]
+		ok = true
+	}
+	if body, cut := strings.CutPrefix(rest, shellErrOpen); cut {
+		i := strings.Index(body, shellErrClose)
+		if i < 0 {
+			return "", "", false
+		}
+		errOut, rest = body[:i], body[i+len(shellErrClose):]
+		ok = true
+	}
+	if !ok || rest != "" {
+		return "", "", false
+	}
+	return out, errOut, true
+}
+
+// shellOutputEvents renders what a typed shell command printed, fenced on the
+// rule a local command's output already follows: the command laid its output out
+// for a terminal, and reflowing it as prose destroys any alignment it drew. A
+// stream that printed nothing contributes no event, so a silent command renders
+// as its prompt alone rather than as an empty fence.
+func shellOutputEvents(out, errOut string) []model.Event {
+	var evs []model.Event
+	if text := strings.TrimSpace(stripEscapes(out)); text != "" {
+		evs = append(evs, model.Event{Kind: model.EventText, Text: fenced(text)})
+	}
+	if text := strings.TrimSpace(stripEscapes(errOut)); text != "" {
+		evs = append(evs, model.Event{Kind: model.EventText, Text: "`stderr`\n\n" + fenced(text)})
+	}
+	return evs
+}
+
+// fenced wraps captured terminal output in a code fence, so the markdown
+// renderer prints it as it was printed. A local command lays its own output out
+// for a terminal — /context draws a fixed-width grid of block glyphs — and
+// reflowing that as prose runs the grid together into a paragraph no reader can
+// read back. The fence opens one backtick longer than the longest run inside,
+// so output that itself holds a fence cannot close this one early.
+func fenced(text string) string {
+	longest, run := 0, 0
+	for _, r := range text {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+			continue
+		}
+		run = 0
+	}
+	fence := strings.Repeat("`", max(longest+1, 3))
+	return fence + "\n" + text + "\n" + fence
+}
+
+// stripEscapes removes the escape sequences a command wrote for a terminal it
+// was printing to directly. The output is re-rendered through markdown here, so
+// a sequence left in place is passed through as text: locally /context styles
+// its headings bold, and the three largest captured outputs all carry those
+// codes. Newlines and tabs are content and survive.
+func stripEscapes(text string) string {
+	if !strings.ContainsRune(text, 0x1b) {
+		return text
+	}
+	var out strings.Builder
+	out.Grow(len(text))
+	for i := 0; i < len(text); {
+		if text[i] != 0x1b {
+			out.WriteByte(text[i])
+			i++
+			continue
+		}
+		i = endOfEscape(text, i)
+	}
+	return out.String()
+}
+
+// endOfEscape returns the offset just past the escape sequence starting at i.
+// Two forms reach a captured stream: a control sequence, ESC '[' up to a byte in
+// 0x40–0x7e, and an operating-system command, ESC ']' up to a bell or a string
+// terminator. Anything else is a two-byte escape, and an unterminated sequence
+// consumes the rest rather than leaving its bytes to print as text.
+func endOfEscape(text string, i int) int {
+	j := i + 1
+	if j >= len(text) {
+		return len(text)
+	}
+	switch text[j] {
+	case '[':
+		for j++; j < len(text); j++ {
+			if text[j] >= 0x40 && text[j] <= 0x7e {
+				return j + 1
+			}
+		}
+		return len(text)
+	case ']':
+		for j++; j < len(text); j++ {
+			if text[j] == 0x07 {
+				return j + 1
+			}
+			if text[j] == 0x1b && j+1 < len(text) && text[j+1] == '\\' {
+				return j + 2
+			}
+		}
+		return len(text)
+	default:
+		return j + 1
+	}
+}
+
 func loadEntries(path string) ([]entry, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -1023,6 +1484,13 @@ func loadEntries(path string) ([]entry, error) {
 	defer f.Close()
 
 	var out []entry
+	// A log can carry the same entry twice. One local session of 715 replays 853
+	// of its 2,532 identified entries — twenty whole turns written a second time
+	// under fresh prompt ids, every repeat byte-identical to its first copy — and
+	// rendering both showed the conversation twice, ranked the repeats as their
+	// own steps, and counted their tokens, dollars and tool calls again in the
+	// per-turn figures while the session tally deduplicated them away.
+	seenUUID := map[string]bool{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // logs hold large tool results
 	for sc.Scan() {
@@ -1034,6 +1502,12 @@ func loadEntries(path string) ([]entry, error) {
 		if json.Unmarshal([]byte(line), &re) != nil {
 			continue // skip malformed lines, as the reference does
 		}
+		if re.UUID != "" {
+			if seenUUID[re.UUID] {
+				continue
+			}
+			seenUUID[re.UUID] = true
+		}
 		e := entry{
 			// Only one of the three title fields is ever set on a given entry —
 			// each belongs to a different entry type — so concatenating picks it.
@@ -1041,7 +1515,8 @@ func loadEntries(path string) ([]entry, error) {
 			isCompactSummary: re.IsCompactSummary, cwd: re.Cwd, entrypoint: re.Entrypoint,
 			effort:     re.Effort,
 			denialKind: re.ToolDenialKind, trackingPath: re.TrackingPath,
-			requestID: re.RequestID, turnCompanion: re.TurnCompanion,
+			requestID: re.RequestID, promptID: re.PromptID, turnCompanion: re.TurnCompanion,
+			harnessReminder: re.IsMeta && re.SourceToolUseID != "",
 		}
 		if re.Type == "cost-state" {
 			e.cost = &costState{}
@@ -1060,6 +1535,13 @@ func loadEntries(path string) ([]entry, error) {
 			e.pr = model.PR{Repository: re.PRRepository, Number: re.PRNumber, URL: re.PRURL}
 		case "frame-link":
 			e.frame = model.Artifact{Title: re.FrameTitle, URL: re.FrameURL, Path: re.FramePath}
+		case "system":
+			if re.Subtype == localCommandSubtype {
+				var text string
+				if json.Unmarshal(re.Content, &text) == nil {
+					e.localCommandOutput = unwrapLocalCommand(text)
+				}
+			}
 		}
 		if re.Snapshot != nil {
 			for p := range re.Snapshot.TrackedFileBackups {
@@ -1782,6 +2264,25 @@ func sidecarNameLinks(entries []entry, subs map[string]*subagent) map[string]str
 type subagent struct {
 	entries   []entry
 	skillName string
+	// forkedSkill is the skill named by the log's opening entry, which is what a
+	// forked skill's log begins with. It is empty on a subagent log that loaded a
+	// skill partway through, where skillName is not — 277 of the 1,809 local
+	// sidecars are that shape, and their own name is an agent type.
+	forkedSkill string
+	// promptID is the prompt this log was forked under, repeated from the parent
+	// session's own entry. Empty on a log written before Claude Code carried the
+	// field, which leaves the fork chargeable to no turn.
+	promptID string
+}
+
+// openingSkill names the skill a log opens by loading, empty when its first
+// entry carries no marker. Distinct from subagentSkill, which finds a marker
+// anywhere and so also answers for a subagent that loaded a skill of its own.
+func openingSkill(entries []entry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	return skillFromText(entries[0].contentStr)
 }
 
 func loadSubagents(dir string) map[string]*subagent {
@@ -1793,13 +2294,53 @@ func loadSubagents(dir string) map[string]*subagent {
 			continue
 		}
 		id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-		subs[id] = &subagent{entries: entries, skillName: subagentSkill(entries)}
+		subs[id] = &subagent{
+			entries:     entries,
+			skillName:   subagentSkill(entries),
+			forkedSkill: openingSkill(entries),
+			promptID:    firstPromptID(entries),
+		}
 	}
 	return subs
 }
 
+// firstPromptID is the prompt a log was started under, taken from the earliest
+// entry carrying one. Every entry of a forked log that carries the field carries
+// the parent prompt's value, so the earliest is the whole answer; taking it from
+// the earliest rather than the last is what keeps that true if a fork ever
+// records a prompt of its own.
+func firstPromptID(entries []entry) string {
+	for _, e := range entries {
+		if e.promptID != "" {
+			return e.promptID
+		}
+	}
+	return ""
+}
+
+// skillMarker opens the line Claude Code writes into a forked skill's own log,
+// naming the directory the skill was loaded from. It is the only record inside a
+// sidecar that says which skill ran, which is what names a fork the main log
+// holds no spawning call for.
+const skillMarker = "Base directory for this skill:"
+
+// skillFromText reads the skill's name off the marker line, empty when the text
+// carries no marker. The name is the directory's base, since that is what a
+// caller types after the slash.
+func skillFromText(text string) string {
+	if !strings.Contains(text, skillMarker) {
+		return ""
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, skillMarker) {
+			p := strings.TrimSpace(line[strings.Index(line, skillMarker)+len(skillMarker):])
+			return filepath.Base(p)
+		}
+	}
+	return ""
+}
+
 func subagentSkill(entries []entry) string {
-	const marker = "Base directory for this skill:"
 	for _, e := range entries {
 		text := e.contentStr
 		if !e.hasStr {
@@ -1810,44 +2351,49 @@ func subagentSkill(entries []entry) string {
 				}
 			}
 		}
-		if !strings.Contains(text, marker) {
-			continue
-		}
-		for _, line := range strings.Split(text, "\n") {
-			if strings.Contains(line, marker) {
-				p := strings.TrimSpace(line[strings.Index(line, marker)+len(marker):])
-				return filepath.Base(p)
-			}
+		if skill := skillFromText(text); skill != "" {
+			return skill
 		}
 	}
 	return ""
 }
 
 // totalAgentUsage sums an agent's tokens plus those of every agent it spawned.
-func totalAgentUsage(id string, subs map[string]*subagent, seen map[string]bool) model.Usage {
-	var u model.Usage
-	if seen[id] {
-		return u
+// delegatedRecords is every response one delegated log paid for, and every log
+// it delegated to in turn, kept split by model rather than summed.
+//
+// Split because the sum cannot be priced: cache reads cost a fortieth of input
+// on one tier and a tenth on every other, so a turn that delegated to a cheaper
+// model and was priced at one rate reports a bill nobody was sent. It follows
+// sidecarChildren rather than the Agent links alone, so a delegation that forked
+// a skill carries that skill's tokens too.
+func delegatedRecords(key string, subs map[string]*subagent, nameLinks map[string]string, seen map[string]bool, fallback time.Time) []usageRecord {
+	if seen[key] {
+		return nil
 	}
-	seen[id] = true
-	s := subs[id]
+	seen[key] = true
+	s := subs[key]
 	if s == nil {
-		return u
+		return nil
 	}
-	u = sumUsage(s.entries)
-	for _, nestedID := range agentIDMap(s.entries) {
-		u.Add(totalAgentUsage(nestedID, subs, seen))
+	recs := mainTally(s.entries, fallback).records()
+	for _, child := range sidecarChildren(s.entries, nameLinks) {
+		recs = append(recs, delegatedRecords(child, subs, nameLinks, seen, fallback)...)
 	}
-	return u
+	return recs
 }
 
 // ── Turn splitting ─────────────────────────────────────────────────────────
 
 type rawTurn struct {
-	prompt  string
-	start   time.Time
-	end     time.Time
-	entries []entry
+	prompt string
+	start  time.Time
+	end    time.Time
+	// promptID comes from the prompt entry itself, which splitTurns consumes as
+	// the boundary rather than adding to entries. A fork the prompt started
+	// carries the same value and is charged to this turn by it.
+	promptID string
+	entries  []entry
 }
 
 func splitTurns(entries []entry) []rawTurn {
@@ -1859,7 +2405,7 @@ func splitTurns(entries []entry) []rawTurn {
 				if cur != nil {
 					turns = append(turns, *cur)
 				}
-				cur = &rawTurn{prompt: prompt, start: e.t, end: e.t}
+				cur = &rawTurn{prompt: prompt, start: e.t, end: e.t, promptID: e.promptID}
 				continue
 			}
 		}
@@ -1885,13 +2431,41 @@ var (
 // is a user entry Claude Code wrote rather than a prompt anyone typed.
 const compactSummaryPlaceholder = "[context compacted — see session log for full summary]"
 
+// promptText is the text a user entry offers for the prompt tests below, from
+// either shape the log records content in. A plain string is the common case;
+// the software development kit writes the same text as a list of text blocks
+// instead, and a session whose prompts all arrive that way opened no turn at all
+// until this read them — leaving its whole transcript blank and every response
+// it made outside the per-turn tallies.
+//
+// One text block among others is not enough: a tool result, an image or an
+// unrecognized block means the entry is carrying something a prompt does not, so
+// the entry is refused whatever text sits beside it. 62,017 local entries are
+// tool results in this shape against 1,169 that are text alone.
+func promptText(e entry) (string, bool) {
+	if e.hasStr {
+		return e.contentStr, true
+	}
+	if len(e.blocks) == 0 {
+		return "", false
+	}
+	parts := make([]string, 0, len(e.blocks))
+	for _, b := range e.blocks {
+		if b.typ != "text" {
+			return "", false
+		}
+		parts = append(parts, b.text)
+	}
+	return strings.Join(parts, "\n"), true
+}
+
 // userPrompt returns the human-typed prompt for a user entry, or ok=false for
 // system-injected content (tool results, skill bodies, bash output).
 func userPrompt(e entry) (string, bool) {
-	if !e.hasStr {
+	content, ok := promptText(e)
+	if !ok {
 		return "", false
 	}
-	content := e.contentStr
 	// The compaction check runs before the injected markers because the flag says
 	// what the entry *is*, while a marker only says what its text contains — and a
 	// summary of a conversation can quote one, which would drop the boundary
@@ -1907,8 +2481,13 @@ func userPrompt(e entry) (string, bool) {
 	// the conversation it replaced and has to keep its place in the sequence.
 	// Older logs carry no marker, which is what the text markers below still
 	// cover.
-	if e.turnCompanion {
+	if e.turnCompanion || e.harnessReminder {
 		return "", false
+	}
+	// Above the marker loop because the loop still refuses this command's output,
+	// and below turnCompanion because that flag says what an entry is.
+	if cmd, ok := typedShellCommand(content); ok {
+		return shellPromptPrefix + cmd, true
 	}
 	for _, m := range injectedMarkers {
 		if strings.Contains(content, m) {
@@ -1952,6 +2531,24 @@ func buildEvents(entries []entry, subs map[string]*subagent, nameLinks map[strin
 	skills := skillSidecarMap(entries)
 	var out []model.Event
 	for _, e := range entries {
+		// What a locally-run slash command printed is the turn's reply: the caller
+		// read it in the terminal and the main log holds no assistant text beside
+		// it. Rendered as ordinary turn text rather than as a tool result, because
+		// a result is gated on a channel and the turn would otherwise render blank.
+		if e.localCommandOutput != "" {
+			out = append(out, model.Event{Kind: model.EventText, Text: fenced(e.localCommandOutput)})
+			continue
+		}
+		// What a typed shell command printed is the turn's reply for the same
+		// reason: the caller read it in the terminal and no assistant text stands
+		// beside it. The entry is filed under the user's name, so it has to be
+		// taken before the assistant-only skip below.
+		if e.typ == "user" && e.hasStr {
+			if shellOut, shellErr, isOutput := shellOutput(e.contentStr); isOutput {
+				out = append(out, shellOutputEvents(shellOut, shellErr)...)
+				continue
+			}
+		}
 		if e.typ != "assistant" {
 			continue
 		}
@@ -1988,6 +2585,72 @@ func buildEvents(entries []entry, subs map[string]*subagent, nameLinks map[strin
 	return out
 }
 
+// forkEvents renders the logs a turn forked without making a tool call — what a
+// slash command the caller typed leaves behind. Claude Code writes no tool_use
+// for one, so there is no call for attachSubagent to hang the stream on and the
+// step renders as a bare turn marker; this builds the call the log omitted, so
+// the fork expands under the subagents channel like every other delegation.
+//
+// The synthesized call carries no result body. What the fork returned is the
+// local_command output, which the turn already renders as its own text, and
+// putting it in both places prints it twice at the levels that show results.
+// printed is what the turn's local commands wrote, so the closing message the
+// fork and the main log both hold is dropped from the stream and kept at the
+// outer level — one value, one record of it, at the depth the reader lands on.
+// The raw text rather than the turn's events, because the event carries the
+// fence wrapped around it and would match nothing the fork holds.
+func forkEvents(forks []typedFork, subs map[string]*subagent, nameLinks map[string]string, printed []string) []model.Event {
+	var out []model.Event
+	for _, f := range forks {
+		sub, ok := subs[f.key]
+		if !ok {
+			continue
+		}
+		start, end := timeRange(sub.entries)
+		stream := buildEvents(sub.entries, subs, nameLinks, map[string]bool{f.key: true})
+		out = append(out, model.Event{Kind: model.EventTool, Tool: &model.Tool{
+			Name: "Skill",
+			// The skill alone, where a Skill call's args also carry what was passed
+			// to it: the prompt box directly above already shows the line the caller
+			// typed, arguments included.
+			Args:     f.skill,
+			Identity: f.skill,
+			Start:    start,
+			End:      end,
+			Subagent: dropHoistedReply(stream, printed),
+		}})
+	}
+	return out
+}
+
+// localCommandOutputs is what the locally-run commands in one turn printed.
+func localCommandOutputs(entries []entry) []string {
+	var out []string
+	for _, e := range entries {
+		if e.localCommandOutput != "" {
+			out = append(out, e.localCommandOutput)
+		}
+	}
+	return out
+}
+
+// dropHoistedReply removes the stream's closing message when the turn already
+// prints it. A forked skill's last word reaches the main log as the local
+// command's output, so the same text is in both places and rendering the
+// expansion would repeat what the reader just read.
+func dropHoistedReply(stream []model.Event, printed []string) []model.Event {
+	last := len(stream) - 1
+	if last < 0 || stream[last].Kind != model.EventText {
+		return stream
+	}
+	for _, text := range printed {
+		if strings.TrimSpace(text) == strings.TrimSpace(stream[last].Text) {
+			return stream[:last]
+		}
+	}
+	return stream
+}
+
 // attachSubagent fills tool.Subagent for Agent and forked-Skill calls that
 // spawned a sidecar. Agent and forked-Skill links resolve by id (the structured
 // agentId, see sidecarIDs); for a Skill with no id link it falls back to matching
@@ -2013,40 +2676,151 @@ func attachSubagent(tool *model.Tool, b block, agents, skills, nameLinks map[str
 	tool.Subagent = buildEvents(subs[key].entries, subs, nameLinks, seen)
 }
 
-func turnMetrics(entries []entry, subs map[string]*subagent) (u model.Usage, tools, errs int) {
-	results := toolResultMap(entries)
-	agents := agentIDMap(entries)
+// turnMetrics totals what one turn spent, including every log it forked. forks
+// names the logs charged to this turn by prompt id rather than by a tool call,
+// which is the only route a slash command the caller typed leaves behind.
+//
+// typedCalls is how many of those the turn should also count as calls, which is
+// the narrower set the tool tally uses: the turn renders a call for each, and a
+// rule reading "0 tools" beside a visible call contradicts the transcript above
+// it. Charging and counting differ because they answer different questions — a
+// fork whose prompt agentry cannot name still spent money.
+func turnMetrics(t rawTurn, subs map[string]*subagent, nameLinks map[string]string, forks []string, typedCalls int) (m turnTotals) {
+	m.tools = typedCalls
+	results := toolResultMap(t.entries)
+	spawns := turnSpawns(t.entries, nameLinks)
+	// One seen set for the whole turn, so a log two links both resolve to is
+	// counted once rather than added twice to the figure that ranks the summary.
+	seen := map[string]bool{}
 	// One tally for the turn, because a response's blocks all sit inside the turn
 	// that prompted it — a response never spans two turns, so deduplicating within
 	// the turn loses nothing and double-counting here would reorder the summary.
-	var t usageTally
-	for _, e := range entries {
+	var tally usageTally
+	// Delegated responses stay out of that tally and keep their own model: a
+	// request id is unique to its own log, and pricing needs the model each
+	// response actually ran on.
+	var delegated []usageRecord
+	for _, e := range t.entries {
 		if e.typ != "assistant" {
 			continue
 		}
-		t.add(usageKey(e.requestID, e.uuid), usageRecord{
+		tally.add(usageKey(e.requestID, e.uuid), usageRecord{
 			day: dayOf(e.t, time.Time{}), model: e.model, usage: e.usage,
 		})
 		for _, b := range e.blocks {
 			if b.typ != "tool_use" {
 				continue
 			}
-			tools++
+			m.tools++
 			if results[b.id].isError {
-				errs++
+				m.errors++
 			}
-			if b.name == "Agent" {
-				if id, ok := agents[b.id]; ok {
-					// Added to the running total rather than through the tally: a
-					// subagent's tokens belong to no response of this turn, and its own
-					// entries were already deduplicated inside their sidecar.
-					u.Add(totalAgentUsage(id, subs, map[string]bool{}))
-				}
+			if key, ok := spawns[b.id]; ok {
+				delegated = append(delegated, delegatedRecords(key, subs, nameLinks, seen, t.start)...)
 			}
 		}
 	}
-	u.Add(t.sum())
-	return u, tools, errs
+	for _, key := range forks {
+		delegated = append(delegated, delegatedRecords(key, subs, nameLinks, seen, t.start)...)
+	}
+	recs := append(tally.records(), delegated...)
+	for _, r := range recs {
+		m.usage.Add(r.usage)
+	}
+	m.costUSD = priceRecords(recs)
+	return m
+}
+
+// turnTotals is what one turn amounted to: its tokens, what they are worth, and
+// how its top-level calls went.
+type turnTotals struct {
+	usage   model.Usage
+	costUSD *float64
+	tools   int
+	errors  int
+}
+
+// priceRecords is what a set of responses is worth at list prices, each priced
+// at the model it ran on before the sum. Nil where not one of them ran on a
+// model agentry holds a rate for — the rule the cost roll-up follows, since a
+// response priced at zero reports the work as free rather than as unpriced.
+//
+// A turn mixing a priced model with an unpriced one returns what the priced part
+// came to, which is the same partial figure the session-level total reports and
+// names its unpriced models beside.
+func priceRecords(recs []usageRecord) *float64 {
+	total, any := 0.0, false
+	for _, r := range recs {
+		if usd, ok := price.Of(r.model, r.usage); ok {
+			total += usd
+			any = true
+		}
+	}
+	if !any {
+		return nil
+	}
+	return &total
+}
+
+// turnSpawns maps each tool call in a turn to the log it forked, over both
+// spawning tools and the name pairing Load resolved for a forked skill whose
+// result carries no structured link. A call that spawned nothing is absent from
+// all three, so the lookup itself is the test: naming a tool here instead would
+// have to name every tool that can fork, and a turn whose fork came from the one
+// left out is charged nothing for it.
+func turnSpawns(entries []entry, nameLinks map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, spawns := range []map[string]string{agentIDMap(entries), skillSidecarMap(entries), nameLinks} {
+		for toolUseID, key := range spawns {
+			out[toolUseID] = key
+		}
+	}
+	return out
+}
+
+// unclaimedForks groups by prompt id the logs no spawn record in the session
+// names. A skill the caller invokes by typing its slash command forks a session
+// and writes its log beside the others, but the main log holds no tool call for
+// it, so every map keyed on a tool call misses it and its tokens are charged to
+// no turn at all. Claude Code stamps the fork's first entry with the prompt id
+// of the message that started it, which is the pairing that remains.
+//
+// The logs come back already assigned to turns, because the prompt id alone
+// does not decide which turn owns one — see ownerTurn.
+func unclaimedForks(turns []rawTurn, entries []entry, subs map[string]*subagent, nameLinks map[string]string) [][]string {
+	claimed := map[string]bool{}
+	for _, key := range nameLinks {
+		claimed[key] = true
+	}
+	logs := make([][]entry, 0, len(subs)+1)
+	logs = append(logs, entries)
+	for _, sub := range subs {
+		logs = append(logs, sub.entries)
+	}
+	for _, log := range logs {
+		for _, spawns := range []map[string]string{agentIDMap(log), skillSidecarMap(log)} {
+			for _, key := range spawns {
+				claimed[key] = true
+			}
+		}
+	}
+	keys := make([]string, 0, len(subs))
+	for key, sub := range subs {
+		if claimed[key] || sub.promptID == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	byPrompt := turnOfPrompt(turns)
+	out := make([][]string, len(turns))
+	for _, key := range keys {
+		sub := subs[key]
+		if i := ownerTurn(turns, byPrompt, sub.promptID, firstStamp(sub.entries)); i >= 0 {
+			out[i] = append(out[i], key)
+		}
+	}
+	return out
 }
 
 // formatToolArgs is a short one-line summary of a tool call's input.

@@ -28,7 +28,8 @@ import (
 // local sessions with a record changed no lines at all.
 func Line(u model.Usage, saving *model.CacheSaving, costUSD *float64, linesAdded, linesRemoved *int) string {
 	s := fmt.Sprintf("Tokens: %s in / %s out", Tokens(u.Input), Tokens(u.Output))
-	if in := u.Input + u.CacheRead + u.CacheCreate; in > 0 {
+	if u.CacheRead+u.CacheCreate > 0 {
+		in := u.Input + u.CacheRead + u.CacheCreate
 		s += fmt.Sprintf("  ·  cache %.0f%%", float64(u.CacheRead)/float64(in)*100)
 		if saving != nil && saving.WithoutCacheUSD > 0 {
 			s += fmt.Sprintf("  ·  saved %.0f%%", saving.SavedShare()*100)

@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"maps"
 	"math"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/eitanpo/agentry/internal/price"
 )
 
 func TestSummarize(t *testing.T) {
@@ -19,13 +21,15 @@ func TestSummarize(t *testing.T) {
 	if s.ID != "sample" {
 		t.Errorf("ID = %q, want sample", s.ID)
 	}
-	if s.NumTurns != 2 {
-		t.Errorf("NumTurns = %d, want 2", s.NumTurns)
+	if s.NumTurns != 3 {
+		t.Errorf("NumTurns = %d, want 3", s.NumTurns)
 	}
 	if s.Title != "first prompt" {
 		t.Errorf("Title = %q, want %q", s.Title, "first prompt")
 	}
-	wantPrompts := []string{"first prompt", "second prompt"}
+	// The shell command the caller ran with "!" is a prompt: they typed it, and a
+	// reply to it would otherwise be charged to the prompt above.
+	wantPrompts := []string{"first prompt", "! echo hi", "second prompt"}
 	if len(s.Prompts) != len(wantPrompts) {
 		t.Fatalf("Prompts = %v, want %v", s.Prompts, wantPrompts)
 	}
@@ -386,10 +390,10 @@ func TestLoad(t *testing.T) {
 		t.Errorf("subagents = %d, want 0", sess.Meta.NumSubagents)
 	}
 
-	// The injected <bash-input> and <task-notification> entries must not start
-	// their own turns.
-	if len(sess.Turns) != 2 {
-		t.Fatalf("turns = %d, want 2", len(sess.Turns))
+	// The injected <task-notification> entry must not start a turn; the typed
+	// shell command must.
+	if len(sess.Turns) != 3 {
+		t.Fatalf("turns = %d, want 3", len(sess.Turns))
 	}
 
 	turn0 := sess.Turns[0]
@@ -415,7 +419,15 @@ func TestLoad(t *testing.T) {
 		t.Errorf("tool result=%q err=%v, want non-error file listing", tool.Result, tool.IsError)
 	}
 
-	turn1 := sess.Turns[1]
+	shell := sess.Turns[1]
+	if shell.Prompt != "! echo hi" {
+		t.Errorf("shell turn prompt = %q, want %q", shell.Prompt, "! echo hi")
+	}
+	if texts := eventTexts(shell.Events); len(texts) != 1 || !strings.Contains(texts[0], "hi") {
+		t.Errorf("shell turn texts = %q, want one block holding what the command printed", texts)
+	}
+
+	turn1 := sess.Turns[2]
 	if turn1.Prompt != "second prompt" {
 		t.Errorf("turn1 prompt = %q, want %q", turn1.Prompt, "second prompt")
 	}
@@ -594,7 +606,11 @@ func TestUserPrompt(t *testing.T) {
 		wantOK bool
 	}{
 		{"typed", entry{hasStr: true, contentStr: "hello"}, "hello", true},
-		{"bash injected", entry{hasStr: true, contentStr: "<bash-input>x</bash-input>"}, "", false},
+		// The wrapper around a typed shell command holds what a person pressed, so
+		// it is a prompt; the wrappers around what it printed are the harness's.
+		{"typed shell command", entry{hasStr: true, contentStr: "<bash-input>x</bash-input>"}, "! x", true},
+		{"shell output injected", entry{hasStr: true, contentStr: "<bash-stdout>out</bash-stdout><bash-stderr></bash-stderr>"}, "", false},
+		{"shell wrapper quoted inside a prompt", entry{hasStr: true, contentStr: "why did <bash-input>ls</bash-input> fail?"}, "why did <bash-input>ls</bash-input> fail?", true},
 		{"skill injected", entry{hasStr: true, contentStr: "Base directory for this skill: /x"}, "", false},
 		{"command", entry{hasStr: true, contentStr: "<command-name>foo</command-name><command-args>bar</command-args>"}, "/foo bar", true},
 		{"command name with slash not doubled", entry{hasStr: true, contentStr: "<command-name>/clear</command-name><command-args>fix it</command-args>"}, "/clear fix it", true},
@@ -638,6 +654,18 @@ func TestFormatToolArgs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// eventTexts is what a turn printed as prose, in order, leaving out thinking
+// and tool calls.
+func eventTexts(events []model.Event) []string {
+	var out []string
+	for _, e := range events {
+		if e.Kind == model.EventText {
+			out = append(out, e.Text)
+		}
+	}
+	return out
 }
 
 func eventKinds(events []model.Event) []model.EventKind {
@@ -1445,5 +1473,560 @@ func TestLoadNameLinkPairing(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Fatalf("run %d: expansions = %q, want %q", i, got, want)
 		}
+	}
+}
+
+// TestTypedForkAttribution pins what happens to a skill the caller invoked by
+// typing its slash command. Claude Code forks it into a session of its own and
+// writes the log beside every other sidecar, but the main log holds no tool call
+// for it — so before this was handled its tokens were charged to no turn at all
+// and its name was whatever the unattributed row is called.
+//
+// The fixture carries the three shapes together, because the rule for each is
+// only correct against the other two: a Skill call that forked (c2), a typed
+// command that forked (c1), and a subagent that loaded a skill partway through
+// and must not be named by it (c3).
+func TestTypedForkAttribution(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "typed-fork.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(sess.Turns))
+	}
+
+	t.Run("a forked Skill call is charged to the turn that made it", func(t *testing.T) {
+		// 100 output of the turn's own, plus the c2 sidecar its Skill call spawned
+		// and the c4 sidecar no record names. Matching the tool name "Agent" alone
+		// leaves every forked skill's tokens out of the turn that paid for them.
+		want := model.Usage{Input: 6, Output: 670}
+		if sess.Turns[0].Usage != want {
+			t.Errorf("turn 1 usage = %+v, want %+v", sess.Turns[0].Usage, want)
+		}
+	})
+
+	t.Run("a typed command's fork is charged to its turn by prompt id", func(t *testing.T) {
+		if got := sess.Turns[1].Prompt; got != "/commit push" {
+			t.Fatalf("turn 2 prompt = %q", got)
+		}
+		want := model.Usage{Input: 7, Output: 300}
+		if sess.Turns[1].Usage != want {
+			t.Errorf("turn 2 usage = %+v, want %+v; the turn makes no tool call, so prompt id is the only link", sess.Turns[1].Usage, want)
+		}
+	})
+
+	t.Run("each fork is named by the skill its own log opens with", func(t *testing.T) {
+		want := map[string]model.Usage{
+			// The main thread carries no label of its own; the surfaces that print
+			// the axis are what name it.
+			"": {Output: 100},
+			// Both lookup runs: the one a Skill call spawned and the one no record
+			// names, which is still a lookup whatever the log forgot.
+			"/lookup":         {Input: 6, Output: 570},
+			"/commit":         {Input: 7, Output: 300},
+			unattributedAgent: {Output: 900},
+		}
+		got := map[string]model.Usage{}
+		for _, d := range sess.Meta.DailyUsage {
+			u := got[d.Agent]
+			u.Add(d.Usage)
+			got[d.Agent] = u
+		}
+		for agent, w := range want {
+			if got[agent] != w {
+				t.Errorf("agent %q = %+v, want %+v", agent, got[agent], w)
+			}
+		}
+		if len(got) != len(want) {
+			t.Errorf("agent rows = %v, want exactly %d", got, len(want))
+		}
+	})
+
+	t.Run("the typed command's step renders what it printed and what it ran", func(t *testing.T) {
+		events := sess.Turns[1].Events
+		if len(events) != 2 {
+			t.Fatalf("events = %d, want the fork's call then the printed reply", len(events))
+		}
+		call := events[0]
+		if call.Kind != model.EventTool || call.Tool.Name != "Skill" || call.Tool.Identity != "commit" {
+			t.Fatalf("first event = %+v, want a Skill call named commit", call)
+		}
+		if call.Tool.Result != "" {
+			t.Errorf("Result = %q, want empty; the printed reply is the turn's own text", call.Tool.Result)
+		}
+		// Fenced, because a local command laid its output out for a terminal and
+		// reflowing it as prose runs a fixed-width grid into one paragraph.
+		want := "```\nAborted: policy requires a feature branch.\n```"
+		if events[1].Kind != model.EventText || events[1].Text != want {
+			t.Errorf("second event = %+v, want the local command's output fenced as turn text", events[1])
+		}
+		// The fork said the same thing its printed output says. Keeping both prints
+		// it twice, so the expansion carries the work and the turn carries the word.
+		if len(call.Tool.Subagent) != 1 || call.Tool.Subagent[0].Kind != model.EventTool {
+			t.Fatalf("expansion = %+v, want the fork's one tool call and no trailing reply", call.Tool.Subagent)
+		}
+	})
+
+	t.Run("a typed command is a skill in the tally, a prose-prompted fork is not", func(t *testing.T) {
+		got := map[string]int{}
+		for _, st := range sess.Meta.Tools {
+			if st.Tool == "Skill" {
+				got[st.Identity] = st.Count
+			}
+		}
+		// commit was typed, so it is counted though the model called nothing.
+		// lookup is counted once, for the Skill call the model made — the c4
+		// sidecar is a lookup run under a prose prompt, the shape a name pairing
+		// claims in pre-structured logs, and counting it here would double it.
+		want := map[string]int{"commit": 1, "lookup": 1}
+		if !maps.Equal(got, want) {
+			t.Errorf("Skill tally = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("the turn counts the call its transcript shows", func(t *testing.T) {
+		// A rule reading "0 tools" beneath a rendered Skill line contradicts the
+		// page above it, and the header sums these counts.
+		if sess.Turns[1].ToolCount != 1 {
+			t.Errorf("turn 2 tool count = %d, want 1 for the typed command", sess.Turns[1].ToolCount)
+		}
+		total := 0
+		for _, st := range sess.Meta.Tools {
+			total += st.Count
+		}
+		turns := 0
+		for _, tn := range sess.Turns {
+			turns += tn.ToolCount
+		}
+		if total != turns {
+			t.Errorf("tally total %d != summed turn counts %d; the header reads the second", total, turns)
+		}
+	})
+
+	t.Run("the listing's tally matches the render's", func(t *testing.T) {
+		s, err := Summarize(filepath.Join("testdata", "typed-fork.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(s.Tools, sess.Meta.Tools) {
+			t.Errorf("listing tools %+v != render tools %+v", s.Tools, sess.Meta.Tools)
+		}
+	})
+
+	t.Run("the listing names the agents the render does", func(t *testing.T) {
+		s, err := Summarize(filepath.Join("testdata", "typed-fork.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		render := map[string]model.Usage{}
+		for _, d := range sess.Meta.DailyUsage {
+			u := render[d.Agent]
+			u.Add(d.Usage)
+			render[d.Agent] = u
+		}
+		listing := map[string]model.Usage{}
+		for _, d := range s.DailyUsage {
+			u := listing[d.Agent]
+			u.Add(d.Usage)
+			listing[d.Agent] = u
+		}
+		if !maps.Equal(listing, render) {
+			t.Errorf("listing agents %v != render agents %v; one session's spend must read the same on both paths", listing, render)
+		}
+	})
+}
+
+// TestStripEscapes covers the shapes a captured terminal stream carries. The
+// /context command styles its headings, and those codes reach the log verbatim;
+// re-rendered through markdown they would print as text.
+func TestStripEscapes(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"no escape is untouched", "plain text", "plain text"},
+		{"a control sequence goes", "\x1b[1mContext Usage\x1b[22m", "Context Usage"},
+		{"an operating-system command ends at a bell", "a\x1b]8;;http://x\x07b", "ab"},
+		{"an operating-system command ends at a string terminator", "a\x1b]0;title\x1b\\b", "ab"},
+		{"a two-byte escape goes", "a\x1bMb", "ab"},
+		{"an unterminated sequence takes the rest", "keep\x1b[1;2", "keep"},
+		{"newlines and tabs are content", "one\n\ttwo", "one\n\ttwo"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := stripEscapes(c.in); got != c.want {
+				t.Errorf("stripEscapes(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestFenced pins the fence escalation. Captured output can itself hold a code
+// fence, and a fence no longer than that one closes this block early, spilling
+// the rest of the output into the transcript as markdown.
+func TestFenced(t *testing.T) {
+	cases := []struct{ name, in, wantFence string }{
+		{"plain output takes three backticks", "hello", "```"},
+		{"an inline span still takes three", "run `ls` first", "```"},
+		{"a fence inside escalates to four", "```\ncode\n```", "````"},
+		{"the longest run wins", "``a````b```", "`````"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := fenced(c.in)
+			want := c.wantFence + "\n" + c.in + "\n" + c.wantFence
+			if got != want {
+				t.Errorf("fenced(%q) = %q, want %q", c.in, got, want)
+			}
+		})
+	}
+}
+
+// TestTurnCostPricesEachModel pins that a turn is priced per model rather than
+// summed first. The fixture's second turn runs entirely on the sonnet fork while
+// the session runs on opus, so a turn priced at the session's model reports a
+// bill nobody was sent — cache reads alone differ by a factor of four between
+// the two tiers.
+func TestTurnCostPricesEachModel(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "typed-fork.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	typedTurn := sess.Turns[1]
+	if typedTurn.CostUSD == nil {
+		t.Fatal("the typed command's turn carries no cost; its fork ran on a priced model")
+	}
+	want, ok := price.Of("claude-sonnet-5", typedTurn.Usage)
+	if !ok {
+		t.Fatal("the test's own reference price is unavailable")
+	}
+	if math.Abs(*typedTurn.CostUSD-want) > 1e-12 {
+		t.Errorf("turn cost = %v, want %v (the fork's own model, not the session's)", *typedTurn.CostUSD, want)
+	}
+	if wrong, ok := price.Of("claude-opus-5", typedTurn.Usage); ok && math.Abs(want-wrong) < 1e-12 {
+		t.Skip("the two models price this usage identically, so the test cannot tell them apart")
+	}
+
+	// The first turn mixes the main thread's opus with two sonnet forks, so its
+	// cost is the sum of the parts at their own rates rather than the whole at
+	// either rate.
+	mixed := sess.Turns[0]
+	if mixed.CostUSD == nil {
+		t.Fatal("the first turn carries no cost")
+	}
+	atOneRate, _ := price.Of("claude-opus-5", mixed.Usage)
+	if math.Abs(*mixed.CostUSD-atOneRate) < 1e-12 {
+		t.Errorf("mixed turn priced as if one model ran it: %v", *mixed.CostUSD)
+	}
+}
+
+// TestTypedShellCommandBecomesItsOwnTurn pins the three things a shell command
+// run in the session with "!" was missing: the command itself, what it printed,
+// and the tokens of whatever Claude then said about the result.
+//
+// The fixture opens on such a command, which is the case that lost the most:
+// before the first prompt there was no open turn to fold the reply into, so its
+// entries were discarded from the transcript while still counting in the header.
+func TestTypedShellCommandBecomesItsOwnTurn(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "typed-shell.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) != 3 {
+		t.Fatalf("turns = %d, want 3", len(sess.Turns))
+	}
+
+	opening := sess.Turns[0]
+	if opening.Prompt != "! agentry" {
+		t.Errorf("opening prompt = %q, want %q", opening.Prompt, "! agentry")
+	}
+	texts := eventTexts(opening.Events)
+	if len(texts) != 2 {
+		t.Fatalf("opening turn texts = %q, want the command's output and Claude's reply", texts)
+	}
+	if !strings.Contains(texts[0], "no Claude project") {
+		t.Errorf("first text = %q, want what the command printed", texts[0])
+	}
+	if !strings.Contains(texts[0], "stderr") {
+		t.Errorf("first text = %q, want the stream named: the command wrote nothing to stdout", texts[0])
+	}
+	if !strings.Contains(texts[1], "nothing to render") {
+		t.Errorf("second text = %q, want Claude's reply to the failure", texts[1])
+	}
+	if opening.Usage.Output != 732 {
+		t.Errorf("opening turn output = %d, want 732 charged to the command that caused it", opening.Usage.Output)
+	}
+
+	// The acceptance check for the defect this fixture was written from: every
+	// response now belongs to a turn, so the rules add up to the header.
+	var summed model.Usage
+	for _, turn := range sess.Turns {
+		summed.Add(turn.Usage)
+	}
+	if summed != sess.Meta.Usage {
+		t.Errorf("turns sum to %+v, session reports %+v", summed, sess.Meta.Usage)
+	}
+
+	// A prompt names what the session was for; a command names what someone ran.
+	if sess.Meta.Title != "fix it" {
+		t.Errorf("title = %q, want the first prompt that is not a shell command", sess.Meta.Title)
+	}
+
+	silent := sess.Turns[2]
+	if silent.Prompt != "! echo done" {
+		t.Errorf("third prompt = %q, want %q", silent.Prompt, "! echo done")
+	}
+	if texts := eventTexts(silent.Events); len(texts) != 1 || strings.Contains(texts[0], "\x1b") {
+		t.Errorf("third turn texts = %q, want one block with the terminal escapes stripped", texts)
+	}
+}
+
+// TestShellOutput pins which entries are a typed command's output and which are
+// not. The wrappers appear inside ordinary prose — a compaction summary quotes
+// them when it summarizes a session that ran one — so a substring match would
+// turn a sentence about a command into the command's output.
+func TestShellOutput(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		out, errOut string
+		ok          bool
+	}{
+		{"both streams", "<bash-stdout>listing</bash-stdout><bash-stderr>warning</bash-stderr>", "listing", "warning", true},
+		{"stdout only, empty stderr", "<bash-stdout>listing</bash-stdout><bash-stderr></bash-stderr>", "listing", "", true},
+		{"stderr wrapper alone", "<bash-stderr>Command failed</bash-stderr>", "", "Command failed", true},
+		{"both empty", "<bash-stdout></bash-stdout><bash-stderr></bash-stderr>", "", "", true},
+		{"quoted inside prose", "the run printed <bash-stdout>x</bash-stdout> and stopped", "", "", false},
+		{"trailing text after the wrappers", "<bash-stdout>x</bash-stdout><bash-stderr></bash-stderr> and then", "", "", false},
+		{"unclosed wrapper", "<bash-stdout>x", "", "", false},
+		{"an ordinary prompt", "render the session", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, errOut, ok := shellOutput(tt.content)
+			if out != tt.out || errOut != tt.errOut || ok != tt.ok {
+				t.Errorf("got (%q, %q, %v), want (%q, %q, %v)", out, errOut, ok, tt.out, tt.errOut, tt.ok)
+			}
+		})
+	}
+}
+
+// TestPromptsRecordedAsBlocks pins that a session whose prompts arrive as text
+// blocks rather than as a plain string gets turns at all. The software
+// development kit writes them that way, and such a session rendered blank:
+// every prompt refused, no turn opened, and every response it made left out of
+// the per-turn tallies while still counting in the header.
+//
+// The fixture also carries the two entries that must stay refused in this shape
+// — a tool result, and the line the harness writes where a reply was cut short.
+func TestPromptsRecordedAsBlocks(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "block-prompts.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) != 2 {
+		t.Fatalf("turns = %d, want 2: two prompts, and neither the tool result nor the interruption", len(sess.Turns))
+	}
+	if sess.Turns[0].Prompt != "probe the worktree and report" {
+		t.Errorf("first prompt = %q", sess.Turns[0].Prompt)
+	}
+	if sess.Turns[1].Prompt != "now do the same for the other one" {
+		t.Errorf("second prompt = %q", sess.Turns[1].Prompt)
+	}
+
+	var summed model.Usage
+	for _, turn := range sess.Turns {
+		summed.Add(turn.Usage)
+	}
+	if summed != sess.Meta.Usage {
+		t.Errorf("turns sum to %+v, session reports %+v", summed, sess.Meta.Usage)
+	}
+	if sess.Turns[0].Usage.Output != 520 {
+		t.Errorf("first turn output = %d, want both of its responses", sess.Turns[0].Usage.Output)
+	}
+}
+
+// TestPromptText pins which block shapes offer text to the prompt tests. One
+// text block among others is not a prompt: 62,017 local user entries are tool
+// results in this shape against 1,169 that are text alone, so accepting an
+// entry for the text beside a result would turn most of a session into turns.
+func TestPromptText(t *testing.T) {
+	tests := []struct {
+		name string
+		e    entry
+		want string
+		ok   bool
+	}{
+		{"a plain string", entry{hasStr: true, contentStr: "render it"}, "render it", true},
+		{"an empty string is still content", entry{hasStr: true, contentStr: ""}, "", true},
+		{"one text block", entry{blocks: []block{{typ: "text", text: "render it"}}}, "render it", true},
+		{"two text blocks join on a newline", entry{blocks: []block{{typ: "text", text: "first"}, {typ: "text", text: "second"}}}, "first\nsecond", true},
+		{"a tool result", entry{blocks: []block{{typ: "tool_result", resultText: "output"}}}, "", false},
+		{"text beside a tool result", entry{blocks: []block{{typ: "text", text: "see this"}, {typ: "tool_result"}}}, "", false},
+		{"an image", entry{blocks: []block{{typ: "image"}}}, "", false},
+		{"no content at all", entry{}, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := promptText(tt.e)
+			if got != tt.want || ok != tt.ok {
+				t.Errorf("got (%q, %v), want (%q, %v)", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+// TestOnePromptIDTwoTurnsChargesTheForkOnce pins the one place a prompt id is
+// not a turn. Claude Code writes the same id on a typed slash command and on a
+// shell command queued behind it, so both turns look up the same forked skill
+// session. Charging it to both counted its tokens twice, rendered its call in
+// both turns, and listed the skill twice in the tools tally.
+//
+// The fixture is the local session that exposed this: a "/commit" whose skill
+// forks, then a queued "git push" carrying the same prompt id.
+func TestOnePromptIDTwoTurnsChargesTheForkOnce(t *testing.T) {
+	path := filepath.Join("testdata", "shared-prompt-id.jsonl")
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(sess.Turns))
+	}
+
+	var summed model.Usage
+	for _, turn := range sess.Turns {
+		summed.Add(turn.Usage)
+	}
+	if summed != sess.Meta.Usage {
+		t.Errorf("turns sum to %+v, session reports %+v", summed, sess.Meta.Usage)
+	}
+	if got := sess.Turns[0].Usage.Output; got != 1483 {
+		t.Errorf("command turn output = %d, want the fork's 1483", got)
+	}
+	if got := sess.Turns[1].Usage.Output; got != 556 {
+		t.Errorf("queued shell turn output = %d, want only its own reply", got)
+	}
+
+	var skills int
+	for _, turn := range sess.Turns {
+		for _, e := range turn.Events {
+			if e.Tool != nil && e.Tool.Name == "Skill" {
+				skills++
+			}
+		}
+	}
+	if skills != 1 {
+		t.Errorf("Skill events across the session = %d, want 1", skills)
+	}
+
+	// The listing counts the same call from its own path, so the two surfaces
+	// must not disagree about how many times the skill ran.
+	s, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stat := range s.Tools {
+		if stat.Tool == "Skill" && stat.Count != 1 {
+			t.Errorf("listing counts Skill %s %d times, want 1", stat.Identity, stat.Count)
+		}
+	}
+}
+
+// balance is what a session's rules leave unaccounted for against its header:
+// zero on a session whose turns carry everything it spent.
+func balance(t *testing.T, sess *model.Session) {
+	t.Helper()
+	var summed model.Usage
+	for _, turn := range sess.Turns {
+		summed.Add(turn.Usage)
+	}
+	if summed != sess.Meta.Usage {
+		t.Errorf("turns sum to %+v, session reports %+v", summed, sess.Meta.Usage)
+	}
+}
+
+// TestEntriesThatLookLikeTurnsAndAreNot pins two entries that opened turns they
+// should not have. A log can write the same entry a second time — one local
+// session of 715 replays 853 of its entries, twenty whole turns of them, under
+// fresh prompt ids — and the harness files a reminder about a tool call under
+// the user's name, which 18 local entries do.
+func TestEntriesThatLookLikeTurnsAndAreNot(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "not-a-turn.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) != 1 {
+		var got []string
+		for _, turn := range sess.Turns {
+			got = append(got, turn.Prompt)
+		}
+		t.Fatalf("turns = %q, want the one prompt a person typed", got)
+	}
+	if sess.Meta.Usage.Output != 420 {
+		t.Errorf("session output = %d, want 420: the replayed response counted once", sess.Meta.Usage.Output)
+	}
+	balance(t, sess)
+}
+
+// TestNestedForkedSkillIsCharged pins a forked skill a subagent started of its
+// own accord. The session-wide name pairing resolves it, which marks the log
+// claimed, but the walk that charges a turn followed structured ids only — so
+// the log was claimed and unreachable at once and nothing counted it. Five local
+// sessions lose a fork that way, one of them 121,257 output tokens.
+func TestNestedForkedSkillIsCharged(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "nested-fork.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(sess.Turns))
+	}
+	if got := sess.Turns[0].Usage.Output; got != 90+200+1551 {
+		t.Errorf("turn output = %d, want the reply, the subagent and the skill it forked", got)
+	}
+	balance(t, sess)
+}
+
+// TestForkWithNoMatchingPromptIsPlacedByTime pins a forked log stamped with a
+// prompt id no user entry in the main log carries. Seven local sessions hold
+// one, and a lookup by that id found no turn, so the fork's tokens, its dollars
+// and its row in the tools tally all went missing. It belongs to the turn it
+// ran inside.
+func TestForkWithNoMatchingPromptIsPlacedByTime(t *testing.T) {
+	path := filepath.Join("testdata", "orphan-fork.jsonl")
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(sess.Turns))
+	}
+	if got := sess.Turns[0].Usage.Output; got != 80 {
+		t.Errorf("first turn output = %d, want 80: the fork ran after it closed", got)
+	}
+	if got := sess.Turns[1].Usage.Output; got != 659 {
+		t.Errorf("command turn output = %d, want the fork's 659", got)
+	}
+	balance(t, sess)
+
+	var skills int
+	for _, e := range sess.Turns[1].Events {
+		if e.Tool != nil && e.Tool.Name == "Skill" {
+			skills++
+		}
+	}
+	if skills != 1 {
+		t.Errorf("Skill events on the command turn = %d, want 1", skills)
+	}
+	s, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed int
+	for _, stat := range s.Tools {
+		if stat.Tool == "Skill" {
+			listed += stat.Count
+		}
+	}
+	if listed != 1 {
+		t.Errorf("listing counts Skill %d times, want 1", listed)
 	}
 }

@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-09-10T11:00:20Z","agentId":"n2","isMeta":true,"message":{"role":"user","content":"Base directory for this skill: /home/u/.claude/skills/read-url\n\n# Read URL\n\nFetch and clean."}}
+{"type":"assistant","uuid":"n2a","requestId":"req_n2","timestamp":"2026-09-10T11:01:00Z","agentId":"n2","message":{"role":"assistant","model":"claude-sonnet-5","usage":{"input_tokens":6,"output_tokens":1551},"content":[{"type":"text","text":"Fetched the page."}]}}

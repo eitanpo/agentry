@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-05-27T10:00:07Z","agentId":"c3","isMeta":true,"message":{"role":"user","content":"Go and audit the release notes."}}
+{"type":"user","timestamp":"2026-05-27T10:00:08Z","agentId":"c3","isMeta":true,"message":{"role":"user","content":"Base directory for this skill: /home/u/.claude/skills/recall\n\n# Recall\n\nRead the vault."}}
+{"type":"assistant","timestamp":"2026-05-27T10:00:25Z","requestId":"req_c3","uuid":"c3a","agentId":"c3","message":{"role":"assistant","model":"claude-sonnet-5","usage":{"output_tokens":900},"content":[{"type":"text","text":"Audited."}]}}
