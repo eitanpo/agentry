@@ -11,7 +11,7 @@ before:
     # archive can carry them and the cask can link them at install time — see
     # PRODUCT.md "Shell completion" / "Distribution". Generating here rather than
     # via the cask running the binary avoids executing the unsigned binary at
-    # install time (the quarantine hazard the post-install hook strips).
+    # install time (the quarantine hazard the cask's install-time step strips).
     - mkdir -p completions
     - sh -c 'go run . completion bash > completions/agentry.bash'
     - sh -c 'go run . completion zsh > completions/agentry.zsh'
@@ -45,8 +45,8 @@ archives:
 checksum:
   name_template: checksums.txt
 
-# macOS-only cask, pushed to the personal tap. Binaries are unsigned, so the
-# post-install hook strips the quarantine attribute that would otherwise block
+# macOS-only cask, pushed to the personal tap. Binaries are unsigned, so an
+# install-time step strips the quarantine attribute that would otherwise block
 # the first run. Linux users install via `go install` instead (no cask).
 homebrew_casks:
   - name: agentry
