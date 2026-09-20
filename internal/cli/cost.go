@@ -277,22 +277,19 @@ func runCost(cmd *cobra.Command, noColor *bool) error {
 	// The two paths reading at the same speed is what keeps them comparable. A
 	// session log is appended to while agentry reads it, so a path that takes
 	// seconds longer over the same corpus prices entries the faster path never
-	// saw: sequentially this verb took 3.2s against a 1.3GB tree the summary
-	// crossed in 0.5s, and `agentry cost` against `agentry cost --all-projects
-	// --from all --since 30d` reported totals differing by cents — read as an
-	// accumulation bug, when the two had simply read the log 2.7s apart.
+	// saw, which can make two totals over the same sessions disagree by cents —
+	// not from an accumulation bug, but from reading a live log moments apart.
 	sums := parse.SummarizeAll(paths)
 	// Headless runs are excluded by the same default the listing applies: a
-	// machine using hooks accumulates hundreds of them, and a total that quietly
+	// machine using hooks can accumulate many of them, and a total that quietly
 	// counted them would answer a different question than the listing beside it.
 	//
 	// Unlike the listing, the exclusion is reported whenever it removed anything
 	// rather than only when it emptied the result. A listing that dropped rows
 	// still shows the rows it kept; a total that dropped sessions shows one number
-	// that is lower than the caller's bill by however much those cost — locally,
-	// $426 of $10,244 across 246 headless sessions — with nothing on screen to say
-	// so. It goes to the error stream, so a total piped into another program is
-	// still the total alone.
+	// that is lower than the caller's bill by however much those cost, with
+	// nothing on screen to say so. It goes to the error stream, so a total piped
+	// into another program is still the total alone.
 	visible := list.FilterByFrom(sums, from)
 	if from == "" && len(visible) < len(sums) {
 		fmt.Fprintf(cmd.ErrOrStderr(),

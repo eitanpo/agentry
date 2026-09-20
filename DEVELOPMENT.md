@@ -114,7 +114,7 @@ scanner's own checks. The script also takes `--kind type` to narrow to one categ
 `--root` / `--doc` to point at something other than the defaults, and `--binary` to read
 the entry-type roster from a file other than the `claude` on PATH.
 
-It is deliberately **not** part of `make build`: the sweep reads about 500 MB and takes
+It is deliberately **not** part of `make build`: the sweep reads the whole log tree and takes
 minutes, so it belongs to touching the parser or the format doc, not to every compile. The
 cost of that choice is that nothing reminds you — run it when you change either.
 
@@ -133,7 +133,7 @@ lies rather than fails:
 - **Reads the entry-type roster out of the installed binary**, which carries its JavaScript
   bundle as plain text including the table that assigns every type it knows a retention class.
   The logs answer what Claude Code wrote here and cannot answer what it can write, so a type
-  added upstream is invisible to a log-only sweep until some local session happens to produce
+  added upstream is invisible to a log-only sweep until some session happens to produce
   one. The report closes with what that comparison found: how many types the binary knows, which
   of them no local log has written, which of those the doc has never named, and — the mirror
   case — which types the logs hold that the table omits. When the roster cannot be read, the

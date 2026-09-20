@@ -12,6 +12,14 @@ When sources disagree, the higher one wins; fix the lower to match.
 
 Design docs under `design/` are ephemeral planning artifacts, not authority (see Phases).
 
+## What a tracked file may say
+
+Everything in this repository is public. A file here states what the program does and why. It never reports what any particular machine's logs contain.
+
+Verifying a design against real sessions is required — rules below depend on it — and the evidence belongs in the commit message and the report, where it convinces a reviewer once, rather than in a tracked file, where it ships. Carry the rule and its reason into the file, stated as a property of the log format or of the reader's need, and leave the sample, the counts, the dates and the session behind.
+
+For each number, name, path or date this change adds to a tracked file, say which it describes: the program's own contract, or an observation of somebody's sessions. Move every one of the second kind into the commit message, or state NONE.
+
 ## Change workflow — docs before code
 
 Any change that alters observable behavior starts in the docs, not the code:
@@ -29,7 +37,7 @@ Exceptions (code-only, no doc edit): a bug fix that makes code match the existin
 
 ## Budgets that delete facts
 
-A budget is any limit on how much a surface prints: a line count, a column width, a row cap, a verbosity gate. **When a change would drop, truncate, abbreviate or hide a fact the program already holds so that a surface stays inside one, write these four lines in the change and carry them into the report:**
+A budget is any limit on how much a surface prints: a line count, a column width, a row cap, a verbosity gate. **When a change would drop, truncate, abbreviate or hide a fact the program already holds so that a surface stays inside one, write these four lines in the commit message and carry them into the report:**
 
 1. **The budget and its source** — the number, and the PRODUCT.md line that sets it. A budget this change introduces, or one no line states, is written `unverified`. One imposed from outside — the column count a terminal reports, a field a format fixes — is written `external`: the limit is not yours, but choosing to delete the fact rather than wrap it or move it to a roomier surface still is. **Name who picked the number you are writing down.** An outside limit you then divide hands you a second budget of your own, and it is the one doing the deleting: the terminal fixes the row's width, you allot the columns inside it, and every one of those widths is `unverified` however tight the row. A change that meets both writes both lines rather than filing the pair as `external`.
 2. **What it deletes** — the fact that stops being printed, and where else a reader who ran this same command in this same format still finds it, or `nowhere`. Another format is not that reader's output: a fact carried only by `--format json` is gone from the text render, so a deletion there answers `nowhere` and takes the consequence the third line weighs.

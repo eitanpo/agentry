@@ -843,8 +843,8 @@ func renderHeader(t *testing.T, s *model.Session, width int) string {
 // TestHeaderActiveTime pins the header's first line (PRODUCT.md §Output): dated
 // clock times, the active time in place of the wall-clock span, and the day
 // count only on a session that spanned more than one day. The span is the
-// regression this guards — locally it runs 6× the active time at the median and
-// 89× at the ninetieth percentile, so a header showing it misreports the work.
+// regression this guards — it can run many times the active time, so a header
+// showing it misreports the work.
 func TestHeaderActiveTime(t *testing.T) {
 	sameDay := &model.Session{
 		Meta: model.Meta{
@@ -910,7 +910,7 @@ func TestHeaderActiveTime(t *testing.T) {
 // TestHeaderFailedAndDenied pins the split (PRODUCT.md §Output): a call that ran
 // and failed is counted apart from one that was refused, because they ask for
 // different things. The log marks a refusal as an error too, so a single count
-// filed 70 of 365 local sessions' refusals as failures.
+// filed a refusal as a failure.
 func TestHeaderFailedAndDenied(t *testing.T) {
 	sess := &model.Session{
 		Meta: model.Meta{ID: "s1"},
@@ -955,8 +955,7 @@ func TestHeaderKeepsEveryField(t *testing.T) {
 			Model:      "claude-opus-5",
 			Effort:     "high",
 			Entrypoint: "cli",
-			// A real local session, whose identity line came to 102 columns against
-			// the 96 the fallback width leaves inside the box.
+			// Chosen so the identity line will not fit the fallback width's box.
 			Start: time.Date(2026, 9, 15, 18, 3, 0, 0, time.Local),
 			End:   time.Date(2026, 9, 18, 12, 32, 0, 0, time.Local),
 			DailyActivity: []model.DailyActivity{
@@ -1051,8 +1050,7 @@ func footerSession() *model.Session {
 // TestFooterSections pins the footer (PRODUCT.md §Output): five sections in a
 // fixed order, none of them gated on verbosity, and the three aggregates leaving
 // together on --no-metrics. The ungating is the regression this guards: gating
-// cost five lines out of 257 and hid the sections from anyone who never typed
-// the flag.
+// cost real lines, and hid the sections from anyone who never typed the flag.
 func TestFooterSections(t *testing.T) {
 	order := []string{
 		"── Files ──",
@@ -1140,9 +1138,9 @@ func TestFooterSections(t *testing.T) {
 	})
 }
 
-// TestFooterCaps pins the two sections whose length the session decides: files
-// run to 95 on one local session and tool identities to 175, so each is capped
-// and says what it left out rather than being gated away.
+// TestFooterCaps pins the two sections whose length the session decides: a
+// session can run up files and tool identities well past what fits, so each is
+// capped and says what it left out rather than being gated away.
 func TestFooterCaps(t *testing.T) {
 	t.Run("Files shows ten paths and names the remainder", func(t *testing.T) {
 		sess := footerSession()
@@ -1234,15 +1232,15 @@ func TestFooterHasNoBlankPaddedLines(t *testing.T) {
 
 // TestSessionCard pins the footer's closing section (PRODUCT.md §Output): the
 // render names the session it just showed. Until this section existed it named
-// it nowhere, so a reader at the bottom of a 4,664-line render had to go back to
-// a listing to find the id of what they were reading.
+// it nowhere, so a reader at the bottom of a long render had to go back to a
+// listing to find the id of what they were reading.
 func TestSessionCard(t *testing.T) {
 	sess := footerSession()
 	sess.Meta.ID = "7a8a84e4-7e68-4e4a-9549-4047e0c7a48d"
 	sess.Meta.Title = "the footer phase"
-	sess.Meta.Cwd = "/Users/ethanpo/Projects/me/agentry"
+	sess.Meta.Cwd = "/Users/dev/Projects/me/agentry"
 	sess.Meta.RootUUID = "84a562af-5ae3-4f49-93bd-1c4b28b377c1"
-	sess.Meta.Path = "/Users/ethanpo/.claude/projects/-Users-ethanpo-Projects-me-agentry/7a8a84e4.jsonl"
+	sess.Meta.Path = "/Users/dev/.claude/projects/-Users-dev-Projects-me-agentry/7a8a84e4.jsonl"
 	sess.Meta.NumSubagents = 2
 	sess.Meta.Usage = model.Usage{Input: 30, Output: 300} // the header's own totals, which the card restates
 	sess.Meta.Model = "claude-opus-5"
@@ -1266,9 +1264,9 @@ func TestSessionCard(t *testing.T) {
 			"── Session ──",
 			"id       7a8a84e4-7e68-4e4a-9549-4047e0c7a48d",
 			"title    the footer phase",
-			"project  /Users/ethanpo/Projects/me/agentry",
+			"project  /Users/dev/Projects/me/agentry",
 			"root     84a562af-5ae3-4f49-93bd-1c4b28b377c1",
-			"log      /Users/ethanpo/.claude/projects/-Users-ethanpo-Projects-me-agentry/7a8a84e4.jsonl",
+			"log      /Users/dev/.claude/projects/-Users-dev-Projects-me-agentry/7a8a84e4.jsonl",
 			"when     Sep 17 09:12 → Sep 18 11:40 · 25m active over 2 days",
 			"ran on   claude-opus-5 · high effort · cli",
 			"render   agentry 7a8a84e4-7e68-4e4a-9549-4047e0c7a48d",
@@ -1398,8 +1396,8 @@ func TestTurnRuleSplitsFailedAndDenied(t *testing.T) {
 // TestCostSection pins the footer's money section (PRODUCT.md §Output): what
 // Claude Code recorded, what agentry prices the same tokens at, and which model,
 // which delegation and what unit of work that price went to. The recorded figure
-// is missing on two thirds of local sessions, so a footer carrying only it
-// answered "what did this cost" for a minority of renders.
+// is often missing, so a footer carrying only it would answer "what did this
+// cost" for a minority of renders.
 //
 // Dollar amounts are not asserted: the rate table is versioned and a rate change
 // must not fail this test. What is asserted is which rows appear and how each
@@ -1807,7 +1805,8 @@ func TestSessionJSONLCarriesWhatJSONCarries(t *testing.T) {
 // the listing and both roll-up shapes already do: an empty top-level collection
 // marshals as [] rather than null. A session with no turns is a real outcome,
 // and null gave the document's primary collection a second shape that every
-// consumer had to branch on — one that crashed a corpus sweep in practice.
+// consumer had to branch on — and a real consumer iterating turns crashed on
+// the difference.
 func TestSessionJSONEmptyTurnsIsAnArray(t *testing.T) {
 	sess := &model.Session{Meta: model.Meta{ID: "s1"}}
 	var b strings.Builder

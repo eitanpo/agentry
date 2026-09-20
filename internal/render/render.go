@@ -43,9 +43,8 @@ const (
 	headerPrefix     = "Session · "
 	sectionIndent    = "  " // footer rows, aligned with the per-turn table's
 	// filesShown and identityEntriesShown bound the two footer sections whose
-	// length the session decides. The figures come from the local corpus: files run
-	// to 95 on one session against a median of 6, and tool identities to 175
-	// against a median of 15.
+	// length the session decides — a session can touch far more files or tool
+	// identities than typically fit in a footer, so each is capped.
 	filesShown           = 10
 	identityEntriesShown = 8
 	// cardLabelWidth pads the closing card's labels into one column, so the values
@@ -119,11 +118,8 @@ func SessionJSON(w io.Writer, s *model.Session) error {
 
 // turnRecord is a `turn` line's payload: everything model.Turn carries except
 // its events, which become records of their own. Inlining them would put a
-// delegated session inside one line — the largest such line measures 6,345,214
-// bytes against 81,593 for the largest event — which is the problem the line
-// format exists to avoid, one level down. (Measured 2026-09-19 over the 95
-// measurable sessions on this machine that delegated to a subagent, the corpus
-// that exercises the nesting.)
+// delegated session inside one line, which is the problem the line format
+// exists to avoid, one level down.
 type turnRecord struct {
 	Turn       int         `json:"turn"`
 	Prompt     string      `json:"prompt"`
@@ -323,10 +319,10 @@ func (r *renderer) countParts(s *model.Session) []string {
 // of the turns' own spans — with the day count on a session that spanned more
 // than one.
 //
-// The span between the two timestamps is deliberately absent. Locally a
-// session's wall-clock span runs 6× its active time at the median and 89× at the
-// ninetieth percentile, so printing it reads as the session's duration while
-// measuring how long a terminal stayed open. Both timestamps stay on the line,
+// The span between the two timestamps is deliberately absent. A session's
+// wall-clock span can run many times its active time, so printing it would
+// read as the session's duration while actually measuring how long a terminal
+// stayed open. Both timestamps stay on the line,
 // so a reader who wants the span still has it. PRODUCT.md's header section owns
 // the rule.
 func when(m model.Meta) string {
@@ -928,9 +924,9 @@ func (r *renderer) outputs(s *model.Session) string {
 // appears here, and a session whose log carries no such record lists nothing
 // rather than claiming it changed nothing.
 //
-// Capped because the list is unbounded: locally the median session carrying
-// those records touched 6 files and the largest 95, and --format json carries
-// every path, so the cap costs a reader nothing they cannot recover.
+// Capped because the list is unbounded: a session can touch far more files
+// than fit here, and --format json carries every path, so the cap costs a
+// reader nothing they cannot recover.
 func (r *renderer) files(s *model.Session) string {
 	paths := s.Meta.Files
 	if len(paths) == 0 {
@@ -959,9 +955,8 @@ func (r *renderer) files(s *model.Session) string {
 // helper the listing's tools channel calls, so neither surface can report one
 // session's work differently from the other.
 //
-// The per-category cap is not optional: one local session used 175 distinct
-// identities, and an uncapped line would run longer than a small session's whole
-// transcript.
+// The per-category cap is not optional: an uncapped line can run far longer
+// than a small session's whole transcript.
 func (r *renderer) identities(s *model.Session) string {
 	lines := breakdown.Lines(breakdown.Tally{Calls: s.Meta.Tools, Failures: s.Meta.Failures, Denials: s.Meta.Denials}, identityEntriesShown)
 	if len(lines) == 0 {
@@ -1028,9 +1023,9 @@ func trailEffort(m model.Meta) string {
 // the conversation root it shares with any fork of itself.
 //
 // It is the one place a header fact is repeated, and the repetition is the
-// point. A large session runs to thousands of lines — one here renders 4,664 —
-// so by the time a reader reaches the end, the header is out of reach exactly
-// when they want to cite, resume or re-render what they just read. Nothing else
+// point. A large session runs to thousands of lines, so by the time a reader
+// reaches the end, the header is out of reach exactly when they want to cite,
+// resume or re-render what they just read. Nothing else
 // in the render names the session at all. PRODUCT.md's Output section owns the
 // exception to the header-or-footer rule.
 func (r *renderer) card(s *model.Session) string {
@@ -1085,9 +1080,9 @@ type spent struct {
 
 // priceSession values the session's tokens at list prices, split the three ways
 // the footer reports. It is agentry's own arithmetic over this log, not Claude
-// Code's record: the two agree within a few percent across the corpus and can
-// differ either way on one session, which is why every figure derived here is
-// printed with a leading "~" and the record is not.
+// Code's record: the two usually agree closely and can differ either way on one
+// session, which is why every figure derived here is printed with a leading
+// "~" and the record is not.
 //
 // Tokens spent on a model agentry holds no price for are left out of every total
 // and named instead, the rule the cost roll-up already follows — counting them
@@ -1157,8 +1152,8 @@ func joinSpend(entries []spent, max int) string {
 // tokens are worth at list prices, and which model, which delegation and what
 // unit of work that price went to.
 //
-// It exists because the recorded figure answers the question for a minority of
-// sessions — 116 of 365 locally — and answers only "how much", never "on what".
+// It exists because the recorded figure answers the question for only a
+// minority of sessions, and answers only "how much", never "on what".
 // The two figures are printed on separate rows rather than blended: a record and
 // an estimate that differ by a few percent must be tellable apart, which is what
 // the "~" marks.

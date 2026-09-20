@@ -357,10 +357,10 @@ func bigFixture() []model.Summary {
 // BuildOverview doc comment claims: "a figure read off the summary and one read
 // off `--by total` over the same sessions cannot differ." It holds on the
 // current code and is kept to pin that guarantee against a future change to
-// BuildOverview's machine scope — not as a reproduction of anything: a report
-// of `agentry cost` and `agentry cost --all-projects --from all --since 30d`
-// disagreeing by cents over the same 305 sessions was the two paths reading a
-// live log seconds apart, and no in-package fixture can express that.
+// BuildOverview's machine scope — not as a reproduction of anything: two
+// commands reading the same live, still-being-written log seconds apart can
+// disagree by cents from the read timing alone, and no in-package fixture can
+// express that.
 // Also pins that the total does not depend on which axis it was
 // rolled up by, since every --by value shares the one accumulation loop in
 // Build: a day, week, month, model, or session rollup of the same sessions

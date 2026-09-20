@@ -46,8 +46,8 @@ var Axes = []string{ByTotal, ByDay, ByWeek, ByMonth, ByModel, ByAgent, ByProject
 // mainThreadAgent names the tokens a session spent itself, on the axis that
 // groups the rest by what they were delegated to. It is a row rather than an
 // omission so the rows sum to the total and each one's share can be read off
-// them; in the local corpus the main thread is the large majority of every
-// session, which a delegated-only table would hide.
+// them; the main thread is typically the large majority of a session's tokens,
+// which a delegated-only table would hide.
 const mainThreadAgent = "(main thread)"
 
 // unknownProject names the row of a session whose log recorded no working
@@ -60,9 +60,9 @@ const unknownProject = "(unknown)"
 // forgot, so they are named rather than dropped.
 const unknownDay = "unknown"
 
-// idPrefix is how many characters of a session id `--by session` prints. It is
-// the listing's floor, and 8 hex characters separated all 443 sessions on the
-// development machine; --format json carries every id in full.
+// idPrefix is how many characters of a session id `--by session` prints. It
+// matches the listing's own floor of 8 hex characters; --format json carries
+// every id in full.
 const idPrefix = 8
 
 // Bucket is one row of a roll-up, or the total beneath them.
@@ -112,8 +112,8 @@ type Recorded struct {
 }
 
 // Spread is how a per-turn cost is distributed across the sessions in the
-// window, which one average cannot say: locally the mean turn costs $2.53 and
-// the median $0.71, because a few very large turns carry the bill. Reported only
+// window, which one average cannot say: the mean and the median can differ
+// substantially, because a few very large turns carry the bill. Reported only
 // once enough sessions have turns for a median to mean anything.
 type Spread struct {
 	Sessions      int     `json:"sessions"`
@@ -312,9 +312,8 @@ func bucketOf(by string, d model.DailyUsage, s model.Summary) (key, label string
 // `<repo>/.claude-worktrees/<name>` — so cutting there names the repo, while a
 // sibling repo under a shared parent is untouched, since no segment between
 // them is hidden. Cutting by the selection's own directories instead would let
-// one session run from a parent folder swallow every repo beneath it: locally
-// a single session in `~/Projects/wix-private` merged three repos into one row
-// worth $3,552.
+// one session run from a parent folder swallow every repo beneath it into one
+// row.
 func projectName(cwd string) string {
 	if cwd == "" {
 		return unknownProject
@@ -748,8 +747,8 @@ func Render(w io.Writer, r Report, opts Options) error {
 	}
 	// The project axis is the other variable-width key, and an unbounded one: a
 	// session run inside a temporary working directory carries its whole path,
-	// which locally reached 140 characters and pushed every figure off screen.
-	// Bounded by a fixed width as well as by the terminal's, because a path long
+	// which can run long enough to push every figure off screen. Bounded by a
+	// fixed width as well as by the terminal's, because a path long
 	// enough to fill a wide terminal would take the room every other column and
 	// the share bar need, to show directories the reader already recognises.
 	if r.By == ByProject {

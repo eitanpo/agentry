@@ -72,7 +72,7 @@ agentry list --used-file PRODUCT.md       # only sessions that modified that fil
 agentry list --used researcher            # skill, agent, or command matching "researcher"
 agentry list --used-command 'git commit' --not-used-skill review   # committed without loading a skill
 agentry list --opened-pr 187              # the session that opened PR 187
-agentry list --all-projects --opened-pr wix-private/artifactory-migration --include outputs
+agentry list --all-projects --opened-pr acme-corp/build-tools --include outputs
 agentry list --published-artifact cost    # sessions that published an artifact matching "cost"
 agentry list --reply-matches '(?m)^\*{0,2}Learnings\b'       # sessions whose replies carried a Learnings block
 agentry list --not-reply-matches 'file://' # sessions that never printed a file:// link
@@ -91,8 +91,7 @@ agentry list --from all                    # include headless runs, hidden by de
 ```
 
 **What it cost.** `agentry cost` prices the tokens itself, so every session gets a dollar figure and
-the dollars add up over any window — which Claude Code's own per-session record cannot do, covering
-71 of 314 local sessions and holding one number per session that no day can be split out of:
+the dollars add up over any window — which Claude Code's own per-session record cannot do, holding one number per session that no day can be split out of:
 
 ```
 agentry cost                              # the three scopes, a calendar, and where the money went
@@ -127,7 +126,7 @@ question needs no flags:
 ```
 This session  Cost calculation per session          100M       $65.70
 This folder   8 sessions, all time                  512M      $349.62
-This machine  301 sessions since 2026-08-12         8.1B     $6049.13
+This machine  301 sessions, last 30 days            8.1B     $6049.13
 ```
 
 Each row names its own window. "This session" is the newest session here that was not a headless
@@ -139,12 +138,10 @@ still all three scopes, each counting a week. The single-scope table opens its f
 priced, since a line reading `Total` names no scope.
 
 The figure is **an estimate, not a bill**: it prices the responses the transcript records, at the
-same rates and by the same formula Claude Code uses. Over the 71 local sessions carrying both
-figures the totals agree within 4% ($3,159 computed against $3,043 recorded, median 98.1% per
-session), and a per-session gap runs both ways — low where Claude Code paid for a background request
+same rates and by the same formula Claude Code uses. The two totals agree closely, and a per-session gap runs both ways — low where Claude Code paid for a background request
 it wrote no entry for, high where its own record covers only part of the session. Rates come from one table stamped with the date it was verified against
 published prices, and `--format json` carries that date. Web search, geography-pinned inference, and
-an organization's negotiated rates are not priced — no local session used any of them. A model with
+an organization's negotiated rates are not priced. A model with
 no price is named rather than counted as free. Every row's tokens are attributed to the local
 calendar day of the response that spent them, so a session running past midnight splits across both
 days, and the rows always sum to the total — there is no `--limit` to make them not. In the
@@ -155,11 +152,9 @@ lower than your bill; the three-row summary counts them in its folder and machin
 **A roll-up says what the dollars bought, not just what they were.** Every axis except `model` and
 `agent` carries `Turns`, `Active` and `$/turn` columns, and two lines under the total: what a turn
 and an active hour cost, then the median cost per turn across the sessions in the window and the
-level the top tenth sits above. Both are there because one average hides the shape — locally the
-mean turn costs $2.53 against a median of $0.71. Active time runs from each prompt to the last thing
+level the top tenth sits above. Both are there because one average hides the shape. Active time runs from each prompt to the last thing
 the assistant said in that turn, with any silence over five minutes counted as five minutes — the
-log cannot tell a long test run from a person who walked away, and uncapped one local turn measured
-168 hours. A session's wall-clock span is never divided by, and cost per line changed is not offered
+log cannot tell a long test run from a person who walked away. A session's wall-clock span is never divided by, and cost per line changed is not offered
 at all, because Claude Code records line counts for a minority of sessions.
 
 **A rendered session ends with a footer saying what it touched, produced and spent.** After the last
@@ -171,8 +166,7 @@ terminal), `Tools (by identity)` (which skills, agents and commands ran, how oft
 `Session`. None of them is gated on `--level`, so a bare `agentry <uuid>` shows all seven;
 `--no-metrics` drops the four aggregates and keeps the files, the outputs and the closing card.
 
-**Every session gets a dollar figure, and you can tell it from Claude Code's own.** Claude Code
-records a cost for about a third of sessions; agentry prices the rest from their tokens, the same way
+**Every session gets a dollar figure, and you can tell it from Claude Code's own.** Claude Code records a cost for some sessions; agentry prices the rest from their tokens, the same way
 `agentry cost` does. A recorded figure prints as `$12.50` and a computed one as `~$12.50`, and the
 `Cost` section splits the computed total by model, by subagent, per turn, per active hour, and by
 what caching saved. Long lists are capped and name what they left out — the full ones are
@@ -188,9 +182,7 @@ named the session nowhere: you had to go back to a listing to find the id of the
 looking at.
 
 **The header says what the session was, the footer what it did.** The box above the transcript gives
-each fact a line: when the session ran, with its **active time** rather than the span from first
-entry to last — locally a session's wall-clock span runs 6× its active time at the median and 89× at
-the ninetieth percentile — then what it ran on, then its turns, tools, subagents, failed calls and
+each fact a line: when the session ran, with its **active time** rather than the span from first entry to last — a session's wall-clock span can run many times its active time when it sits idle between turns — then what it ran on, then its turns, tools, subagents, failed calls and
 refused calls, keeping a failure and a refusal apart because they ask for different things, then
 what it spent. A line too long for the box wraps inside it, so a narrow terminal costs you a line
 rather than a field.
@@ -217,7 +209,7 @@ same scope, so an id copied off a listing opens where you read it — no `cd` in
 first — and `agentry view` with no id reaches the whole subtree too, picking the most recently
 written session file rather than the current directory's.
 
-Sessions print oldest-to-newest, so the most recent is at the bottom, next to your prompt. Each row shows the last-activity time (when the session's most recent turn ended — the same recency the list is ordered by), **active time** — how long its turns ran, not the span from its first entry to its last, which locally runs 6× longer at the median — turn count, a title (a name you chose if set — from renaming the session, or from `--name` / `/rename`, whichever the log records last — else Claude Code's own `ai-title` summary, falling back to the first prompt, skipping a leading `/clear` or a shell command typed with `!`), and its id, shortened to the shortest prefix unique among the rows and never under 8 characters — copy it and pass it to `agentry <id>` to render that session. `--format json` keeps every id in full. A forked session (Claude Code's `--fork-session` / `/branch`) is grouped under the original it was forked from and its title indented with `└─`; while it still carries the original's inherited title it is shown by its first new prompt instead, so the two are distinguishable. A title that just repeats the row's worktree — what you get when one argument names both the worktree and the conversation, as `devx -n plan -w` does — is replaced by the session's first prompt for the same reason: the worktree column already shows it.
+Sessions print oldest-to-newest, so the most recent is at the bottom, next to your prompt. Each row shows the last-activity time (when the session's most recent turn ended — the same recency the list is ordered by), **active time** — how long its turns ran, not the span from its first entry to its last, which can run considerably longer — turn count, a title (a name you chose if set — from renaming the session, or from `--name` / `/rename`, whichever the log records last — else Claude Code's own `ai-title` summary, falling back to the first prompt, skipping a leading `/clear` or a shell command typed with `!`), and its id, shortened to the shortest prefix unique among the rows and never under 8 characters — copy it and pass it to `agentry <id>` to render that session. `--format json` keeps every id in full. A forked session (Claude Code's `--fork-session` / `/branch`) is grouped under the original it was forked from and its title indented with `└─`; while it still carries the original's inherited title it is shown by its first new prompt instead, so the two are distinguishable. A title that just repeats the row's worktree — what you get when one argument names both the worktree and the conversation, as `devx -n plan -w` does — is replaced by the session's first prompt for the same reason: the worktree column already shows it.
 
 ### Options
 
@@ -227,12 +219,12 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--[no-]thinking\|tools\|tool-results\|subagents\|metrics` | render | — | Override a single channel on top of `--level` (adds or subtracts). `tools` = a tool fired; `tool-results` = its output. An `Agent` line also names what it delegated to: `Agent[Explore@haiku]` is the subagent type and the model, and the `@model` half is absent when the call left the subagent on the session's model. |
 | `--limit N\|all` | `list` | `10` | Cap to N most-recent; `all` removes the cap (`0` also still does, being what the flag took before `all` existed). `all` rather than a sentinel number because `--from` and `--include` already spell an exhaustive value that way, and because `0` means literally zero on `--max-lines`. The default caps a **bare** listing only: any flag that selects which sessions appear lifts it, while `--include` and `--format` leave it in force since they shape rows rather than choose them. `--format json` is never capped by default, because a capped array is indistinguishable from a complete one. An explicit `--limit` always wins. Whenever a cap does hide sessions, the count and the way to see them go to stderr, below the table and after a blank line — `agentry: 672 more session(s) hidden by --limit — pass --limit all to list them` — so the table on stdout stays line-oriented and the notice reads as the listing's last word. |
 | `--since WHEN`, `--until WHEN` | `list`, `cost` | — | Filter by last-activity time. WHEN: `today`/`yesterday`, `Nh`/`Nd`/`Nw`, or `YYYY-MM-DD`. On `cost` the bounds are compared against each day of spend instead, so a session straddling the edge contributes only the days inside the window. |
-| `--include CHANNELS` | `list` | — | Add per-session detail. Comma-separated; channels: `prompts`, `tools`, `files`, `model`, `cost`, `outputs`, `last-reply` (or `all`). `tools` breaks down a session's top-level tool calls grouped by identity — Bash by program, Skill by name, Agent by subagent type, Edit/Write by target file, everything else by tool name — and adds a `Denied` line naming the calls that were refused and by what (`permission-rule`, `automode-blocked`, `automode-unavailable`, `user-rejected`), which an error glyph alone cannot tell you. `files` lists every file the session modified by any means, from Claude Code's own file-history record rather than from tool arguments. `model` names what the session ran on — its model and reasoning effort, in the rendered header's phrasing — which is otherwise invisible in the text table. `cost` names what it amounted to — the token tally, then the dollar total and the lines added and removed that Claude Code recorded — in the rendered header's exact wording, and is the only place the text table states any of them; the recorded halves are absent on any session whose log carries no cost record, which is every session before Claude Code 2.1.241 and many since, and the line counters are dropped again on a session that changed nothing. `outputs` lists what the session produced beyond its transcript: one line per pull request it opened (its URL) and per artifact it published (title, then `claude.ai` URL), deduplicated, since Claude Code re-records both on later turns. `last-reply` shows the session's whole final assistant reply under its row, laid out as `agentry view` lays out a reply — the `◆` glyph on its own line, then the markdown rendered by the same helper, so what a reply says is the same on both. The block is narrower than a full render, so long lines wrap at different columns. It is the only channel that shows part of what it names rather than all of it, hence the name, and by far the longest: one local project's ten-session listing runs 357 lines with it against 10 without, so reach for it when you want the answers rather than a scan. |
+| `--include CHANNELS` | `list` | — | Add per-session detail. Comma-separated; channels: `prompts`, `tools`, `files`, `model`, `cost`, `outputs`, `last-reply` (or `all`). `tools` breaks down a session's top-level tool calls grouped by identity — Bash by program, Skill by name, Agent by subagent type, Edit/Write by target file, everything else by tool name — and adds a `Denied` line naming the calls that were refused and by what (`permission-rule`, `automode-blocked`, `automode-unavailable`, `user-rejected`), which an error glyph alone cannot tell you. `files` lists every file the session modified by any means, from Claude Code's own file-history record rather than from tool arguments. `model` names what the session ran on — its model and reasoning effort, in the rendered header's phrasing — which is otherwise invisible in the text table. `cost` names what it amounted to — the token tally, then the dollar total and the lines added and removed that Claude Code recorded — in the rendered header's exact wording, and is the only place the text table states any of them; the recorded halves are absent on any session whose log carries no cost record, which is every session before Claude Code 2.1.241 and many since, and the line counters are dropped again on a session that changed nothing. `outputs` lists what the session produced beyond its transcript: one line per pull request it opened (its URL) and per artifact it published (title, then `claude.ai` URL), deduplicated, since Claude Code re-records both on later turns. `last-reply` shows the session's whole final assistant reply under its row, laid out as `agentry view` lays out a reply — the `◆` glyph on its own line, then the markdown rendered by the same helper, so what a reply says is the same on both. The block is narrower than a full render, so long lines wrap at different columns. It is the only channel that shows part of what it names rather than all of it, hence the name, and by far the longest, so reach for it when you want the answers rather than a scan. |
 | `--used-tool NAME` | `list` | — | Only sessions where that tool fired, by tool-use name (case-insensitive, exact). The "which mechanism" axis. |
 | `--used-skill`, `--used-agent`, `--used-command` | `list` | — | Identity axis: a Skill's skill, an Agent's subagent type, a Bash command's text (case-insensitive substring). |
-| `--used-file PATH` | `list` | — | Only sessions that modified a matching file (case-insensitive substring, so `list.go` catches every directory's and `internal/cli/list.go` names one). Reads `Edit`/`Write` targets and the tracked-file record together; the tool targets do nearly all the work, since about half of sessions have no tracked-file record at all. Not covered by `--used`. |
+| `--used-file PATH` | `list` | — | Only sessions that modified a matching file (case-insensitive substring, so `list.go` catches every directory's and `internal/cli/list.go` names one). Reads `Edit`/`Write` targets and the tracked-file record together; the tool targets do nearly all the work, since many sessions have no tracked-file record at all. Not covered by `--used`. |
 | `--used TOKEN` | `list` | — | Catch-all over the identity axis: skill name, agent type, or command. Not tool names — use `--used-tool` for those. |
-| `--opened-pr TEXT` | `list` | — | Only sessions that opened a matching pull request, over its repository, number, and URL (case-insensitive substring, so `artifactory-migration` selects a repository's worth and `187` picks one). Read from Claude Code's own `pr-link` record, which is written for the session as a whole — so this finds a PR opened inside a subagent, which `--used-command 'gh pr'` cannot. |
+| `--opened-pr TEXT` | `list` | — | Only sessions that opened a matching pull request, over its repository, number, and URL (case-insensitive substring, so `build-tools` selects a repository's worth and `187` picks one). Read from Claude Code's own `pr-link` record, which is written for the session as a whole — so this finds a PR opened inside a subagent, which `--used-command 'gh pr'` cannot. |
 | `--published-artifact TEXT` | `list` | — | Only sessions that published a matching artifact, over its title, its `claude.ai` URL, and the local file it was rendered from (case-insensitive substring). Same session-level record as `--opened-pr`. |
 | `--reply-matches PATTERN` | `list` | — | Only sessions whose assistant reply text matched. PATTERN is a **regular expression** (RE2), case-insensitive by default (`(?-i)` to override) — the one filter here that is not a substring match, because prose questions are positional and alternation-shaped. Tested against each assistant text block separately, so `^`/`$` anchor to one reply: `'(?m)^\*{0,2}Learnings\b'` finds the block, where the substring `Learnings` would also hit every session that merely mentioned it. Thinking blocks and subagent sidecars are not read. An unparseable pattern is a usage error. Reply text is matched but never printed or serialized — see the `--format json` note in [PRODUCT.md](PRODUCT.md) for the size reason. |
 | `--not-used-*`, `--not-opened-pr`, `--not-published-artifact`, `--not-reply-matches` | `list` | — | Every filter in this family has a `--not-` twin (`--not-used-tool`, `--not-used-skill`, `--not-used-agent`, `--not-used-command`, `--not-used-file`, `--not-used`, `--not-opened-pr`, `--not-published-artifact`, `--not-reply-matches`) keeping the sessions the positive one drops. Combine the two for a compliance audit: `--used-command 'git commit' --not-used-skill review`, or count the misses of a reply rule with `--not-reply-matches`. For the `--used*` flags, absence is judged over top-level calls only, so a subagent may have used what the main thread did not; the two output filters read session-level records and carry no such gap. |

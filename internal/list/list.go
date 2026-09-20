@@ -114,10 +114,9 @@ func Tag(s model.Summary) string {
 //
 // Excluding those by default is a deliberate change to what a bare listing
 // returns. They are the bulk of what a machine using hooks accumulates and
-// almost none of what anyone reads back — 89 of 251 sessions on the development
-// machine, the most recent of them one-turn runs of a few seconds. An
-// unrecognized entrypoint is kept, since a new value is more likely to be a new
-// way of working than a new kind of noise.
+// almost none of what anyone reads back — typically one-turn runs of a few
+// seconds. An unrecognized entrypoint is kept, since a new value is more
+// likely to be a new way of working than a new kind of noise.
 func FilterByFrom(sums []model.Summary, from string) []model.Summary {
 	if from == entrypoint.All {
 		return sums
@@ -374,11 +373,10 @@ func hasAny(s model.Summary, sub string) bool {
 }
 
 // hasFile reports whether the session modified a file matching sub. Edit and
-// Write targets are checked first because they answer nearly every case: about
-// half of sessions carry no tracked-file record, so consulting only that record
-// would silently never match them. The tracked list is the backstop for a change
-// no tool argument names — measured at one added path across the whole
-// development corpus, so it is insurance rather than the primary source.
+// Write targets are checked first because they answer nearly every case: many
+// sessions carry no tracked-file record, so consulting only that record would
+// silently never match them. The tracked list is the backstop for a change no
+// tool argument names, so it is insurance rather than the primary source.
 func hasFile(s model.Summary, sub string) bool {
 	if hasIdentity(s.Tools, "Edit", sub) || hasIdentity(s.Tools, "Write", sub) {
 		return true
@@ -929,7 +927,7 @@ func worktreeName(cwd string) string {
 // projectLabels maps each distinct session cwd to the shortest suffix of path
 // components that tells its project apart from the others present. One project
 // listed shows as its own directory name; two repos sharing a basename grow a
-// component each until they differ, so `me/agentry` and `wix-private/agentry`
+// component each until they differ, so `me/agentry` and `acme-private/agentry`
 // both appear rather than two identical `agentry` rows.
 //
 // The alternative reads worse in both directions: a bare basename collides
@@ -1081,21 +1079,19 @@ func sharedRun(group []string, keepTail bool) int {
 	return longest
 }
 
-// idFloor is the shortest id a listing prints. 8 hex characters separated all
-// 443 sessions on the development machine — none collided even at 4 — so the
-// floor is not about today's collisions but about tomorrow's: a listing of three
-// rows would otherwise print 1-character ids that stop resolving as the machine
-// fills up, since an id is copied out of one listing and passed back later.
+// idFloor is the shortest id a listing prints. The floor is not about today's
+// collisions but about tomorrow's: a listing of three rows would otherwise
+// print 1-character ids that stop resolving as the machine fills up, since an
+// id is copied out of one listing and passed back later.
 const idFloor = 8
 
 // idWidth is the shortest prefix length that tells these sessions apart, floored
 // at idFloor and never longer than the ids themselves. This is git's rule for
 // abbreviated object names, computed over the rows in hand.
 //
-// The check is a pairwise scan over one listing — at most 69 projects' sessions
-// on the development machine, and 10 rows by default — so the trie that makes
-// shortest-unique-prefix O(n·L) instead of O(n²·L) would buy nothing here beyond
-// code to read.
+// The check is a pairwise scan over one listing — small by construction, 10
+// rows by default — so the trie that makes shortest-unique-prefix O(n·L)
+// instead of O(n²·L) would buy nothing here beyond code to read.
 func idWidth(sums []model.Summary) int {
 	longest := 0
 	for _, s := range sums {
@@ -1167,11 +1163,11 @@ func pad(s string, width int) string {
 
 // fmtActive renders the duration column: how long the session's turns ran, not
 // the span from its first entry to its last. That span reported how long a
-// terminal stayed open — locally it runs 6× the active time at the median and
-// 89× at the ninetieth percentile, and one session read 66h28m for an hour of
-// recorded work. A session whose log carries no turn records shows nothing
-// rather than "0m", the rule every column here follows for a fact the log does
-// not carry. The rendered header names the same figure, from the same sum.
+// terminal stayed open, which can run many times longer than the recorded
+// active time when a session sits open. A session whose log carries no turn
+// records shows nothing rather than "0m", the rule every column here follows
+// for a fact the log does not carry. The rendered header names the same
+// figure, from the same sum.
 func fmtActive(days []model.DailyActivity) string {
 	if len(days) == 0 {
 		return ""

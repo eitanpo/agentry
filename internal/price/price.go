@@ -91,10 +91,9 @@ var modelTiers = map[string]string{
 // The five-minute share of the cache writes is the flat counter less the hour
 // share, so a log too old to split them is priced entirely at the five-minute
 // rate — the lower of the two, and the one such a log can still be shown to
-// support. Where the split exceeds the flat counter — 165 tokens across the whole
-// local corpus, measured 2026-09-11 — the five-minute share clamps at zero rather
-// than turning the subtraction negative, which is the Math.min Claude Code's own
-// pricing function applies there.
+// support. Where the split exceeds the flat counter, the five-minute share
+// clamps at zero rather than turning the subtraction negative, which is the
+// Math.min Claude Code's own pricing function applies there.
 func Of(modelID string, u model.Usage) (float64, bool) {
 	r, ok := ratesOf(modelID)
 	if !ok {

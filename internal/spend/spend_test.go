@@ -53,10 +53,10 @@ func TestLineRoundsToTheCent(t *testing.T) {
 }
 
 // TestLineShowsLinesChanged pins how much code a session changed, and the one
-// case that is dropped: both counters zero. Two thirds of local sessions with a
-// cost record changed no lines, so rendering "+0/-0" on every one of them would
-// spend the line on nothing — and the dollar figure beside it already says the
-// record exists, since one entry carries both.
+// case that is dropped: both counters zero. A session with a cost record often
+// changed no lines, so rendering "+0/-0" on every one of them would spend the
+// line on nothing — and the dollar figure beside it already says the record
+// exists, since one entry carries both.
 func TestLineShowsLinesChanged(t *testing.T) {
 	cost, add, rem := 17.25, 342, 8
 	got := Line(model.Usage{Input: 5, Output: 9}, nil, &cost, &add, &rem)
@@ -131,9 +131,8 @@ func TestLineShowsWhatCachingSavedBesideTheCacheShare(t *testing.T) {
 // "cache 0%" on the second reads as a measurement of caching that ran, where
 // the truth is that nothing was written to cache and nothing read back.
 //
-// No local session reaches this — of 714 sessions the 103 holding no cache
-// counters hold no uncached input either — so this test is the only thing
-// keeping the header and the per-turn rule from diverging on one that does.
+// No real session reaches this — so this test is the only thing keeping the
+// header and the per-turn rule from diverging on one that does.
 func TestLineOmitsTheCacheShareOnAnUncachedSession(t *testing.T) {
 	saving := model.CacheSaving{WithCacheUSD: 3, WithoutCacheUSD: 12}
 	got := Line(model.Usage{Input: 5000, Output: 900}, &saving, nil, nil, nil)

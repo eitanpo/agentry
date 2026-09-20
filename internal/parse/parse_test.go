@@ -152,8 +152,7 @@ func TestSummarizeFiles(t *testing.T) {
 
 // TestSummarizeFilesWithoutHistory pins the absence case: a session whose log
 // carries no file-history entries reports no files. Claiming it changed nothing
-// would be a different, unsupported statement — roughly half of local sessions
-// have no such entries at all.
+// would be a different, unsupported statement.
 func TestSummarizeFilesWithoutHistory(t *testing.T) {
 	s, err := Summarize(filepath.Join("testdata", "tools.jsonl"))
 	if err != nil {
@@ -509,7 +508,7 @@ func TestLoadStitching(t *testing.T) {
 // it before, so those two sessions were indistinguishable in every view.
 func TestLoadEffort(t *testing.T) {
 	t.Run("a session that changed effort keeps both values", func(t *testing.T) {
-		// Rare but real: 1 of 136 local sessions carrying the field does this.
+		// Rare but real: a session can change effort mid-run.
 		sess, err := Load(filepath.Join("testdata", "effort-changed.jsonl"))
 		if err != nil {
 			t.Fatal(err)
@@ -531,7 +530,7 @@ func TestLoadEffort(t *testing.T) {
 	})
 
 	t.Run("a session predating the field reports none", func(t *testing.T) {
-		// About half of local sessions have no effort at all. Reporting a default
+		// A session predating the field has no effort at all. Reporting a default
 		// would state a setting the log does not record.
 		sess, err := Load(filepath.Join("testdata", "sample.jsonl"))
 		if err != nil {
@@ -576,8 +575,8 @@ func TestLoadCarriesDelegation(t *testing.T) {
 		// No model named means the subagent inherited the session's. Defaulting to
 		// Meta.Model here would report a choice the caller never made.
 		{"an Agent naming no model", tools[1], "researcher", ""},
-		// subagent_type is optional in the log (17 of 543 local calls omit it);
-		// agentry reports it absent rather than guessing the harness default.
+		// subagent_type is optional in the log; agentry reports it absent rather
+		// than guessing the harness default.
 		{"an Agent naming no type", tools[2], "", "sonnet"},
 		// Identity is not Agent-only: it is the same label the listing groups by,
 		// which is what stops the two paths naming one call two things.
@@ -698,8 +697,8 @@ func lastTool(events []model.Event) *model.Tool {
 }
 
 // TestModelResolution pins how a session's model is read. It used to be the
-// first assistant entry's, which misreports a session that switched: 13 of 250
-// local sessions did, and the header then names a model the session left.
+// first assistant entry's, which misreports a session that switched models,
+// naming one the session had already left.
 func TestModelResolution(t *testing.T) {
 	t.Run("a session that switched keeps both, resolving to the last", func(t *testing.T) {
 		sess, err := Load(filepath.Join("testdata", "model-changed.jsonl"))
@@ -718,8 +717,8 @@ func TestModelResolution(t *testing.T) {
 	t.Run("<synthetic> is not a model", func(t *testing.T) {
 		// Claude Code writes it on messages it composed itself — an API-error
 		// notice, a session-limit warning. The fixture ends on one, which is the
-		// shape that matters: 17 of 250 local sessions carry such an entry, and
-		// counting it would end each of them on a model that never ran.
+		// shape that matters: counting it would end the session on a model that
+		// never ran.
 		sess, err := Load(filepath.Join("testdata", "model-changed.jsonl"))
 		if err != nil {
 			t.Fatal(err)
@@ -835,7 +834,7 @@ func TestSummarizeOutputs(t *testing.T) {
 		want := []model.PR{
 			{Repository: "eitanpo/central", Number: 14, URL: "https://github.com/eitanpo/central/pull/14"},
 			{Repository: "eitanpo/central", Number: 27, URL: "https://github.com/eitanpo/central/pull/27"},
-			{Repository: "wix-private/devex-costs", Number: 3, URL: "https://github.com/wix-private/devex-costs/pull/3"},
+			{Repository: "acme-private/devex-costs", Number: 3, URL: "https://github.com/acme-private/devex-costs/pull/3"},
 		}
 		if len(s.PRs) != len(want) {
 			t.Fatalf("PRs = %+v, want %d entries", s.PRs, len(want))
@@ -985,9 +984,9 @@ func TestUsageCountsEachResponseOnce(t *testing.T) {
 // TestUsageTakesHighestOutputOfAResponse pins the rule that a response's entries
 // are not identical: Claude Code writes each one as the reply streams, so output
 // grows across the group while the other three counters hold. Counting the first
-// entry read 20.8% less output than the highest across the local logs, and 55%
-// less on the worst single session, so this is the difference between a tally
-// that matches Claude Code's own record and one that halves it.
+// entry instead can undercount output substantially, so this is the difference
+// between a tally that matches Claude Code's own record and one that falls well
+// short of it.
 func TestUsageTakesHighestOutputOfAResponse(t *testing.T) {
 	path := filepath.Join("testdata", "streaming-usage.jsonl")
 	// One response, three entries reading 3, 771, 771. The other counters are the
@@ -1018,9 +1017,9 @@ func TestUsageTakesHighestOutputOfAResponse(t *testing.T) {
 }
 
 // TestUsageHighestWinsRegardlessOfOrder covers what a fixture cannot: the partial
-// entry arriving last. File order happens to be ascending in every local log, so
-// a rule that took the last entry would pass there and undercount the first time
-// Claude Code writes them in another order.
+// entry arriving last. Real logs happen to write these entries in ascending
+// order, so a rule that took the last entry would pass today and undercount
+// the first time Claude Code writes them in another order.
 func TestUsageHighestWinsRegardlessOfOrder(t *testing.T) {
 	descending := []entry{
 		{typ: "assistant", requestID: "req_X", uuid: "x1", usage: model.Usage{Input: 5, Output: 900}},
@@ -1844,9 +1843,8 @@ func TestPromptsRecordedAsBlocks(t *testing.T) {
 }
 
 // TestPromptText pins which block shapes offer text to the prompt tests. One
-// text block among others is not a prompt: 62,017 local user entries are tool
-// results in this shape against 1,169 that are text alone, so accepting an
-// entry for the text beside a result would turn most of a session into turns.
+// text block among others is not a prompt: accepting an entry for the text
+// beside a result would wrongly turn tool results into turns as well.
 func TestPromptText(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1879,8 +1877,8 @@ func TestPromptText(t *testing.T) {
 // session. Charging it to both counted its tokens twice, rendered its call in
 // both turns, and listed the skill twice in the tools tally.
 //
-// The fixture is the local session that exposed this: a "/commit" whose skill
-// forks, then a queued "git push" carrying the same prompt id.
+// The fixture models a "/commit" whose skill forks, then a queued "git push"
+// carrying the same prompt id.
 func TestOnePromptIDTwoTurnsChargesTheForkOnce(t *testing.T) {
 	path := filepath.Join("testdata", "shared-prompt-id.jsonl")
 	sess, err := Load(path)
@@ -1944,10 +1942,9 @@ func balance(t *testing.T, sess *model.Session) {
 }
 
 // TestEntriesThatLookLikeTurnsAndAreNot pins two entries that opened turns they
-// should not have. A log can write the same entry a second time — one local
-// session of 715 replays 853 of its entries, twenty whole turns of them, under
-// fresh prompt ids — and the harness files a reminder about a tool call under
-// the user's name, which 18 local entries do.
+// should not have. A log can write the same entry a second time — a whole turn
+// replayed under a fresh prompt id — and the harness files a reminder about a
+// tool call under the user's name.
 func TestEntriesThatLookLikeTurnsAndAreNot(t *testing.T) {
 	sess, err := Load(filepath.Join("testdata", "not-a-turn.jsonl"))
 	if err != nil {
@@ -1969,8 +1966,7 @@ func TestEntriesThatLookLikeTurnsAndAreNot(t *testing.T) {
 // TestNestedForkedSkillIsCharged pins a forked skill a subagent started of its
 // own accord. The session-wide name pairing resolves it, which marks the log
 // claimed, but the walk that charges a turn followed structured ids only — so
-// the log was claimed and unreachable at once and nothing counted it. Five local
-// sessions lose a fork that way, one of them 121,257 output tokens.
+// the log was claimed and unreachable at once and nothing counted it.
 func TestNestedForkedSkillIsCharged(t *testing.T) {
 	sess, err := Load(filepath.Join("testdata", "nested-fork.jsonl"))
 	if err != nil {
@@ -1986,10 +1982,9 @@ func TestNestedForkedSkillIsCharged(t *testing.T) {
 }
 
 // TestForkWithNoMatchingPromptIsPlacedByTime pins a forked log stamped with a
-// prompt id no user entry in the main log carries. Seven local sessions hold
-// one, and a lookup by that id found no turn, so the fork's tokens, its dollars
-// and its row in the tools tally all went missing. It belongs to the turn it
-// ran inside.
+// prompt id no user entry in the main log carries. A lookup by that id found no
+// turn, so the fork's tokens, its dollars and its row in the tools tally all
+// went missing. It belongs to the turn it ran inside.
 func TestForkWithNoMatchingPromptIsPlacedByTime(t *testing.T) {
 	path := filepath.Join("testdata", "orphan-fork.jsonl")
 	sess, err := Load(path)

@@ -119,9 +119,9 @@ evidence of absence; check the derived name against a folder that exists before 
 
 **Never reverse the folder name; read `cwd` from the log.** The encoding is lossy — `-a-b-c`
 could be `/a/b/c` or `/a/b-c` — but every entry records the working directory outright, which
-also survives the directory being deleted or renamed. On the development machine 37 of 63
-project folders had no surviving directory, so anything that walks the filesystem to enumerate
-projects finds fewer than half of them.
+also survives the directory being deleted or renamed. Project directories get deleted or
+renamed often enough that anything walking the filesystem to enumerate projects will miss a
+meaningful share of them.
 
 **Subtree matching compares path components, not string prefixes.** `strings.HasPrefix` accepts
 `/a/bc` as living under `/a/b`, which silently sweeps a sibling repository into a `--project`
@@ -159,11 +159,10 @@ diagnostics, which is why the listing's hidden-sessions note uses `cmd.ErrOrStde
 Claude Code appends to a session log while agentry reads it, so wall-clock duration is part of
 what a total measures: a path that takes seconds longer prices entries the faster path never
 saw. `agentry cost` (parallel `parse.SummarizeAll`) and `agentry cost --all-projects --from all
---since 30d` (a sequential loop over `parse.Summarize`) crossed a 1.3GB tree in 0.5s and 3.2s
-respectively and reported totals differing by cents over an identical 305 sessions. The
+--since 30d` (a sequential loop over `parse.Summarize`) can cross the same tree at very
+different speeds and report totals differing by cents over an identical session count. The
 difference reads exactly like an accumulation bug — same session count, dollars apart,
-reproducible, and the slower path always higher — and two investigations chased the arithmetic.
-Any bulk scan uses `parse.SummarizeAll`; a sequential loop over `Summarize` is for resolving a
+reproducible, and the slower path always higher. Any bulk scan uses `parse.SummarizeAll`; a sequential loop over `Summarize` is for resolving a
 single named session.
 
 **Before comparing any two figures from this tool, freeze the input.** `CLAUDE_CONFIG_DIR` is the
@@ -180,10 +179,9 @@ legacy path matched a Skill call with no structured sidecar id to any sidecar wh
 the same skill. Most sidecars carry that name because the subagent *loaded* the skill, not
 because the skill forked them — so the match hit sidecars an `Agent` call already owned via
 `toolUseResult.agentId`, and because every expansion is recorded in `seen`, the owner then
-rendered as a bare leaf and its whole subtree left the transcript. Measured on one 47MB
-session: 185 of 186 sidecars were claimed by a structured link, all 105 Skill calls lacking
-one were inline skills that spawned nothing, and the render was both nondeterministic (the
-match ranged a map) and inflated, showing 386 expansions for 186 sidecars. `sidecarNameLinks`
+rendered as a bare leaf and its whole subtree left the transcript. The bug showed up as a
+render that was both nondeterministic (the match ranged a map) and inflated, showing far
+more expansions than there were sidecars. `sidecarNameLinks`
 now computes the pairing once per session, excluding every sidecar a structured link claims,
 pairing what remains in log order against start order, each sidecar used once. A fallback
 belongs only where no authoritative link exists; make it prove that before it picks.

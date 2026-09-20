@@ -121,8 +121,8 @@ func TestFmtDur(t *testing.T) {
 
 // TestFmtActive pins the duration column's source (PRODUCT.md §Listing
 // sessions): the turns' own spans, not the span from first entry to last. The
-// column reported the latter until this version, which on one local session read
-// 66h28m for an hour of work.
+// column reported the latter until this version, which could read many hours
+// for a single hour of work.
 func TestFmtActive(t *testing.T) {
 	days := []model.DailyActivity{
 		{Day: "2026-09-17", Turns: 3, ActiveSeconds: 1800},
@@ -312,21 +312,21 @@ func TestProjectLabels(t *testing.T) {
 		},
 		{
 			name: "distinct basenames need only the last component",
-			cwds: []string{"/Users/me/Projects/me/agentry", "/Users/me/Projects/me/dotfiles"},
+			cwds: []string{"/Users/me/Projects/me/agentry", "/Users/me/Projects/me/notes"},
 			want: map[string]string{
-				"/Users/me/Projects/me/agentry":  "agentry",
-				"/Users/me/Projects/me/dotfiles": "dotfiles",
+				"/Users/me/Projects/me/agentry": "agentry",
+				"/Users/me/Projects/me/notes":   "notes",
 			},
 		},
 		{
 			// The case a bare basename gets wrong: a repo tree groups colliding
 			// names under owners, so both rows would read "agentry".
 			name: "a colliding basename grows until it is unique",
-			cwds: []string{"/p/me/agentry", "/p/wix/agentry", "/p/me/dotfiles"},
+			cwds: []string{"/p/me/agentry", "/p/acme/agentry", "/p/me/notes"},
 			want: map[string]string{
-				"/p/me/agentry":  "me/agentry",
-				"/p/wix/agentry": "wix/agentry",
-				"/p/me/dotfiles": "dotfiles",
+				"/p/me/agentry":   "me/agentry",
+				"/p/acme/agentry": "acme/agentry",
+				"/p/me/notes":     "notes",
 			},
 		},
 		{
@@ -340,20 +340,20 @@ func TestProjectLabels(t *testing.T) {
 		},
 		{
 			// The case that made this wrong visible: three worktrees of one repo
-			// read as `plan`, `ngnix` and `jfrog-usage` — three labels naming no
+			// read as `plan`, `ngnix` and `cleanup` — three labels naming no
 			// project. Every row must carry the repo, beside a real second project.
 			name: "worktrees of one repo share the repo's label",
 			cwds: []string{
-				"/p/wix/artifactory-migration",
-				"/p/wix/artifactory-migration/.claude/worktrees/plan",
-				"/p/wix/artifactory-migration/.claude/worktrees/ngnix",
-				"/p/me/dotfiles",
+				"/p/acme/registry-migration-v2",
+				"/p/acme/registry-migration-v2/.claude/worktrees/plan",
+				"/p/acme/registry-migration-v2/.claude/worktrees/ngnix",
+				"/p/me/notes",
 			},
 			want: map[string]string{
-				"/p/wix/artifactory-migration":                         "artifactory-migration",
-				"/p/wix/artifactory-migration/.claude/worktrees/plan":  "artifactory-migration",
-				"/p/wix/artifactory-migration/.claude/worktrees/ngnix": "artifactory-migration",
-				"/p/me/dotfiles": "dotfiles",
+				"/p/acme/registry-migration-v2":                         "registry-migration-v2",
+				"/p/acme/registry-migration-v2/.claude/worktrees/plan":  "registry-migration-v2",
+				"/p/acme/registry-migration-v2/.claude/worktrees/ngnix": "registry-migration-v2",
+				"/p/me/notes": "notes",
 			},
 		},
 		{
@@ -411,12 +411,12 @@ func TestRenderProjectColumn(t *testing.T) {
 
 	t.Run("two projects label every row", func(t *testing.T) {
 		var b strings.Builder
-		sums := []model.Summary{mk("a", "/p/me/agentry", "alpha"), mk("b", "/p/me/dotfiles", "beta")}
+		sums := []model.Summary{mk("a", "/p/me/agentry", "alpha"), mk("b", "/p/me/notes", "beta")}
 		if err := Render(&b, sums, Options{Width: 120, Color: false}); err != nil {
 			t.Fatal(err)
 		}
 		out := b.String()
-		for _, want := range []string{"agentry", "dotfiles", "alpha", "beta"} {
+		for _, want := range []string{"agentry", "notes", "alpha", "beta"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("output missing %q: %q", want, out)
 			}
@@ -429,8 +429,8 @@ func TestRenderProjectColumn(t *testing.T) {
 		// the row is actually scanned by.
 		var b strings.Builder
 		sums := []model.Summary{
-			mk("a", "/p/wix/artifactory-migration", "a distinctly long session title"),
-			mk("b", "/p/wix/other", "beta"),
+			mk("a", "/p/acme/registry-migration-v2", "a distinctly long session title"),
+			mk("b", "/p/acme/other", "beta"),
 		}
 		if err := Render(&b, sums, Options{Width: 100, Color: false}); err != nil {
 			t.Fatal(err)
@@ -444,7 +444,7 @@ func TestRenderProjectColumn(t *testing.T) {
 // TestWorktreeLabels pins both gates on the column that fills the project
 // column's slot inside one repository, and the two shapes that must not draw it.
 func TestWorktreeLabels(t *testing.T) {
-	const repo = "/p/wix/artifactory-migration"
+	const repo = "/p/acme/registry-migration-v2"
 	wt := func(name string) string { return repo + "/.claude/worktrees/" + name }
 	tests := []struct {
 		name string
@@ -480,7 +480,7 @@ func TestWorktreeLabels(t *testing.T) {
 			// project column is drawn, so this one must not be, or a row would
 			// carry two path columns and the title would pay for both.
 			name: "more than one project draws no worktree column",
-			cwds: []string{repo, wt("plan"), "/p/me/dotfiles"},
+			cwds: []string{repo, wt("plan"), "/p/me/notes"},
 			want: nil,
 		},
 	}
@@ -507,7 +507,7 @@ func TestWorktreeLabels(t *testing.T) {
 // its head where the project label keeps its tail, since a worktree Claude Code
 // creates from the desktop app carries a generated hash suffix.
 func TestRenderWorktreeColumn(t *testing.T) {
-	const repo = "/p/wix/artifactory-migration"
+	const repo = "/p/acme/registry-migration-v2"
 	mk := func(id, cwd, title string) model.Summary {
 		return model.Summary{
 			ID: id, Cwd: cwd, Title: title,
@@ -532,7 +532,7 @@ func TestRenderWorktreeColumn(t *testing.T) {
 	if !strings.Contains(out, "—") {
 		t.Errorf("a session in the repo's own checkout must show —: %q", out)
 	}
-	if strings.Contains(out, "artifactory-migration") {
+	if strings.Contains(out, "registry-migration-v2") {
 		t.Errorf("one project must not draw the project column: %q", out)
 	}
 }
@@ -540,7 +540,7 @@ func TestRenderWorktreeColumn(t *testing.T) {
 func TestTruncateLeft(t *testing.T) {
 	// The label is a path suffix, so the tail distinguishes it — dropping the
 	// head keeps the informative end, which right-truncation would discard.
-	if got := truncateLeft("artifactory-migration", 9); got != "…migration" && got != "…igration" {
+	if got := truncateLeft("registry-migration-v2", 9); got != "…ration-v2" && got != "…ation-v2" {
 		t.Errorf("truncateLeft = %q, want the tail kept", got)
 	}
 	if got := truncateLeft("short", 9); got != "short" {
@@ -867,8 +867,7 @@ func TestFilterByFile(t *testing.T) {
 		{ID: "shell-rewrite",
 			Files: []string{"/repo/PRODUCT.md", "/repo/Makefile"},
 			Tools: []model.ToolStat{{Tool: "Bash", Identity: "sed", Count: 1}}},
-		// A session with Edit targets and no tracked-file record at all — about
-		// half of local sessions carry no file-history entries.
+		// A session with Edit targets and no tracked-file record at all.
 		{ID: "no-history",
 			Tools: []model.ToolStat{{Tool: "Edit", Identity: "/repo/internal/list/list.go", Count: 3}}},
 		// A Write target, to confirm the filter is not Edit-only.
@@ -1169,7 +1168,7 @@ func TestFilterByOutputs(t *testing.T) {
 			{Repository: "eitanpo/central", Number: 14, URL: "https://github.com/eitanpo/central/pull/14"},
 		}},
 		{ID: "devex", PRs: []model.PR{
-			{Repository: "wix-private/devex-costs", Number: 187, URL: "https://github.com/wix-private/devex-costs/pull/187"},
+			{Repository: "acme-private/devex-costs", Number: 187, URL: "https://github.com/acme-private/devex-costs/pull/187"},
 		}, Artifacts: []model.Artifact{
 			{Title: "DevEx cost", URL: "https://claude.ai/code/artifact/aaa", Path: "/repo/reports/cost.html"},
 		}},
@@ -1532,9 +1531,9 @@ func TestFilterByReply(t *testing.T) {
 
 // TestReplyTextIsNeverSerialized pins the size decision behind --reply-matches:
 // reply text is matched in memory and never shipped. It is the largest field a
-// summary could carry (2.8 MB across one local project's 59 sessions, against
-// 776 KB for that project's whole 50-session listing), and --include gates no
-// JSON key, so serializing it would enlarge every listing for every caller.
+// summary could carry, far outweighing the rest of a listing put together, and
+// --include gates no JSON key, so serializing it would enlarge every listing
+// for every caller.
 func TestReplyTextIsNeverSerialized(t *testing.T) {
 	var b strings.Builder
 	if err := RenderJSON(&b, []model.Summary{
@@ -1554,7 +1553,7 @@ func TestReplyTextIsNeverSerialized(t *testing.T) {
 // worktree falls to the first prompt: the worktree column already carries that
 // string, so the title would spend the row's one scannable field on a duplicate.
 func TestWorktreeTitleFallThrough(t *testing.T) {
-	const repo = "/p/wix/artifactory-migration"
+	const repo = "/p/acme/registry-migration-v2"
 	wt := func(name string) string { return repo + "/.claude/worktrees/" + name }
 	mk := func(id, cwd, title string, prompts ...string) model.Summary {
 		return model.Summary{
@@ -1598,8 +1597,8 @@ func TestWorktreeTitleFallThrough(t *testing.T) {
 	t.Run("the repo's own checkout is untouched", func(t *testing.T) {
 		// worktreeName is empty there, so a session titled after the repo directory
 		// is not a duplicate of anything the row shows.
-		sums := []model.Summary{mk("a", repo, "artifactory-migration", "some prompt")}
-		if got := titleOf(sums, "a"); got != "artifactory-migration" {
+		sums := []model.Summary{mk("a", repo, "registry-migration-v2", "some prompt")}
+		if got := titleOf(sums, "a"); got != "registry-migration-v2" {
 			t.Errorf("title = %q, want it left alone", got)
 		}
 	})
@@ -1737,8 +1736,8 @@ func TestFitLabels(t *testing.T) {
 			name:     "projects differing at the head keep it",
 			width:    9,
 			keepTail: true,
-			labels:   map[string]string{"/p/me/agentry": "me/agentry", "/p/wix/agentry": "wix-private/agentry"},
-			want:     map[string]string{"/p/me/agentry": "m…agentry", "/p/wix/agentry": "w…agentry"},
+			labels:   map[string]string{"/p/me/agentry": "me/agentry", "/p/acme/agentry": "acme-private/agentry"},
+			want:     map[string]string{"/p/me/agentry": "m…agentry", "/p/acme/agentry": "a…agentry"},
 		},
 		{
 			// Designed failure: the colliders differ 8 characters from the kept end,
@@ -1766,7 +1765,7 @@ func TestFitLabels(t *testing.T) {
 // repo must be three distinguishable cells in the rendered row, not one string
 // repeated.
 func TestRenderWorktreeCollision(t *testing.T) {
-	const repo = "/p/wix/artifactory-migration"
+	const repo = "/p/acme/registry-migration-v2"
 	mk := func(id, wt, title string) model.Summary {
 		return model.Summary{
 			ID: id, Cwd: repo + "/.claude/worktrees/" + wt, Title: title,

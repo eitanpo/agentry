@@ -93,9 +93,9 @@ type Meta struct {
 
 // ActiveSeconds is how long a session's turns ran, summed over the days
 // DailyActivity splits them across. It is the duration both the rendered header
-// and the listing's column report: a session's wall-clock span overstates the
-// work by 6× at the local median and 89× at the ninetieth percentile, because a
-// session left open overnight keeps its span and not its activity.
+// and the listing's column report: a session's wall-clock span can overstate
+// the work by a large factor, because a session left open overnight keeps its
+// span and not its activity.
 func ActiveSeconds(days []DailyActivity) int {
 	total := 0
 	for _, d := range days {
@@ -120,11 +120,11 @@ type Summary struct {
 	// reasoning is not a reply.
 	//
 	// Deliberately not serialized, alone among the content fields. Reply text is
-	// the largest thing a session holds — 2.8 MB across one local project's 59
-	// sessions, against 776 KB for that project's whole 50-session JSON listing —
-	// and --include gates no JSON key, so carrying it would quadruple every
-	// listing for every caller. The filter reads it in memory; a caller who wants
-	// the prose renders the session, whose JSON carries every text event in full.
+	// the largest thing a session holds, far outweighing the rest of a listing
+	// put together, and --include gates no JSON key, so carrying it would enlarge
+	// every listing for every caller. The filter reads it in memory; a caller who
+	// wants the prose renders the session, whose JSON carries every text event in
+	// full.
 	Replies []string `json:"-"`
 	// RootUUID is the uuid of the session's first content entry — the
 	// conversation root. A fork copies its parent's chain verbatim, so a fork and
@@ -180,9 +180,9 @@ type Summary struct {
 	// LinesAdded and LinesRemoved are how much code the session changed, from the
 	// same record CostUSD comes from — so all three are present together, and a
 	// zero here is a session that changed nothing rather than one nothing was
-	// recorded for. Unlike CostUSD this is known to reach delegated work: a local
-	// session whose main thread made no edit call, and whose subagents made 29,
-	// recorded 22 lines added.
+	// recorded for. Unlike CostUSD this is known to reach delegated work: a
+	// session whose main thread made no edit call can still record lines added
+	// through its subagents.
 	LinesAdded   *int `json:"linesAdded,omitempty"`
 	LinesRemoved *int `json:"linesRemoved,omitempty"`
 	// DailyUsage splits Usage by model and by the local day each response was
@@ -271,9 +271,9 @@ func (p PR) Key() string {
 }
 
 // Artifact is a page a session published, from Claude Code's own frame-link
-// record. Title is optional — a third of observed records carry none. Path is the
-// local file the page was rendered from, which can move between publishes while
-// the page keeps its URL.
+// record. Title is optional, and can be absent. Path is the local file the
+// page was rendered from, which can move between publishes while the page
+// keeps its URL.
 type Artifact struct {
 	Title string `json:"title,omitempty"`
 	URL   string `json:"url,omitempty"`
@@ -301,10 +301,9 @@ type Usage struct {
 	// five minutes — a subset of it, not a fifth counter, so a caller summing the
 	// tally must not add this one in. It is tracked because the two cost different
 	// rates, an hour of cache being twice the input rate against 1.25 times it for
-	// five minutes, and the flat counter the log leads with hides which: 59% of the
-	// local corpus's cache-creation tokens were hour writes when measured
-	// 2026-09-11, so pricing all of them at the five-minute rate undercounts cache
-	// writes by close to a fifth.
+	// five minutes, and the flat counter the log leads with hides which — so
+	// pricing all of them at the five-minute rate can undercount cache writes
+	// materially.
 	// Zero on a log that carries no split, which prices as five-minute writes.
 	CacheCreate1h int `json:"cacheCreate1h"`
 }
@@ -352,9 +351,9 @@ func (u *Usage) Add(o Usage) {
 //
 // The model belongs in the key because rates differ per model, and the day
 // because a session's spend is attributed to the day each response was spent on
-// rather than to the day the session ended — 29 of the 69 locally recorded
-// sessions run past a midnight, and Claude Code's own per-session record has no
-// form that could be split across one.
+// rather than to the day the session ended — a session can run past a midnight,
+// and Claude Code's own per-session record has no form that could be split
+// across one.
 type DailyUsage struct {
 	Day   string `json:"day"`
 	Model string `json:"model,omitempty"`
@@ -375,11 +374,11 @@ type DailyUsage struct {
 // and delegate to two agents — so those two axes carry no turn count at all.
 //
 // ActiveSeconds sums each turn's span, from the prompt to the last entry that
-// turn wrote. It excludes the gap between turns, which is what separates it from
-// a session's wall span: the local corpus holds 5,324 session-hours inside a
-// 720-hour month, because a session sits open across days. It does count a turn
-// that waited on a slow tool or on a permission prompt, since the log cannot
-// tell waiting from working.
+// turn wrote. It excludes the gap between turns, which is what separates it
+// from a session's wall span, since a session can sit open across days far
+// longer than it was actually worked. It does count a turn that waited on a
+// slow tool or on a permission prompt, since the log cannot tell waiting from
+// working.
 type DailyActivity struct {
 	Day           string `json:"day"`
 	Turns         int    `json:"turns"`

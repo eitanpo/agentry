@@ -53,9 +53,8 @@ func TestOfSplitsTheCacheWrite(t *testing.T) {
 }
 
 // TestOfClampsAnOversizedHourShare covers the log that reports a split larger
-// than the flat counter it splits — 165 tokens across the local corpus do. The
-// hour share is capped at the flat counter, so the five-minute remainder is zero
-// rather than negative.
+// than the flat counter it splits. The hour share is capped at the flat
+// counter, so the five-minute remainder is zero rather than negative.
 func TestOfClampsAnOversizedHourShare(t *testing.T) {
 	got, _ := Of("claude-opus-5", model.Usage{CacheCreate: 100, CacheCreate1h: 400})
 	if want := 100 * 10.0 / 1e6; !nearly(got, want) {

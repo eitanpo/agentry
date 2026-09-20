@@ -38,8 +38,8 @@ var injectedMarkers = []string{
 	"Base directory for this skill:", "<local-command-stdout>",
 	"<task-notification>", // harness-injected background-task event/completion, not a typed prompt
 	// What Claude Code writes where a reply was cut short. It covers the plain
-	// form and the "for tool use" one, 27 local entries between them, and reading
-	// either as a prompt would open a turn out of somebody pressing escape.
+	// form and the "for tool use" one, and reading either as a prompt would open
+	// a turn out of somebody pressing escape.
 	"[Request interrupted by user",
 }
 
@@ -246,10 +246,11 @@ func subagentDir(jsonlPath string) string {
 // reading of the log, so the two cannot drift apart.
 //
 // Summarize is otherwise deliberately cheap, and this is the one place it opens
-// files the main log does not name — sidecars run to roughly 60% of a project
-// tree's bytes. It is paid anyway, because a tally that silently dropped
-// delegated work would answer the cost question wrong for exactly the sessions
-// that cost the most. The split itself adds arithmetic and no file reads.
+// files the main log does not name — sidecars can be a large share of a
+// project tree's bytes. It is paid anyway, because a tally that silently
+// dropped delegated work would answer the cost question wrong for exactly the
+// sessions that cost the most. The split itself adds arithmetic and no file
+// reads.
 //
 // One tally per file, not one for the session: a request id is unique to its own
 // log, and a shared tally would let a sidecar's response displace a main-thread
@@ -265,10 +266,10 @@ func sessionSpend(entries []entry, scans map[string]sidecarScan) ([]model.DailyU
 
 // readSidecarScans reads every sidecar beside a session log. Summarize is
 // otherwise deliberately cheap, and this is the one place it opens files the
-// main log does not name — sidecars run to roughly 60% of a project tree's
-// bytes. It is paid anyway, because a tally that silently dropped delegated work
-// would answer the cost question wrong for exactly the sessions that cost the
-// most.
+// main log does not name — sidecars can be a large share of a project tree's
+// bytes. It is paid anyway, because a tally that silently dropped delegated
+// work would answer the cost question wrong for exactly the sessions that cost
+// the most.
 func readSidecarScans(jsonlPath string, fallback time.Time) map[string]sidecarScan {
 	paths, _ := filepath.Glob(filepath.Join(subagentDir(jsonlPath), "agent-*.jsonl"))
 	scans := make(map[string]sidecarScan, len(paths))
@@ -332,10 +333,9 @@ func sidecarChildren(entries []entry, nameLinks map[string]string) []string {
 	// A forked skill a subagent started of its own accord is paired to its call
 	// by name rather than by a structured id, and that pairing marks the log
 	// claimed. Reading only the structured maps here left such a log claimed and
-	// unreachable at once, so nothing charged it to anything: five local sessions
-	// lose a nested fork that way, one of them 121,257 output tokens. nameLinks
-	// is keyed across every log in the session, so only calls this log made may
-	// take from it.
+	// unreachable at once, so nothing charged it to anything, silently losing a
+	// nested fork's tokens. nameLinks is keyed across every log in the session,
+	// so only calls this log made may take from it.
 	for _, e := range entries {
 		for _, b := range e.blocks {
 			if b.typ != "tool_use" {
@@ -404,8 +404,7 @@ func agentLabels(entries []entry) map[string]string {
 //
 // Without the third condition the set also holds forked Skill calls in logs
 // written before the structured link existed, which a name pairing claims and
-// which the tally therefore already counts through their call — 17 of the 117
-// unclaimed skill-opening sidecars on this machine are that shape, and counting
+// which the tally therefore already counts through their call, so counting
 // them here would report each of them twice. Their prompts are ordinary prose,
 // so the condition excludes every one.
 //
@@ -445,10 +444,9 @@ type typedFork struct{ key, skill string }
 //
 // A prompt id does not identify a turn. Claude Code writes the same one on a
 // typed command and on a shell command queued behind it, so two turns answer to
-// it; one local session of 715 is that shape, and charging both drew a forked
-// skill's call twice, counted it twice in the tools tally, and added its 1,483
-// output tokens to two turns. The earliest of the two is the submission that
-// actually started the fork.
+// it, and charging both would double-count a forked skill's call: once in the
+// tools tally and once in its output tokens. The earliest of the two is the
+// submission that actually started the fork.
 func turnOfPrompt(turns []rawTurn) map[string]int {
 	out := map[string]int{}
 	for i, t := range turns {
@@ -465,9 +463,9 @@ func turnOfPrompt(turns []rawTurn) map[string]int {
 // ownerTurn is the turn a forked log belongs to, or -1 where none does.
 //
 // The prompt id decides it wherever the main log records that submission. Where
-// it does not — 7 local sessions hold a sidecar stamped with an id no user entry
-// in their main log carries — the fork falls to the last turn that had already
-// started when it began, which is the turn it ran inside. A log carrying no
+// it does not — a sidecar can be stamped with an id no user entry in the main
+// log carries — the fork falls to the last turn that had already started when
+// it began, which is the turn it ran inside. A log carrying no
 // prompt id at all is placed nowhere: nothing ties it to a turn, and landing it
 // on whichever turn spans the gap would invent an attribution rather than find
 // one.
@@ -621,11 +619,10 @@ func dailyActivity(turns []rawTurn, fallback time.Time) []model.DailyActivity {
 
 // maxIdleGap bounds how much of one silence between entries counts as work. The
 // log cannot tell a ten-minute test run from a person who walked away mid-turn:
-// both are one gap between two timestamps. Left unbounded the measure collapses —
-// one local turn spans 168 hours, and days averaging over an hour a turn carry
-// 73% of a month's supposed activity. Capping each gap bounds the error in the
-// direction that understates, which is the safe direction for a figure dollars
-// are divided by.
+// both are one gap between two timestamps. Left unbounded the measure collapses
+// — a single turn left open for days can dominate a whole month's supposed
+// activity. Capping each gap bounds the error in the direction that
+// understates, which is the safe direction for a figure dollars are divided by.
 const maxIdleGap = 5 * time.Minute
 
 // activeSeconds is how long one turn worked: from its prompt to the last thing
@@ -666,11 +663,10 @@ func activeSeconds(tn rawTurn) int {
 
 // usageOnly is the slice of an entry a token tally needs. Sidecars are read
 // through it rather than through loadEntries, which would also decode every
-// content block on the way: over 250 local sessions a cross-project listing
-// measured 2.40s reading no sidecars, 2.96s through this, and 3.96s through
-// loadEntries. Reading each sidecar's own delegation links in the same pass cost
-// a further 17% of the whole sweep — 1.05s to 1.23s over 647 sessions — which is
-// what buys the agent axis its chains. An unreadable file or a malformed line is skipped rather than
+// content block on the way, adding real time to a cross-project listing.
+// Reading each sidecar's own delegation links in the same pass adds a further
+// share of that cost, which is what buys the agent axis its chains. An
+// unreadable file or a malformed line is skipped rather than
 // raised — it undercounts the tally, where an error would drop the whole
 // session from the listing over a subagent's log.
 type usageOnly struct {
@@ -754,9 +750,9 @@ func readSidecar(path string, fallback time.Time) sidecarScan {
 			out.children = append(out.children, "agent-"+id)
 		}
 		// First line only, and tested on the raw bytes before the content is
-		// decoded: the marker names the log when the log opens with it, and 277
-		// of the 1,809 local sidecars are subagents that loaded a skill partway
-		// through, whose own name is an agent type rather than that skill.
+		// decoded: the marker names the log when the log opens with it, but a
+		// sidecar that loaded a skill partway through is named for its agent
+		// type rather than that skill.
 		if first {
 			first = false
 			out.promptID = re.PromptID
@@ -1001,8 +997,8 @@ func toolIdentity(name string, input map[string]any) string {
 
 // toolModel returns the model a call delegated to, or "" when it named none.
 // Read from any tool's input rather than gated on the name: `Agent` is the only
-// tool that carries the field today (332 of 543 local Agent calls, and no other
-// tool at all), and a later tool carrying it would mean the same thing.
+// tool that carries the field today, and a later tool carrying it would mean
+// the same thing.
 func toolModel(input map[string]any) string {
 	s, _ := input["model"].(string)
 	return s
@@ -1236,14 +1232,14 @@ type rawEntry struct {
 	// refuses to count an entry carrying it; written since 2.1.236.
 	TurnCompanion bool `json:"turnCompanion"`
 	// IsMeta and SourceToolUseID together mark a reminder the harness attached to
-	// a tool call. IsMeta alone does not: 187 local prompts a person typed carry
-	// it, and refusing on it would delete their turns.
+	// a tool call. IsMeta alone does not: a prompt a person actually typed can
+	// carry it too, and refusing on it would delete their turns.
 	IsMeta          bool   `json:"isMeta"`
 	SourceToolUseID string `json:"sourceToolUseID"`
 	// TotalCostUSD, TotalLinesAdded and TotalLinesRemoved are the session's totals
-	// so far, all three on a cost-state entry. Every local record carries all
-	// three, so their presence is the entry's presence and costState reads them
-	// together rather than deciding each one's absence separately.
+	// so far, all three on a cost-state entry. They carry together, so their
+	// presence is the entry's presence and costState reads them together rather
+	// than deciding each one's absence separately.
 	TotalCostUSD      *float64 `json:"totalCostUSD"`
 	TotalLinesAdded   *int     `json:"totalLinesAdded"`
 	TotalLinesRemoved *int     `json:"totalLinesRemoved"`
@@ -1340,9 +1336,9 @@ const (
 // for a user entry whose whole content is the wrapper around it.
 //
 // The test is the entry in full rather than a substring, because a compaction
-// summary quotes these wrappers whenever it summarizes a session that ran one —
-// four local summaries do — and reading a quotation as a command would open a
-// turn nobody took and title the session after it.
+// summary can quote these wrappers when it summarizes a session that ran one,
+// and reading a quotation as a command would open a turn nobody took and title
+// the session after it.
 func typedShellCommand(content string) (string, bool) {
 	rest, ok := strings.CutPrefix(content, shellInputOpen)
 	if !ok {
@@ -1357,10 +1353,10 @@ func typedShellCommand(content string) (string, bool) {
 }
 
 // shellOutput splits what a typed shell command printed into its two streams,
-// reporting false for any other content. Either wrapper can be absent — one
-// local entry carries standard error alone — and the two are returned apart
-// rather than joined, because the log records them as separate strings and
-// printing one block would claim an interleaving it does not hold.
+// reporting false for any other content. Either wrapper can be absent — a
+// command can write to only one stream — and the two are returned apart rather
+// than joined, because the log records them as separate strings and printing
+// one block would claim an interleaving it does not hold.
 func shellOutput(content string) (out, errOut string, ok bool) {
 	rest := content
 	if body, cut := strings.CutPrefix(rest, shellOutOpen); cut {
@@ -1423,9 +1419,9 @@ func fenced(text string) string {
 
 // stripEscapes removes the escape sequences a command wrote for a terminal it
 // was printing to directly. The output is re-rendered through markdown here, so
-// a sequence left in place is passed through as text: locally /context styles
-// its headings bold, and the three largest captured outputs all carry those
-// codes. Newlines and tabs are content and survive.
+// a sequence left in place is passed through as text: /context styles its
+// headings bold, and other commands can leave similar codes behind. Newlines
+// and tabs are content and survive.
 func stripEscapes(text string) string {
 	if !strings.ContainsRune(text, 0x1b) {
 		return text
@@ -1484,12 +1480,11 @@ func loadEntries(path string) ([]entry, error) {
 	defer f.Close()
 
 	var out []entry
-	// A log can carry the same entry twice. One local session of 715 replays 853
-	// of its 2,532 identified entries — twenty whole turns written a second time
-	// under fresh prompt ids, every repeat byte-identical to its first copy — and
-	// rendering both showed the conversation twice, ranked the repeats as their
-	// own steps, and counted their tokens, dollars and tool calls again in the
-	// per-turn figures while the session tally deduplicated them away.
+	// A log can carry the same entry twice: whole turns written a second time
+	// under fresh prompt ids, every repeat byte-identical to its first copy.
+	// Rendering both would show the conversation twice, rank the repeats as
+	// their own steps, and count their tokens, dollars and tool calls again in
+	// the per-turn figures, while the session tally deduplicates them away.
 	seenUUID := map[string]bool{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // logs hold large tool results
@@ -1652,15 +1647,14 @@ func timeRange(entries []entry) (start, end time.Time) {
 // composed itself rather than received from a model — an API-error notice, a
 // session-limit warning, "No response requested.". They carry zero tokens and
 // name no model the session ran on, so counting one would end a session on a
-// model that never ran: 17 of 250 local sessions carry such an entry, and in
-// none of them was it the last real message.
+// model that never ran.
 const syntheticModel = "<synthetic>"
 
 // models returns every distinct model the session ran on, in first-seen order.
 // Only assistant entries name one, so an absent value is skipped rather than
 // recorded as a change — the same reading efforts uses, and for the same reason.
-// Switching mid-session is not rare (13 of 250 local sessions did), and the
-// values come in contiguous blocks, so the last one is the session's.
+// Switching mid-session happens, and the values come in contiguous blocks, so
+// the last one is the session's.
 func models(entries []entry) []string {
 	return distinct(entries, func(e entry) string {
 		if e.typ != "assistant" || e.model == syntheticModel {
@@ -1673,18 +1667,15 @@ func models(entries []entry) []string {
 // usageTally totals assistant tokens while counting each API response once.
 // Claude Code splits one response across an entry per content block and repeats
 // that response's whole usage object on every one of them, so adding the entries
-// up multiplies a reply's tokens by how many blocks it held — 1.75x to 3.11x
-// across local sessions, and enough of a per-turn variable to reorder the
+// up multiplies a reply's tokens by how many blocks it held — a large factor,
+// and not a constant one, so it is enough of a per-turn variable to reorder the
 // summary as well as inflate the totals.
 //
 // The repeats are not identical, which is why one entry per response is picked
 // by its output count rather than by arriving first. Claude Code writes each
 // entry as the reply streams: input and both cache counts match across a
 // response's entries, while output grows, so the first entry can hold a partial
-// figure. Measured 2026-09-11 over all 71,556 local response groups, 11,535
-// (16%) disagreed, every disagreement in output alone, and first entries totaled
-// 20.8% less output than highest ones — one session read 1,396,336 against
-// 3,108,698, where Claude Code's own record for it named 3,274,666.
+// figure.
 type usageTally struct {
 	// keyless holds the entries that name no response, kept as they arrive; best
 	// holds one entry per response, replaced when a higher output shows up.
@@ -1756,9 +1747,8 @@ func (t usageTally) records() []usageRecord {
 // usageKey identifies the response an assistant entry belongs to. Claude Code
 // composes some assistant entries itself and writes no requestId on them, so the
 // entry's own id stands in — which counts that entry once, exactly as it was
-// counted before. Every assistant entry of the oldest local log (2.1.205) carries
-// the field, so that fallback is for the synthetic entries and for any log older
-// than anything measured.
+// counted before. Most assistant entries carry the field, so that fallback is
+// for the synthetic entries and for a log old enough to predate it.
 func usageKey(requestID, uuid string) string {
 	if requestID != "" {
 		return requestID
@@ -2005,8 +1995,8 @@ func recordedTotals(entries []entry) (costUSD *float64, linesAdded, linesRemoved
 
 // costState is what Claude Code recorded a session as having amounted to: its
 // dollar cost and the lines it added and removed. A missing counter reads zero
-// rather than being tracked separately, because every local record carries all
-// three — so the record either exists or it does not.
+// rather than being tracked separately, because all three carry together — so
+// the record either exists or it does not.
 type costState struct {
 	costUSD      float64
 	linesAdded   int
@@ -2044,9 +2034,8 @@ func sessionArtifacts(entries []entry) []model.Artifact {
 
 // dedupeOutputs collapses one kind of re-recorded session event into the distinct
 // things it names, in first-seen order. Claude Code re-emits both pr-link and
-// frame-link on later turns of the same session, and heavily — 963 pr-link
-// entries across 250 local sessions name 67 pull requests — so the entries are a
-// stream of restatements, not a list. A record naming nothing (no key) is
+// frame-link on later turns of the same session, and heavily, so the entries are
+// a stream of restatements, not a list. A record naming nothing (no key) is
 // dropped: it identifies no thing a reader could act on.
 //
 // One function rather than two loops because the rule is one rule. A copy per
@@ -2077,9 +2066,9 @@ func dedupeOutputs[T any](entries []entry, typ string, get func(entry) T, key fu
 // newer values win, except where the newer entry says nothing. An omitted field
 // is an omission and not a deletion — the log gives no way to tell those apart,
 // and discarding a value agentry already read is the worse guess. It is not
-// hypothetical for an artifact: a third of local frame-link entries carry no
-// title, so a republish from a moved file would otherwise lose the name the
-// artifact had.
+// hypothetical for an artifact: a frame-link entry can carry no title at all,
+// so a republish from a moved file would otherwise lose the name the artifact
+// had.
 func latestPR(old, cur model.PR) model.PR {
 	if cur.Repository == "" {
 		cur.Repository = old.Repository
@@ -2175,9 +2164,9 @@ type unlinkedSkillCall struct {
 // owner, and giving it to a same-named Skill call stole it — attachSubagent marks
 // every expansion in seen, so the owning Agent call then rendered as a bare leaf
 // and its whole subtree left the transcript. Real sessions make that the normal
-// case, not the corner one: of the 186 sidecars under session f59b7024, 185 are
-// claimed by a structured link, while all 105 of its Skill calls without one are
-// inline skills that spawned nothing and must stay leaves.
+// case, not the corner one: most sidecars under a real session are claimed by a
+// structured link, while its Skill calls without one are inline skills that
+// spawned nothing and must stay leaves.
 //
 // What remains for the fallback is the pre-structured forked skill: an unclaimed
 // sidecar whose own first entry names the skill. Calls are paired in log order
@@ -2266,8 +2255,8 @@ type subagent struct {
 	skillName string
 	// forkedSkill is the skill named by the log's opening entry, which is what a
 	// forked skill's log begins with. It is empty on a subagent log that loaded a
-	// skill partway through, where skillName is not — 277 of the 1,809 local
-	// sidecars are that shape, and their own name is an agent type.
+	// skill partway through, where skillName is not, and whose own name is an
+	// agent type.
 	forkedSkill string
 	// promptID is the prompt this log was forked under, repeated from the parent
 	// session's own entry. Empty on a log written before Claude Code carried the
@@ -2440,8 +2429,7 @@ const compactSummaryPlaceholder = "[context compacted — see session log for fu
 //
 // One text block among others is not enough: a tool result, an image or an
 // unrecognized block means the entry is carrying something a prompt does not, so
-// the entry is refused whatever text sits beside it. 62,017 local entries are
-// tool results in this shape against 1,169 that are text alone.
+// the entry is refused whatever text sits beside it.
 func promptText(e entry) (string, bool) {
 	if e.hasStr {
 		return e.contentStr, true

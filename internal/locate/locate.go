@@ -61,15 +61,14 @@ func defaultProjectsRoot() string {
 // ProjectDirName encodes an absolute path the way Claude Code names its project
 // folders: every character outside [A-Za-z0-9] becomes "-", the leading "/"
 // included — which is why the name starts with one.
-// e.g. /Users/x/Projects/dotfiles -> -Users-x-Projects-dotfiles.
+// e.g. /Users/x/Projects/notes -> -Users-x-Projects-notes.
 //
 // It is not only "/" that is replaced. "." and "_" go too, so
 // /Users/x/.claude/worktrees/w encodes as -Users-x--claude-worktrees-w with a
-// doubled "-". Replacing only "/" reproduced 32 of the 63 project folders on
-// the development machine; this rule reproduces all 63. Getting it wrong is not
-// a near miss — the wrong name simply does not exist, so agentry reported "no
-// Claude project for this directory" for every dot-component path, which is
-// every worktree Claude Code creates under <repo>/.claude/worktrees/.
+// doubled "-". Replacing only "/" misses every dot-component path — the wrong
+// name simply does not exist, so agentry reported "no Claude project for this
+// directory" for every dot-component path, which is every worktree Claude Code
+// creates under <repo>/.claude/worktrees/.
 //
 // Exported so tests build a fixture project folder through the same encoder the
 // lookup uses, rather than open-coding the rule a second time and drifting.
@@ -204,8 +203,8 @@ func ProjectDirs() ([]string, error) {
 // The folder name cannot be reversed — "-a-b-c" could encode /a/b/c or /a/b-c
 // (see ProjectDirName) — but every log entry records the path outright, so
 // reversing is unnecessary. Reading it also works for a project whose directory
-// has since been deleted or renamed, which walking the filesystem cannot: on the
-// development machine 37 of 63 project folders had no surviving directory.
+// has since been deleted or renamed, which walking the filesystem cannot — a
+// project's directory can go missing while its sessions remain.
 //
 // One folder maps to exactly one working directory, since the folder name is
 // derived from that path, so the first cwd found settles it. Returns "" with no

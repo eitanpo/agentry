@@ -14,7 +14,7 @@ func TestProjectDirName(t *testing.T) {
 		path string
 		want string
 	}{
-		{"/Users/me/Projects/dotfiles", "-Users-me-Projects-dotfiles"},
+		{"/Users/me/Projects/notes", "-Users-me-Projects-notes"},
 		{"/a", "-a"},
 		{"/", "-"},
 		{"/x/y/z", "-x-y-z"},
