@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -137,26 +136,13 @@ var usageFilters = []struct {
 		if v == "" {
 			return nil // unset flag: no constraint, and "" would match every reply
 		}
-		re, err := compileReply(v)
+		re, err := compilePattern(v)
 		if err != nil {
 			return err
 		}
 		c.Reply = re
 		return nil
 	}},
-}
-
-// compileReply turns a --reply-matches value into the matcher the filter uses:
-// the caller's own pattern, made case-insensitive to match the rest of the
-// family. The (?i) prefix covers the whole pattern including every branch of a
-// top-level alternation, and a caller who wants case to matter overrides it with
-// (?-i). The error names the pattern, since cobra reports only the flag.
-func compileReply(pattern string) (*regexp.Regexp, error) {
-	re, err := regexp.Compile("(?i)" + pattern)
-	if err != nil {
-		return nil, fmt.Errorf("%q is not a valid regular expression: %w", pattern, err)
-	}
-	return re, nil
 }
 
 // parseChanged reads the two line bounds off the command line. A bound is set

@@ -1,0 +1,164 @@
+// Package find locates a pattern inside one parsed session. The listing's
+// filters choose which session to open; this answers the question that follows —
+// where inside it a passage sits.
+//
+// It searches the whole parsed model rather than what a render would show. A
+// search bounded by --level would answer "where does this appear at this
+// verbosity", which is a question nobody asks: a reader who cannot find a
+// passage they know is in the log has been told the log does not hold it. That
+// is the rule --format json already follows for the same reason.
+package search
+
+import (
+	"regexp"
+	"strings"
+
+	"github.com/eitanpo/agentry/internal/model"
+)
+
+// Part names which piece of a record matched. A turn's own prompt and the
+// instruction handed to a subagent are separate values although the log calls
+// both a prompt: one is what a person typed and the other is what a delegated
+// run was told, and a reader who searched for one is not looking at the other.
+type Part string
+
+const (
+	PartPrompt      Part = "prompt"      // the turn's own user prompt
+	PartText        Part = "text"        // assistant prose
+	PartThinking    Part = "thinking"    // assistant reasoning
+	PartArgs        Part = "args"        // a tool call's one-line argument summary
+	PartInstruction Part = "instruction" // the brief an Agent call delegated
+	PartResult      Part = "result"      // a tool call's result body
+)
+
+// Hit is one line inside a session that matched.
+type Hit struct {
+	// Turn is 1-based and counts the main thread's turns, so a hit inside a
+	// subagent carries the turn of the call that spawned it — which is the turn a
+	// reader renders to go read it.
+	Turn int `json:"turn"`
+	// Delegation is the chain of calls from the main thread down to the hit, each
+	// element written the way a rendered activation line writes it
+	// ("Agent[Explore@haiku]"). Empty for a hit in the main thread. It is what
+	// separates two identical passages that a session both wrote and delegated.
+	Delegation []string `json:"delegation,omitempty"`
+	Part       Part     `json:"part"`
+	// Tool, Identity and Model name the call the hit sits in, all empty for a hit
+	// in a turn's prompt or in assistant text. Identity is the same grouping label
+	// the listing groups by and Model the model an Agent call delegated to, so a
+	// hit, a tally and a rendered activation line name one call alike. They are
+	// carried apart rather than as one rendered label because a consumer filtering
+	// hits by subagent type would otherwise have to parse the label back out.
+	Tool     string `json:"tool,omitempty"`
+	Identity string `json:"identity,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// Line is 1-based within the matched body, so a hit deep in a long result body
+	// can be told from one at its head. The text render omits it: a body's own
+	// line number locates nothing a reader can navigate to, where the turn does.
+	Line int `json:"line"`
+	// Text is the whole matching line, untrimmed of its content and never cut to a
+	// width. A hit the caller cannot read in full is a hit they have to go looking
+	// for twice.
+	Text string `json:"text"`
+}
+
+// In returns every line of the session that re matches, in document order:
+// each turn's prompt, then its events, descending into a delegated stream where
+// the call that spawned it sits.
+func In(s *model.Session, re *regexp.Regexp) []Hit {
+	var hits []Hit
+	for i, t := range s.Turns {
+		turn := i + 1
+		hits = append(hits, linesIn(re, Hit{Turn: turn, Part: PartPrompt}, t.Prompt)...)
+		hits = append(hits, inEvents(re, t.Events, turn, nil)...)
+	}
+	return hits
+}
+
+// inEvents walks one event stream. delegation is the chain of calls that led
+// here, carried by value into each recursion so sibling streams cannot see each
+// other's path.
+func inEvents(re *regexp.Regexp, events []model.Event, turn int, delegation []string) []Hit {
+	var hits []Hit
+	for _, e := range events {
+		switch e.Kind {
+		case model.EventText:
+			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Part: PartText}, e.Text)...)
+		case model.EventThinking:
+			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Part: PartThinking}, e.Text)...)
+		case model.EventTool:
+			if e.Tool == nil {
+				continue
+			}
+			hits = append(hits, inTool(re, e.Tool, turn, delegation)...)
+		}
+	}
+	return hits
+}
+
+// inTool searches one call's own three bodies, then the stream it spawned. The
+// order is the order a render prints them, so a hit list and a rendered session
+// walk the session the same way.
+func inTool(re *regexp.Regexp, t *model.Tool, turn int, delegation []string) []Hit {
+	at := Hit{Turn: turn, Delegation: delegation, Tool: t.Name, Identity: t.Identity, Model: t.Model}
+	var hits []Hit
+	for _, body := range []struct {
+		part Part
+		text string
+	}{
+		{PartArgs, t.Args},
+		{PartInstruction, t.Prompt},
+		{PartResult, t.Result},
+	} {
+		here := at
+		here.Part = body.part
+		hits = append(hits, linesIn(re, here, body.text)...)
+	}
+	if len(t.Subagent) > 0 {
+		hits = append(hits, inEvents(re, t.Subagent, turn, append(delegation, Label(t.Name, t.Identity, t.Model)))...)
+	}
+	return hits
+}
+
+// Label writes a call the way a rendered activation line writes it, so a hit
+// names the call by the same string a reader will scroll past to reach it. One
+// function serves both places a hit can name a call — the chain it was delegated
+// through, and the call its own matching body belongs to — because two callers
+// spelling one call differently is what makes a hit list disagree with itself.
+//
+// Only Agent carries the bracketed half, for the reason the renderer gives: it
+// is the one tool whose args hide its identity.
+func Label(tool, identity, model string) string {
+	if tool != "Agent" {
+		return tool
+	}
+	label := identity
+	if model != "" {
+		label += "@" + model
+	}
+	if label == "" {
+		return tool
+	}
+	return tool + "[" + label + "]"
+}
+
+// linesIn splits a body into lines and returns one hit per matching line, each
+// a copy of at with its line number and text filled in. Per line rather than
+// per match: two matches on one line are one place to go read, and reporting
+// them twice would make a hit count read as a location count.
+func linesIn(re *regexp.Regexp, at Hit, text string) []Hit {
+	if text == "" {
+		return nil
+	}
+	var hits []Hit
+	for i, line := range strings.Split(text, "\n") {
+		if !re.MatchString(line) {
+			continue
+		}
+		h := at
+		h.Line = i + 1
+		h.Text = line
+		hits = append(hits, h)
+	}
+	return hits
+}

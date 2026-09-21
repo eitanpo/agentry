@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -42,7 +43,7 @@ var levels = map[string]render.Channels{
 
 // Candidate sets for nearest(): valid verbs, --level values, --include channels.
 var (
-	verbNames    = []string{"view", "list", "cost", "config"}
+	verbNames    = []string{"view", "search", "list", "cost", "config"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
 	includeNames = []string{"prompts", "tools", "files", "model", "cost", "outputs", "last-reply", "all"}
 	formatNames  = []string{"json", "jsonl", "text"}
@@ -50,6 +51,21 @@ var (
 	// entry: a mistyped number is arithmetic, not a near-miss on a name.
 	limitNames = []string{"all"}
 )
+
+// compilePattern turns a caller's pattern into the matcher agentry searches
+// with — their own expression, made case-insensitive. Shared by the listing's
+// --reply-matches and by `agentry search`, so one pattern means one thing wherever
+// it is typed rather than two flags drifting apart. The (?i) prefix covers the
+// whole pattern including every branch of a top-level alternation, and a caller
+// who wants case to matter overrides it with (?-i). The error names the pattern,
+// since cobra reports only the flag.
+func compilePattern(pattern string) (*regexp.Regexp, error) {
+	re, err := regexp.Compile("(?i)" + pattern)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a valid regular expression: %w", pattern, err)
+	}
+	return re, nil
+}
 
 // effortLevels are the levels `claude --effort` accepts, offered as completion
 // for --effort. They are suggestions only: the filter never validates against

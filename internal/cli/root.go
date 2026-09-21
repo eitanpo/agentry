@@ -44,6 +44,7 @@ func newRootCmd(version string, settings *config.Settings) *cobra.Command {
 			"  agentry <uuid>               render a specific session\n" +
 			"  agentry view                 render the most recent session\n" +
 			"  agentry view --level full    render the most recent in full detail\n" +
+			"  agentry search \"a phrase\"    where that phrase sits in a session\n" +
 			"  agentry list --since 7d      list sessions from the last 7 days\n" +
 			"  agentry cost --by month      what each month cost",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -70,12 +71,13 @@ func newRootCmd(version string, settings *config.Settings) *cobra.Command {
 	root.SetUsageTemplate(usageTemplate)
 
 	tree := verbs{
-		root: root,
-		view: newViewCmd(&noColor),
-		list: newListCmd(&noColor),
-		cost: newCostCmd(&noColor),
+		root:   root,
+		view:   newViewCmd(&noColor),
+		search: newSearchCmd(&noColor),
+		list:   newListCmd(&noColor),
+		cost:   newCostCmd(&noColor),
 	}
-	root.AddCommand(tree.view, tree.list, tree.cost)
+	root.AddCommand(tree.view, tree.search, tree.list, tree.cost)
 	// Read before applying, since applying overwrites the very values `agentry
 	// config` reports as the built-in ones.
 	defaults := builtinDefaults(tree)

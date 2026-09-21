@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/eitanpo/agentry/internal/config"
 	"github.com/eitanpo/agentry/internal/locate"
 )
@@ -266,10 +268,24 @@ func TestConfigSettingsNameRealFlags(t *testing.T) {
 		switch c.Name() {
 		case "view":
 			tree.view = c
+		case "search":
+			tree.search = c
 		case "list":
 			tree.list = c
 		case "cost":
 			tree.cost = c
+		}
+	}
+	// A verb added to the tree and not to the switch above leaves a nil command
+	// in tree, and configTargets then dereferences it — a segfault where the
+	// finding is "this test needs one more case". Named explicitly so the next
+	// verb produces a sentence instead of a stack trace.
+	for _, v := range []struct {
+		name string
+		cmd  *cobra.Command
+	}{{"view", tree.view}, {"search", tree.search}, {"list", tree.list}, {"cost", tree.cost}} {
+		if v.cmd == nil {
+			t.Fatalf("verb %q is missing from this test's tree — add a case for it above", v.name)
 		}
 	}
 	for _, s := range configSettings {
