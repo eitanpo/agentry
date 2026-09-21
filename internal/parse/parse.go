@@ -1004,6 +1004,20 @@ func toolModel(input map[string]any) string {
 	return s
 }
 
+// toolPrompt returns the instruction a delegated call was handed, or "" when the
+// tool is not one that delegates. Gated on the name where toolModel is not,
+// because "prompt" does not mean one thing across tools: docs/session-format.md
+// records it on an Agent call's input as the brief the subagent runs on, and a
+// tool that passes a prompt to something other than a delegated run would be
+// answering a different question under the same key.
+func toolPrompt(name string, input map[string]any) string {
+	if name != "Agent" {
+		return ""
+	}
+	s, _ := input["prompt"].(string)
+	return s
+}
+
 // bashProgram reduces a shell command to the program a histogram groups by: the
 // first token after any leading VAR=value assignments, reduced to its basename
 // ("/a/b/exa --x" → "exa"). A heuristic — a pipeline or "cd x && y" reports only
@@ -2559,6 +2573,7 @@ func buildEvents(entries []entry, subs map[string]*subagent, nameLinks map[strin
 					// drift into naming one call two things.
 					Identity: toolIdentity(b.name, b.input),
 					Model:    toolModel(b.input),
+					Prompt:   toolPrompt(b.name, b.input),
 					Denial:   res.denial,
 					Result:   res.text,
 					IsError:  res.isError,

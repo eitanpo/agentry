@@ -450,6 +450,7 @@ func gatingSession() *model.Session {
 				{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: "TOOLBODYMARKER"}},
 				{Kind: model.EventTool, Tool: &model.Tool{
 					Name:     "Agent",
+					Prompt:   "AGENTPROMPTMARKER",
 					Result:   "AGENTRESULTMARKER",
 					Subagent: []model.Event{{Kind: model.EventText, Text: "NESTEDMARKER"}},
 				}},
@@ -468,9 +469,10 @@ func renderChannels(t *testing.T, ch Channels) string {
 }
 
 // TestChannelGating verifies the activation/body/expansion split: Tools gates
-// whether a tool's head line appears, ToolResults gates its result body, and
-// Subagents gates expansion of a nested stream (falling through to the
-// ToolResults body when off). The response text is always shown.
+// whether a tool's head line appears, ToolResults gates its result body and a
+// delegated call's instruction, and Subagents gates expansion of a nested
+// stream (falling through to the ToolResults body when off). The response text
+// is always shown.
 func TestChannelGating(t *testing.T) {
 	has := func(t *testing.T, s, marker string, want bool) {
 		t.Helper()
@@ -485,6 +487,7 @@ func TestChannelGating(t *testing.T) {
 		has(t, out, "Read", false)
 		has(t, out, "TOOLBODYMARKER", false)
 		has(t, out, "NESTEDMARKER", false)
+		has(t, out, "AGENTPROMPTMARKER", false)
 	})
 
 	t.Run("detailed: activation + expansion, no bodies", func(t *testing.T) {
@@ -493,6 +496,9 @@ func TestChannelGating(t *testing.T) {
 		has(t, out, "TOOLBODYMARKER", false) // but no result body
 		has(t, out, "NESTEDMARKER", true)    // subagent expanded
 		has(t, out, "AGENTRESULTMARKER", false)
+		// The instruction is a body too, so the level that shows no bodies shows
+		// none of it either — the expansion beneath it is the shape of the work.
+		has(t, out, "AGENTPROMPTMARKER", false)
 	})
 
 	t.Run("full: activation + expansion + bodies", func(t *testing.T) {
@@ -500,6 +506,7 @@ func TestChannelGating(t *testing.T) {
 		has(t, out, "Read", true)
 		has(t, out, "TOOLBODYMARKER", true)
 		has(t, out, "NESTEDMARKER", true)
+		has(t, out, "AGENTPROMPTMARKER", true)
 	})
 
 	t.Run("subagents off falls through to result body", func(t *testing.T) {
@@ -507,13 +514,74 @@ func TestChannelGating(t *testing.T) {
 		has(t, out, "Agent", true)             // head line present
 		has(t, out, "NESTEDMARKER", false)     // not expanded
 		has(t, out, "AGENTRESULTMARKER", true) // its result body shown instead
+		has(t, out, "AGENTPROMPTMARKER", true) // and the instruction above it either way
 	})
 
 	t.Run("tools on, results off: head without body", func(t *testing.T) {
 		out := renderChannels(t, Channels{Tools: true})
 		has(t, out, "Read", true)
 		has(t, out, "TOOLBODYMARKER", false)
+		has(t, out, "AGENTPROMPTMARKER", false)
 	})
+}
+
+// TestDelegatedPromptPrintsWhole pins the instruction an Agent call was handed:
+// that it prints at all, that it prints entire where a result body is capped,
+// that it stands above the expansion rather than inside it, and that a tool
+// carrying no instruction prints no prompt chrome.
+//
+// The uncapped half is the point of the test. A reader asking what a subagent
+// was told is asking for all of it — the whole reason this fact was worth adding
+// is that the activation line already carries the description — so a cap here
+// would reinstate the gap while looking like a feature.
+func TestDelegatedPromptPrintsWhole(t *testing.T) {
+	brief := make([]string, 0, toolBodyMaxLines*3)
+	for i := 0; i < toolBodyMaxLines*3; i++ {
+		brief = append(brief, fmt.Sprintf("BRIEFLINE%02d", i))
+	}
+	sess := &model.Session{Turns: []model.Turn{{
+		Prompt: "go",
+		Events: []model.Event{
+			{Kind: model.EventTool, Tool: &model.Tool{
+				Name:     "Agent",
+				Identity: "Explore",
+				Args:     "sweep for callers",
+				Prompt:   strings.Join(brief, "\n"),
+				Subagent: []model.Event{{Kind: model.EventText, Text: "NESTEDMARKER"}},
+			}},
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: "TOOLBODYMARKER"}},
+		},
+	}}}
+	var b strings.Builder
+	opts := Options{Width: 120, Color: false, Channels: Channels{Tools: true, ToolResults: true, Subagents: true}}
+	if err := Session(&b, sess, opts); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	for _, line := range brief {
+		if !strings.Contains(out, line) {
+			t.Errorf("instruction line %q missing — the brief was truncated", line)
+		}
+	}
+	if strings.Contains(out, "more line") {
+		t.Errorf("the instruction was capped, but only a result body is: %q", out)
+	}
+	// The ❯ glyph is what says "this is what the call asked for" rather than
+	// what it returned, the two being otherwise adjacent bodies on one rail.
+	if !strings.Contains(out, glyphUser+" "+brief[0]) {
+		t.Errorf("want the ❯ glyph opening the instruction, got %q", out)
+	}
+	// Above the expansion: the call's terms come before the work it produced.
+	if strings.Index(out, brief[0]) > strings.Index(out, "NESTEDMARKER") {
+		t.Error("the instruction printed below the expanded stream, not above it")
+	}
+	// A tool that delegates nothing gets no prompt chrome — the gate is the field
+	// being set, not the channel being on.
+	body := out[strings.Index(out, "TOOLBODYMARKER"):]
+	if strings.Contains(body, glyphUser) {
+		t.Errorf("a non-delegating call printed a ❯: %q", body)
+	}
 }
 
 // TestHeaderEffort pins how the header reports reasoning effort. It reads as a

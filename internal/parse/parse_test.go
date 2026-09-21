@@ -544,9 +544,10 @@ func TestLoadEffort(t *testing.T) {
 
 // TestLoadCarriesDelegation pins the structured facts a rendered Agent call used
 // to lose. Args flattens an Agent's input to its human description, so before
-// this the subagent type and the delegated model were unrecoverable from a
-// rendered session — and a cost audit asking what a subagent ran on had nowhere
-// to read it.
+// this the subagent type, the delegated model and the instruction the subagent
+// ran on were unrecoverable from a rendered session — a cost audit asking what a
+// subagent ran on had nowhere to read it, and a reader asking what it was told
+// had to go back to the raw log.
 func TestLoadCarriesDelegation(t *testing.T) {
 	sess, err := Load(filepath.Join("testdata", "agent-delegation.jsonl"))
 	if err != nil {
@@ -566,21 +567,24 @@ func TestLoadCarriesDelegation(t *testing.T) {
 	}
 
 	cases := []struct {
-		what             string
-		tool             *model.Tool
-		identity, model_ string
+		what                     string
+		tool                     *model.Tool
+		identity, model_, prompt string
 	}{
-		// The audit case: both facts named, neither derivable from args.
-		{"an Agent naming type and model", tools[0], "Explore", "haiku"},
+		// The audit case: every fact named, none derivable from args.
+		{"an Agent naming type and model", tools[0], "Explore", "haiku", "find every caller"},
 		// No model named means the subagent inherited the session's. Defaulting to
 		// Meta.Model here would report a choice the caller never made.
-		{"an Agent naming no model", tools[1], "researcher", ""},
+		{"an Agent naming no model", tools[1], "researcher", "", "research it"},
 		// subagent_type is optional in the log; agentry reports it absent rather
 		// than guessing the harness default.
-		{"an Agent naming no type", tools[2], "", "sonnet"},
+		{"an Agent naming no type", tools[2], "", "sonnet", "do a thing"},
 		// Identity is not Agent-only: it is the same label the listing groups by,
-		// which is what stops the two paths naming one call two things.
-		{"a Bash call", tools[3], "git", ""},
+		// which is what stops the two paths naming one call two things. The
+		// instruction is Agent-only, though: this call's input carries a "prompt"
+		// key and the field stays empty, because a prompt passed to something that
+		// is not a delegated run answers a different question under the same name.
+		{"a Bash call", tools[3], "git", "", ""},
 	}
 	for _, c := range cases {
 		if c.tool.Identity != c.identity {
@@ -588,6 +592,9 @@ func TestLoadCarriesDelegation(t *testing.T) {
 		}
 		if c.tool.Model != c.model_ {
 			t.Errorf("%s: model = %q, want %q", c.what, c.tool.Model, c.model_)
+		}
+		if c.tool.Prompt != c.prompt {
+			t.Errorf("%s: prompt = %q, want %q", c.what, c.tool.Prompt, c.prompt)
 		}
 	}
 	// Args keeps being the human summary — the new fields are additions to it,

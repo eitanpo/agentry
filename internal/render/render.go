@@ -81,6 +81,7 @@ type renderer struct {
 	ok      lipgloss.Style
 	bad     lipgloss.Style
 	body    lipgloss.Style
+	brief   lipgloss.Style
 	args    lipgloss.Style
 	link    lipgloss.Style
 	dim     lipgloss.Style
@@ -253,6 +254,7 @@ func (r *renderer) initStyles() {
 	r.ok = lipgloss.NewStyle().Foreground(c("2")).Bold(true)        // green
 	r.bad = lipgloss.NewStyle().Foreground(c("1")).Bold(true)       // red
 	r.body = lipgloss.NewStyle().Foreground(c("15"))                // tool result body: bright white
+	r.brief = lipgloss.NewStyle().Foreground(c("6")).Bold(true)     // delegated instruction's ❯: the prompt's cyan without the prompt row's highlight
 	r.args = lipgloss.NewStyle().Foreground(c("248"))               // tool args parenthetical: light gray
 	r.link = lipgloss.NewStyle().Foreground(c("80"))                // hyperlink text: sky cyan, distinct from glamour's heading blue (39) (underline omitted — lipgloss renders it per-rune)
 	r.dim = lipgloss.NewStyle().Foreground(c("8"))
@@ -585,6 +587,14 @@ func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 		r.args.Render("("+truncate(oneLine(t.Args), 60)+")"), status, dur)
 	out := []string{strings.TrimRight(head, " ")}
 
+	// The instruction a delegated call was handed, above whatever the call went on
+	// to produce. It rides ToolResults rather than a channel of its own because it
+	// is this call's body, and the activation line has already flattened it to a
+	// description of a few words.
+	if t.Prompt != "" && r.opts.Channels.ToolResults {
+		out = append(out, r.toolPrompt(t.Prompt, prefix+r.dim.Render("│")+" ")...)
+	}
+
 	if t.Subagent != nil && r.opts.Channels.Subagents {
 		nested := prefix + r.dim.Render("│") + " "
 		return append(out, r.events(t.Subagent, nested, depth+1)...)
@@ -595,6 +605,37 @@ func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 	if r.opts.Channels.ToolResults {
 		bodyPrefix := prefix + r.dim.Render("│") + " "
 		return append(out, r.toolBody(t.Result, bodyPrefix)...)
+	}
+	return out
+}
+
+// toolPrompt lays out a delegated call's instruction beneath its activation
+// line: the ❯ glyph a typed prompt carries, then the text at the rail's width,
+// continuation lines hang-indented two columns so they align under the first
+// character the way a turn's own prompt block aligns them.
+//
+// No line cap, where toolBody caps a result at toolBodyMaxLines. A result is
+// machine output whose size nothing bounds, so a cap there is what keeps one
+// file read from burying the turn that made it; an instruction is text somebody
+// wrote, and the first ten lines of a fifty-line brief answer nothing a reader
+// came for. Measured on a real session rather than assumed — the commit that
+// added this records the count.
+func (r *renderer) toolPrompt(text, prefix string) []string {
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return nil
+	}
+	const hangIndent = "  " // the width of "❯ ", so wrapped lines align under the text
+	width := r.opts.Width - lipgloss.Width(prefix) - len(hangIndent)
+	var out []string
+	for _, raw := range strings.Split(text, "\n") {
+		for _, w := range wrapPlain(raw, width) {
+			lead := hangIndent
+			if len(out) == 0 {
+				lead = r.brief.Render(glyphUser) + " "
+			}
+			out = append(out, strings.TrimRight(prefix+lead+r.body.Render(w), " "))
+		}
 	}
 	return out
 }

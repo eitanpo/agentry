@@ -447,6 +447,14 @@ type Tool struct {
 	// empty means the subagent ran on the session's own model, which is why it is
 	// not defaulted to Meta.Model — "inherited" and "chosen" are different facts.
 	Model string `json:"model,omitempty"`
+	// Prompt is the instruction a delegated call was given, whole. Only Agent
+	// carries one, and it is taken from the input for the reason Model is: Args
+	// holds that call's description instead, which is a label of a few words and
+	// says nothing about what the subagent was asked to do. Without this field a
+	// session whose substance is its delegations carries none of that substance,
+	// since the delegated log records what the subagent did and never the terms
+	// it was handed.
+	Prompt string `json:"prompt,omitempty"`
 	// Denial is why this call was refused rather than run, the log's own
 	// toolDenialKind. Empty for every call that ran, including one that ran and
 	// failed — IsError is true either way, so this is what tells the two apart.
