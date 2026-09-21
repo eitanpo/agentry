@@ -29,7 +29,14 @@ import (
 )
 
 const (
-	fallbackWidth    = 100 // used when stdout is not a TTY
+	fallbackWidth = 100 // used when stdout is not a TTY
+	// toolBodyMaxLines bounds a result body, which is machine output nothing
+	// limits: one file read can run longer than every reply in its turn put
+	// together, so uncapped bodies bury the transcript in the output of the work.
+	// The overflow is named rather than dropped silently, which is what keeps this
+	// a cap and not a deletion. PRODUCT.md's Verbosity section owns the rule and
+	// the number; an instruction delegated to a subagent is deliberately outside
+	// it — see toolPrompt.
 	toolBodyMaxLines = 10
 	assistantIndent  = "  " // left pad before the assistant turn's rail (│ … ╰─)
 	glyphUser        = "❯"
@@ -648,18 +655,34 @@ func (r *renderer) toolBody(text, prefix string) []string {
 	width := r.opts.Width - lipgloss.Width(prefix)
 	lines := strings.Split(text, "\n")
 	var out []string
+	// The cap counts display lines and the remainder counts source lines, so the
+	// two are tracked apart. Subtracting one from the other reported a negative
+	// remainder on any body whose lines wrapped, which is every long body at a
+	// narrow width — a cap that names what it left out cannot name "-6 more
+	// lines". PRODUCT.md's Verbosity section owns the rule this restores.
+	whole := 0 // source lines printed entire
 	for _, raw := range lines {
-		if len(out) >= toolBodyMaxLines {
-			extra := len(lines) - len(out)
-			out = append(out, prefix+r.dim.Render(fmt.Sprintf("… %s", plural(extra, "more line"))))
+		room := toolBodyMaxLines - len(out)
+		if room <= 0 {
 			break
 		}
-		for _, w := range wrapPlain(raw, width) {
-			out = append(out, prefix+r.body.Render(w))
-			if len(out) >= toolBodyMaxLines {
-				break
+		wrapped := wrapPlain(raw, width)
+		if len(wrapped) > room {
+			// A line too long for the room left shows its head rather than being
+			// dropped, so a body that is one very long line is not blank. It stays
+			// outside whole, which is what makes the remainder name it.
+			for _, w := range wrapped[:room] {
+				out = append(out, prefix+r.body.Render(w))
 			}
+			break
 		}
+		for _, w := range wrapped {
+			out = append(out, prefix+r.body.Render(w))
+		}
+		whole++
+	}
+	if whole < len(lines) {
+		out = append(out, prefix+r.dim.Render(fmt.Sprintf("… %s", plural(len(lines)-whole, "more line"))))
 	}
 	return out
 }

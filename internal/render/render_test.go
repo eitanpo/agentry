@@ -525,6 +525,81 @@ func TestChannelGating(t *testing.T) {
 	})
 }
 
+// TestResultBodyNamesItsRemainder pins the cap on a result body: ten source
+// lines, then a count of what is left. The count is what makes this a cap rather
+// than a deletion, so a wrong count is the same defect as no count at all.
+//
+// The wrapped case is why the test exists. The cap counts display lines and the
+// remainder counts source lines, and subtracting one from the other printed
+// "… -6 more lines" on any body long enough to wrap — which at a narrow width is
+// every long body.
+func TestResultBodyNamesItsRemainder(t *testing.T) {
+	render := func(t *testing.T, result string, width int) string {
+		t.Helper()
+		sess := &model.Session{Turns: []model.Turn{{
+			Prompt: "go",
+			Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: result}}},
+		}}}
+		var b strings.Builder
+		opts := Options{Width: width, Color: false, Channels: Channels{Tools: true, ToolResults: true}}
+		if err := Session(&b, sess, opts); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	t.Run("short lines name the lines left over", func(t *testing.T) {
+		lines := make([]string, 0, toolBodyMaxLines*2)
+		for i := 0; i < toolBodyMaxLines*2; i++ {
+			lines = append(lines, fmt.Sprintf("row%02d", i))
+		}
+		out := render(t, strings.Join(lines, "\n"), 120)
+		want := fmt.Sprintf("… %d more lines", toolBodyMaxLines)
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q, got %q", want, out)
+		}
+	})
+
+	t.Run("wrapped lines never name a negative remainder", func(t *testing.T) {
+		// Each source line is far wider than the rail, so every one of them wraps
+		// into several display lines and the cap is reached partway through the
+		// body rather than at a line boundary.
+		long := strings.Repeat("wordy ", 40)
+		lines := make([]string, 0, toolBodyMaxLines)
+		for i := 0; i < toolBodyMaxLines; i++ {
+			lines = append(lines, long)
+		}
+		out := render(t, strings.Join(lines, "\n"), 40)
+		// The exact count, not merely a non-negative one: subtracting display
+		// lines from source lines printed "-6 more lines" on some widths and
+		// "0 more lines" on others, and a remainder of zero beside nine missing
+		// lines reads as a complete body.
+		if !strings.Contains(out, "… 9 more lines") {
+			t.Errorf("want the nine unprinted source lines named, got %q", out)
+		}
+	})
+
+	t.Run("one very long line shows its head and says so", func(t *testing.T) {
+		// The body is a single source line wrapping past the cap. Printing nothing
+		// but a remainder would hide the result entirely; printing the head with no
+		// remainder would truncate it silently.
+		out := render(t, strings.Repeat("token ", 200), 40)
+		if !strings.Contains(out, "token") {
+			t.Errorf("the head of the line was dropped: %q", out)
+		}
+		if !strings.Contains(out, "… 1 more line") {
+			t.Errorf("want the one unprinted line named, got %q", out)
+		}
+	})
+
+	t.Run("a body inside the cap names no remainder", func(t *testing.T) {
+		out := render(t, "one\ntwo\nthree", 120)
+		if strings.Contains(out, "more line") {
+			t.Errorf("a body that fit named a remainder: %q", out)
+		}
+	})
+}
+
 // TestDelegatedPromptPrintsWhole pins the instruction an Agent call was handed:
 // that it prints at all, that it prints entire where a result body is capped,
 // that it stands above the expansion rather than inside it, and that a tool

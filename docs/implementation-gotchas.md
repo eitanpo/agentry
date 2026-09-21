@@ -27,6 +27,15 @@ matches itself by name, so naive recursive expansion infinite-loops (stack overf
 
 ## Rendering and dependencies
 
+**A cap that counts display lines cannot name its remainder in source lines.**
+Subtracting one from the other reported `… -6 more lines` on a truncated tool result,
+and `… 0 more lines` at other widths — wrong in a direction that reads as a complete
+body. It only shows once lines wrap, so it is invisible at a wide terminal and present
+on every long body at a narrow one. Track the two counts apart: fill the cap in display
+lines, count the remainder in source lines not printed whole, and never derive one from
+the length of the other. Assert the exact count in a test, since a non-negative check
+passes on zero.
+
 **`termenv.Ascii` is `3`, not `0`.** Passing a literal `0` to
 `lipgloss.SetColorProfile` selects `TrueColor` (color on) — the opposite of intent. Use
 the named `termenv.Ascii` constant to strip ANSI, and verify "no color" by counting ESC
