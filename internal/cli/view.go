@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -148,23 +149,57 @@ func clampTurns(r *model.TurnRange, numTurns int) error {
 	return nil
 }
 
-// isRenderFlag reports whether a flag name belongs to the render group
-// (--level and the channel toggles, including their --no- forms). Drives the
-// grouped help layout; --no-color is deliberately excluded (it is global).
-func isRenderFlag(name string) bool {
-	if name == "level" || name == "turn" {
-		return true
-	}
-	bare := strings.TrimPrefix(name, "no-")
-	if bare == metricsChannel {
-		return true
-	}
+// renderFlagNames are the flags that shape a rendered transcript: the verbosity
+// preset, the turn selector, and every channel toggle in both forms. --no-color
+// is deliberately absent, being global rather than the render path's.
+//
+// One list with two readers, because they have to agree: the grouped help layout
+// shows these under their own heading, and the bare command rejects them when it
+// is listing rather than rendering. A flag in one reader and not the other is
+// either help that lies about a flag's scope or a flag silently ignored.
+func renderFlagNames() []string {
+	names := []string{"level", "turn", "no-" + metricsChannel}
 	for _, ch := range channelNames {
-		if bare == ch {
-			return true
+		names = append(names, ch, "no-"+ch)
+	}
+	return names
+}
+
+// isRenderFlag reports whether a flag name belongs to the render group. Drives
+// the grouped help layout.
+func isRenderFlag(name string) bool {
+	return slices.Contains(renderFlagNames(), name)
+}
+
+// renderFlagsPassed names the render flags present on the command line, in the
+// order renderFlagNames declares them so one command line always produces one
+// message. Presence is what matters, so each is read via Changed — a settings
+// file plants these as defaults, which is not the caller asking for them.
+func renderFlagsPassed(cmd *cobra.Command) []string {
+	var passed []string
+	for _, name := range renderFlagNames() {
+		if cmd.Flags().Changed(name) {
+			passed = append(passed, "--"+name)
 		}
 	}
-	return false
+	return passed
+}
+
+// rejectRenderFlags is the error for a render flag passed to the bare command
+// when it is listing. The bare command carries both flag sets because it lists
+// or renders depending on its argument, so these are registered there and did
+// nothing at all when no id followed — a caller who asked for full detail got a
+// listing and no sign their flag had been dropped. `list` itself never had them
+// registered, which is why the silence was the bare form's alone.
+//
+// Every offending flag is named rather than the first, so a caller who passed
+// three fixes three at once instead of running three times.
+func rejectRenderFlags(names []string) error {
+	if len(names) == 1 {
+		return usageErr("%s belongs to the render path: pass a session id, or use `agentry view %s`", names[0], names[0])
+	}
+	list := strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	return usageErr("%s belong to the render path: pass a session id, or use `agentry view` with them", list)
 }
 
 // channelsFromFlags resolves the --level preset and applies any per-channel

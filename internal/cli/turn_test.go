@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/spf13/pflag"
+
+	"github.com/eitanpo/agentry/internal/config"
 )
 
 // turnFixture drops the sample log into a fresh project and returns its id. The
@@ -193,19 +197,132 @@ func TestTurnNarrowsTheMachineForms(t *testing.T) {
 	}
 }
 
-// TestTurnIsNotAListingFlag pins that it errors rather than being ignored. A
-// listing has no transcript to slice, and silence would leave a caller believing
-// a slice applied — the failure --include and --from beside an id already fixed.
-func TestTurnIsNotAListingFlag(t *testing.T) {
+// TestRenderFlagGroupMembership pins the group's contents as a literal list.
+// The rejection subtests below derive their cases from renderFlagNames, so they
+// cannot notice a flag dropped from it — dropping one silently removes both its
+// help grouping and its rejection, which is two invisible regressions from one
+// edit. Naming the members here is what makes that edit fail.
+//
+// The second half is the direction that matters more: a render flag registered
+// on the command and left out of the group would be silently ignored on a
+// listing all over again. Every flag the bare command carries is therefore
+// accounted for, either as a render flag or as one of the listing and global
+// flags named here.
+func TestRenderFlagGroupMembership(t *testing.T) {
+	want := []string{
+		"level", "turn", "no-metrics",
+		"thinking", "no-thinking",
+		"tools", "no-tools",
+		"tool-results", "no-tool-results",
+		"subagents", "no-subagents",
+	}
+	got := renderFlagNames()
+	if len(got) != len(want) {
+		t.Fatalf("render group = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("render group[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// Anything the bare command carries that is not a render flag has to be a
+	// listing selector, an output-form switch, or global. A new render flag will
+	// land here and fail until it joins the group.
+	// The listing's own flags are taken from the `list` verb rather than written
+	// out here, so a new selector added there does not fail this test. Only the
+	// three the root adds for itself are named.
+	notRender := map[string]bool{"no-color": true, "version": true, "help": true}
+	newListCmd(new(bool)).Flags().VisitAll(func(f *pflag.Flag) { notRender[f.Name] = true })
+	root := newRootCmd("test", nil)
+	root.Flags().VisitAll(func(f *pflag.Flag) {
+		if isRenderFlag(f.Name) || notRender[f.Name] {
+			return
+		}
+		t.Errorf("--%s is on the bare command and in neither group: add it to renderFlagNames or to this test's listing set", f.Name)
+	})
+}
+
+// TestRenderFlagsAreNotListingFlags pins that every render flag errors on a
+// bare listing rather than being ignored. The bare command carries both flag
+// sets because it lists or renders depending on its argument, so these were
+// registered and did nothing at all when no id followed — a caller who asked for
+// full detail got a listing and no sign their flag had been dropped.
+func TestRenderFlagsAreNotListingFlags(t *testing.T) {
+	for _, flag := range renderFlagNames() {
+		t.Run(flag, func(t *testing.T) {
+			turnFixture(t)
+			args := []string{"--" + flag}
+			// The two that take a value need one; the channel toggles are booleans.
+			if flag == "level" {
+				args = append(args, "full")
+			}
+			if flag == "turn" {
+				args = append(args, "1")
+			}
+			code, out, errOut := exec(args...)
+			if code != exUsage {
+				t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+			}
+			if !strings.Contains(errOut, "--"+flag) {
+				t.Errorf("stderr does not name the flag: %q", errOut)
+			}
+			if out != "" {
+				t.Errorf("a listing was printed anyway: %q", out)
+			}
+		})
+	}
+}
+
+// TestRenderFlagsOnAListingAreAllNamed pins that a caller who passed three
+// fixes three at once. Reporting the first would send them round the loop once
+// per flag, which is the shape a did-you-mean already refuses to take.
+func TestRenderFlagsOnAListingAreAllNamed(t *testing.T) {
 	turnFixture(t)
-	code, out, errOut := exec("--turn", "1")
-	if code != exUsage {
-		t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+	_, _, errOut := exec("--level", "full", "--tools", "--no-thinking")
+	for _, want := range []string{"--level", "--tools", "--no-thinking"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr %q does not name %s", errOut, want)
+		}
 	}
-	if !strings.Contains(errOut, "--turn") {
-		t.Errorf("stderr does not name the flag: %q", errOut)
+	if !strings.Contains(errOut, "belong to") {
+		t.Errorf("stderr %q does not read as a plural: three flags were passed", errOut)
 	}
-	if out != "" {
-		t.Errorf("a listing was printed anyway: %q", out)
+}
+
+// TestListingFlagsStillListOnTheBareCommand pins the other side: the flags that
+// do belong there keep working, so the rejection is scoped to the render group
+// rather than to any flag on a listing.
+func TestListingFlagsStillListOnTheBareCommand(t *testing.T) {
+	turnFixture(t)
+	code, out, errOut := exec("--limit", "1")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	if out == "" {
+		t.Error("a list flag on the bare command printed nothing")
+	}
+
+	// --no-color is global rather than the render path's, so it is not in the
+	// group and must not be rejected.
+	turnFixture(t)
+	if code, _, errOut = exec("--no-color"); code != 0 {
+		t.Errorf("--no-color on a listing exited %d (stderr %q) — it is global, not a render flag", code, errOut)
+	}
+}
+
+// TestSettingsFileDefaultIsNotACallerAskingForIt pins why presence is read via
+// Changed. A settings file plants view.level as the flag's default, which is not
+// the caller passing it — rejecting that would make a file nobody can list with.
+func TestSettingsFileDefaultIsNotACallerAskingForIt(t *testing.T) {
+	turnFixture(t)
+	code, out, errOut := execWith(&config.Settings{Found: true, Verbs: map[string]map[string]string{
+		"view": {"level": "full"},
+	}}, "--limit", "1")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	if out == "" {
+		t.Error("a settings file setting view.level made the bare listing print nothing")
 	}
 }

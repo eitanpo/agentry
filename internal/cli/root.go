@@ -53,11 +53,12 @@ func newRootCmd(version string, settings *config.Settings) *cobra.Command {
 			// No id lists; a full id renders. renderSession handles the
 			// verb-vs-id did-you-mean for a non-id first token.
 			if len(args) == 0 {
-				// --turn selects inside one session's transcript, and a listing has no
-				// transcript to select from. Ignoring it would leave a caller believing
-				// a slice applied, the way --include and --from did before they errored.
-				if cmd.Flags().Changed("turn") {
-					return usageErr("--turn belongs to the render path: pass a session id, or use `agentry view --turn`")
+				// The render flags shape a transcript and a listing has none, so
+				// passing one here can only be a mistake. Ignoring them left a caller
+				// believing detail had been added — the failure --include and --from
+				// beside a session id already error on, in the direction this misses.
+				if names := renderFlagsPassed(cmd); len(names) > 0 {
+					return rejectRenderFlags(names)
 				}
 				return runList(cmd, &noColor)
 			}
