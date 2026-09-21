@@ -27,6 +27,16 @@ matches itself by name, so naive recursive expansion infinite-loops (stack overf
 
 ## Rendering and dependencies
 
+**Any figure computed by walking `Session.Turns` silently becomes the slice's the
+moment a selector exists.** Adding `--turn` narrowed `Turns` and left the header counting
+turns and tools out of it, so a one-turn render read "1 turn" beside the whole session's
+tokens and dollars — one turn appearing to cost the lot. `Meta` is the session and `Turns` is
+what the caller asked to render; read session-level figures off `Meta`, which a selector does
+not touch. The two sources agree exactly on a whole session because the tallies are the
+per-turn counts grouped rather than recounted, and a test pins that agreement, since nothing
+else would catch them drifting. A hand-built test session must now fill both, and a fixture
+whose `Meta` tally disagrees with its turns describes no real session.
+
 **A cap that counts display lines cannot name its remainder in source lines.**
 Subtracting one from the other reported `… -6 more lines` on a truncated tool result,
 and `… 0 more lines` at other widths — wrong in a direction that reads as a complete

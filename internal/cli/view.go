@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/render"
 )
 
@@ -30,6 +32,7 @@ func newViewCmd(noColor *bool) *cobra.Command {
 		ValidArgsFunction: completeSessionIDs,
 		Example: "  agentry view <uuid>\n" +
 			"  agentry view --level full <uuid>\n" +
+			"  agentry view --turn 11 --level full\n" +
 			"  agentry view --tools --no-thinking <uuid>\n" +
 			"  agentry view --from sdk",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -49,6 +52,7 @@ func newViewCmd(noColor *bool) *cobra.Command {
 // would double-register it there.
 func addRenderFlags(cmd *cobra.Command) {
 	cmd.Flags().String("level", "minimal", "verbosity: minimal|standard|detailed|full")
+	cmd.Flags().String("turn", "", "render one turn or an inclusive span: N or N-M")
 	for _, ch := range channelNames {
 		cmd.Flags().Bool(ch, false, "show "+ch)
 		cmd.Flags().Bool("no-"+ch, false, "hide "+ch)
@@ -56,6 +60,11 @@ func addRenderFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("no-"+metricsChannel, false, "hide the footer's tool, cost and day tables")
 	// Complete the enum flag to its allowed values instead of filenames.
 	_ = cmd.RegisterFlagCompletionFunc("level", fixedComp(levelNames))
+	// --turn takes a number, which nothing can suggest. Say so explicitly, or the
+	// shell falls back to offering filenames where a turn number goes.
+	_ = cmd.RegisterFlagCompletionFunc("turn", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	})
 }
 
 // addFormatFlag installs --format, shared by the render path and list. It is an
@@ -68,11 +77,82 @@ func addFormatFlag(cmd *cobra.Command) {
 	_ = cmd.RegisterFlagCompletionFunc("format", fixedComp(formatNames))
 }
 
+// parseTurns reads --turn into the span of turns to render, nil when the flag
+// was not given. The syntax is the one the render prints back — "11" or "11-14",
+// with a plain hyphen — so a number copied out of a rendered session or a search
+// hit goes straight back in.
+//
+// Validation here is what the value can be wrong about on its own: turns are
+// 1-based, so zero and negatives are mistakes with no reading, and a span whose
+// end precedes its start is empty by construction rather than by selection.
+// Whether the turns exist is a question about the session and is answered once it
+// is loaded — see clampTurns.
+func parseTurns(cmd *cobra.Command) (*model.TurnRange, error) {
+	raw, _ := cmd.Flags().GetString("turn")
+	if !cmd.Flags().Changed("turn") || raw == "" {
+		return nil, nil
+	}
+	from, to, err := splitTurnSpan(raw)
+	if err != nil {
+		return nil, err
+	}
+	if from < 1 {
+		return nil, usageErr("invalid --turn %q: turns are numbered from 1", raw)
+	}
+	if to < from {
+		return nil, usageErr("invalid --turn %q: the span ends before it starts", raw)
+	}
+	return &model.TurnRange{From: from, To: to}, nil
+}
+
+// splitTurnSpan reads "N" as the single turn N and "N-M" as the inclusive span.
+// A malformed value names itself in the error, since cobra reports only that a
+// flag was bad and the caller cannot see which half of a span it read.
+func splitTurnSpan(raw string) (from, to int, err error) {
+	one := func(s string) (int, error) {
+		n, convErr := strconv.Atoi(strings.TrimSpace(s))
+		if convErr != nil {
+			return 0, usageErr("invalid --turn %q: want a turn number (11) or a span (11-14)", raw)
+		}
+		return n, nil
+	}
+	head, tail, isSpan := strings.Cut(raw, "-")
+	if !isSpan {
+		n, err := one(raw)
+		return n, n, err
+	}
+	if from, err = one(head); err != nil {
+		return 0, 0, err
+	}
+	to, err = one(tail)
+	return from, to, err
+}
+
+// clampTurns settles a span against the session it will select from. The start
+// must name a turn that exists, because a caller asking for turn 99 of a
+// twelve-turn session has made a mistake and an empty render would not say so —
+// the error names the count, which is the one thing they cannot work out from
+// nothing being printed. The end is a ceiling rather than an assertion, so
+// "11-99" reads as "from 11 to as far as it goes" and renders to the last turn.
+func clampTurns(r *model.TurnRange, numTurns int) error {
+	if r.From > numTurns {
+		noun := "turns"
+		if numTurns == 1 {
+			noun = "turn"
+		}
+		return usageErr("--turn %d: the session has %d %s", r.From, numTurns, noun)
+	}
+	if r.To > numTurns {
+		r.To = numTurns
+	}
+	return nil
+}
+
 // isRenderFlag reports whether a flag name belongs to the render group
 // (--level and the channel toggles, including their --no- forms). Drives the
 // grouped help layout; --no-color is deliberately excluded (it is global).
 func isRenderFlag(name string) bool {
-	if name == "level" {
+	if name == "level" || name == "turn" {
 		return true
 	}
 	bare := strings.TrimPrefix(name, "no-")

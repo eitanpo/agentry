@@ -2032,3 +2032,68 @@ func TestForkWithNoMatchingPromptIsPlacedByTime(t *testing.T) {
 		t.Errorf("listing counts Skill %d times, want 1", listed)
 	}
 }
+
+// TestLoadTalliesAgreeWithTurns pins the invariant the rendered header rests on.
+// The header reads its counts off Meta rather than off Turns, because Turns holds
+// what a caller asked to render and Meta holds the session — so a narrowed
+// transcript cannot make the header report a smaller session. That only holds
+// while the two agree on a whole session, and nothing else checks it: Meta's
+// tallies are built from the entries and the per-turn counts from the turn tree,
+// by different code down different paths.
+func TestLoadTalliesAgreeWithTurns(t *testing.T) {
+	for _, logFile := range []string{"sample.jsonl", "tools.jsonl", "failures.jsonl", "agent-delegation.jsonl"} {
+		t.Run(logFile, func(t *testing.T) {
+			sess, err := Load(filepath.Join("testdata", logFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sess.Meta.NumTurns != len(sess.Turns) {
+				t.Errorf("NumTurns = %d, turns = %d", sess.Meta.NumTurns, len(sess.Turns))
+			}
+			tools, errs := 0, 0
+			for _, turn := range sess.Turns {
+				tools += turn.ToolCount
+				errs += turn.ErrorCount
+			}
+			total := func(stats []model.ToolStat) int {
+				n := 0
+				for _, s := range stats {
+					n += s.Count
+				}
+				return n
+			}
+			if got := total(sess.Meta.Tools); got != tools {
+				t.Errorf("Meta.Tools sums to %d, the turns to %d", got, tools)
+			}
+			// ErrorCount counts every top-level call that errored, and a refused
+			// call errors too, so the turns' figure is the failures and the denials
+			// together. Meta keeps them apart because they ask for different things.
+			denied := 0
+			for _, d := range sess.Meta.Denials {
+				denied += d.Count
+			}
+			if got := total(sess.Meta.Failures) + denied; got != errs {
+				t.Errorf("Meta.Failures+Denials sums to %d, the turns' ErrorCount to %d", got, errs)
+			}
+		})
+	}
+}
+
+// TestLoadNumbersEveryTurn pins that a turn carries its own place in the session.
+// Its index in Turns says the same thing only while the whole session is present,
+// and a selected slice restarts that index — so an unnumbered turn is
+// unidentifiable in exactly the output a caller asked to narrow.
+func TestLoadNumbersEveryTurn(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "sample.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) == 0 {
+		t.Fatal("fixture holds no turns")
+	}
+	for i, turn := range sess.Turns {
+		if turn.Number != i+1 {
+			t.Errorf("turn at index %d is numbered %d, want %d", i, turn.Number, i+1)
+		}
+	}
+}

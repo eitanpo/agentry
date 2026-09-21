@@ -1055,9 +1055,23 @@ func TestHeaderActiveTime(t *testing.T) {
 // different things. The log marks a refusal as an error too, so a single count
 // filed a refusal as a failure.
 func TestHeaderFailedAndDenied(t *testing.T) {
+	// The tallies sit on Meta because that is where the header reads them: Turns
+	// holds what a caller asked to render and Meta holds the session, so a
+	// narrowed transcript cannot make the header report a smaller session. The
+	// parser fills both from the same entries, and TestLoadTalliesAgreeWithTurns
+	// pins them against each other.
 	sess := &model.Session{
-		Meta: model.Meta{ID: "s1"},
+		Meta: model.Meta{
+			ID:       "s1",
+			NumTurns: 1,
+			Tools: []model.ToolStat{
+				{Tool: "Bash", Count: 1}, {Tool: "Write", Identity: "hosts", Count: 1}, {Tool: "Read", Count: 1},
+			},
+			Failures: []model.ToolStat{{Tool: "Bash", Count: 1}},
+			Denials:  []model.DenialStat{{Kind: "permission-rule", Tool: "Write", Identity: "hosts", Count: 1}},
+		},
 		Turns: []model.Turn{{
+			Number: 1,
 			Prompt: "go",
 			Events: []model.Event{
 				{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", IsError: true}},
@@ -1178,14 +1192,20 @@ func footerSession() *model.Session {
 				{Tool: "Bash", Identity: "grep", Count: 21},
 			},
 			Denials: []model.DenialStat{{Kind: "permission-rule", Tool: "Write", Identity: "/etc/hosts", Count: 1}},
+			// NumTurns and the per-turn tool counts below say the same thing twice
+			// because the parser fills them from one pass: 22 calls across two turns.
+			// A fixture whose Meta tally and whose turns disagree describes no real
+			// session, and the header reads Meta, so the disagreement would surface
+			// there as a count no session could produce.
+			NumTurns: 2,
 			DailyActivity: []model.DailyActivity{
 				{Day: "2026-09-17", Turns: 1, ActiveSeconds: 600},
 				{Day: "2026-09-18", Turns: 1, ActiveSeconds: 900},
 			},
 		},
 		Turns: []model.Turn{
-			{Prompt: "first", Usage: model.Usage{Input: 10, Output: 100}},
-			{Prompt: "second", Usage: model.Usage{Input: 20, Output: 200}},
+			{Number: 1, Prompt: "first", ToolCount: 21, Usage: model.Usage{Input: 10, Output: 100}},
+			{Number: 2, Prompt: "second", ToolCount: 1, Usage: model.Usage{Input: 20, Output: 200}},
 		},
 	}
 }
@@ -1426,7 +1446,7 @@ func TestSessionCard(t *testing.T) {
 		// away by the time a reader decides what to do with what they read. Counted
 		// twice in the output, so a card that dropped either line fails here.
 		out := render(t, Channels{Metrics: true})
-		for _, line := range []string{"2 turns · 0 tools · 2 subagents", "Tokens: 30 in / 300 out"} {
+		for _, line := range []string{"2 turns · 22 tools · 2 subagents · 1 denied", "Tokens: 30 in / 300 out"} {
 			if n := strings.Count(out, line); n != 2 {
 				t.Errorf("%q appears %d times, want 2 (header and card): %q", line, n, out)
 			}
@@ -1697,8 +1717,13 @@ func TestFailedLine(t *testing.T) {
 // flattening has a real tree to reproduce.
 func jsonlSession() *model.Session {
 	return &model.Session{
-		Meta: model.Meta{ID: "s1", Model: "claude-opus-4-8", Usage: model.Usage{Input: 10, Output: 20}},
+		Meta: model.Meta{ID: "s1", Model: "claude-opus-4-8", NumTurns: 2, Usage: model.Usage{Input: 10, Output: 20}},
 		Turns: []model.Turn{{
+			// Numbered like the parser numbers them. A hand-built turn that leaves
+			// this zero is not a shortcut: the stream reports a turn's number from
+			// the turn, since its index in a selected slice is not its place in the
+			// session.
+			Number:    1,
 			Prompt:    "first",
 			ToolCount: 1,
 			Events: []model.Event{
@@ -1715,6 +1740,7 @@ func jsonlSession() *model.Session {
 				}},
 			},
 		}, {
+			Number: 2,
 			Prompt: "second",
 			Events: []model.Event{{Kind: model.EventText, Text: "done"}},
 		}},

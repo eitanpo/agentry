@@ -50,6 +50,13 @@ type Meta struct {
 	LinesAdded   *int `json:"linesAdded,omitempty"`
 	LinesRemoved *int `json:"linesRemoved,omitempty"`
 	NumSubagents int  `json:"numSubagents"`
+	// NumTurns is how many turns the session holds, which is not the length of
+	// Turns whenever a caller selected a slice of them. It mirrors the Summary
+	// field of the same name, so a count read off a listing and one read off a
+	// render agree. Carried on Meta rather than inferred, because inferring it
+	// from Turns is exactly what a slice makes wrong, and a consumer reading three
+	// turns has no other way to learn there were thirty-one.
+	NumTurns int `json:"numTurns"`
 	// Entrypoint and Entrypoints mirror the Summary fields of the same names,
 	// resolved identically, so the render path and the listing never disagree
 	// about where one session ran.
@@ -387,6 +394,12 @@ type DailyActivity struct {
 
 // Turn is one user prompt and the assistant activity that followed it.
 type Turn struct {
+	// Number is the turn's 1-based place in the session, which its index in Turns
+	// gives only while the whole session is present. A selected slice restarts
+	// that index at zero, so a turn that did not carry its own number would be
+	// unidentifiable in exactly the output a caller asked to narrow — and the
+	// numbers a search prints would name nothing.
+	Number     int       `json:"turn"`
 	Prompt     string    `json:"prompt"`
 	Start      time.Time `json:"start"`
 	End        time.Time `json:"end"`
@@ -464,4 +477,31 @@ type Tool struct {
 	Start    time.Time `json:"start"`
 	End      time.Time `json:"end"`
 	Subagent []Event   `json:"subagent,omitempty"` // nested event stream when this call spawned a subagent
+}
+
+// TurnRange is an inclusive span of a session's turns, by the numbers Turn.Number
+// carries. Both bounds are 1-based, the numbering a render prints and a search
+// reports, so a caller copies a number out of one and into the other.
+type TurnRange struct {
+	From int
+	To   int
+}
+
+// Select returns the session narrowed to one span of its turns. Meta is carried
+// whole and unchanged: it describes the session, not the span, and recomputing it
+// over three turns of thirty-one would report a different session under the same
+// id. NumTurns and each turn's Number are what let a reader of the result tell
+// which session and which turns they are holding.
+//
+// The session is copied rather than edited in place, because a caller that asked
+// to render part of a session did not ask for its parsed model to lose the rest.
+func Select(s *Session, r TurnRange) *Session {
+	out := *s
+	out.Turns = []Turn{}
+	for _, t := range s.Turns {
+		if t.Number >= r.From && t.Number <= r.To {
+			out.Turns = append(out.Turns, t)
+		}
+	}
+	return &out
 }

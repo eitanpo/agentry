@@ -11,6 +11,7 @@ import (
 	"github.com/eitanpo/agentry/internal/config"
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/locate"
+	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/parse"
 	"github.com/eitanpo/agentry/internal/render"
 )
@@ -45,12 +46,19 @@ func newRootCmd(version string, settings *config.Settings) *cobra.Command {
 			"  agentry view                 render the most recent session\n" +
 			"  agentry view --level full    render the most recent in full detail\n" +
 			"  agentry search \"a phrase\"    where that phrase sits in a session\n" +
+			"  agentry <uuid> --turn 11     render one turn of it, not the whole log\n" +
 			"  agentry list --since 7d      list sessions from the last 7 days\n" +
 			"  agentry cost --by month      what each month cost",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// No id lists; a full id renders. renderSession handles the
 			// verb-vs-id did-you-mean for a non-id first token.
 			if len(args) == 0 {
+				// --turn selects inside one session's transcript, and a listing has no
+				// transcript to select from. Ignoring it would leave a caller believing
+				// a slice applied, the way --include and --from did before they errored.
+				if cmd.Flags().Changed("turn") {
+					return usageErr("--turn belongs to the render path: pass a session id, or use `agentry view --turn`")
+				}
 				return runList(cmd, &noColor)
 			}
 			return renderSession(cmd, args, &noColor, true)
@@ -99,6 +107,10 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 		return err
 	}
 	from, err := parseFrom(cmd)
+	if err != nil {
+		return err
+	}
+	selected, err := parseTurns(cmd)
 	if err != nil {
 		return err
 	}
@@ -152,6 +164,17 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 		return noInputErr(err)
 	}
 
+	// A selector, not a text-shaping flag, so it narrows the machine forms too —
+	// the rule the listing's selectors already follow against --format json. It is
+	// applied once, before the emitters branch, so the three formats cannot
+	// disagree about which turns a caller asked for.
+	if selected != nil {
+		if err := clampTurns(selected, sess.Meta.NumTurns); err != nil {
+			return err
+		}
+		sess = model.Select(sess, *selected)
+	}
+
 	if machineFormat(format) {
 		emit := render.SessionJSON
 		if format == "jsonl" {
@@ -165,7 +188,7 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 
 	color, width := terminal(*noColor)
 	if err := render.Session(cmd.OutOrStdout(), sess, render.Options{
-		Width: width, Color: color, Channels: channels,
+		Width: width, Color: color, Channels: channels, Selected: selected,
 	}); err != nil {
 		return &exitError{code: 1, err: err}
 	}

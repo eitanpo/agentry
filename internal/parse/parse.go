@@ -69,6 +69,7 @@ func Load(jsonlPath string) (*model.Session, error) {
 			Model:        lastOf(ms),
 			Models:       manyOrNone(ms),
 			NumSubagents: len(subs),
+			NumTurns:     len(turns),
 			Entrypoint:   lastOf(eps),
 			Entrypoints:  manyOrNone(eps),
 			Effort:       lastOf(effs),
@@ -105,6 +106,7 @@ func Load(jsonlPath string) (*model.Session, error) {
 	forksPerTurn := unclaimedForks(turns, entries, subs, nameLinks)
 	for i, t := range turns {
 		turn := model.Turn{
+			Number: i + 1,
 			Prompt: t.prompt,
 			Start:  t.start,
 			End:    t.end,

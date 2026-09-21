@@ -74,6 +74,13 @@ type Options struct {
 	Width    int
 	Color    bool
 	Channels Channels
+	// Selected is the span of turns the caller narrowed the transcript to, nil
+	// for a whole session. The turns are already filtered when this is set; the
+	// span is carried so the render can say which it is showing. Without that
+	// line a slice is a whole session as far as the page shows: the header still
+	// counts thirty-one turns, three follow it, and nothing says whether the rest
+	// were excluded or failed.
+	Selected *model.TurnRange
 }
 
 type renderer struct {
@@ -164,8 +171,8 @@ func SessionJSONL(w io.Writer, s *model.Session) error {
 	if err := enc.Emit("meta", id, s.Meta.Start, s.Meta); err != nil {
 		return err
 	}
-	for i, t := range s.Turns {
-		n := i + 1
+	for _, t := range s.Turns {
+		n := t.Number
 		rec := turnRecord{
 			Turn: n, Prompt: t.Prompt, Start: t.Start, End: t.End,
 			Usage: t.Usage, ToolCount: t.ToolCount, ErrorCount: t.ErrorCount,
@@ -219,6 +226,9 @@ func Session(w io.Writer, s *model.Session, opts Options) error {
 
 	var b strings.Builder
 	b.WriteString(r.header(s))
+	if line := r.selection(s); line != "" {
+		b.WriteString(line)
+	}
 	for _, t := range s.Turns {
 		b.WriteString("\n")
 		b.WriteString(r.turn(t))
@@ -300,12 +310,41 @@ func (r *renderer) header(s *model.Session) string {
 // countParts is the session's size, as the header's third line and the closing
 // card both print it. One helper because two surfaces counting one session
 // differently is the failure a reader cannot detect — both look like counts.
-func (r *renderer) countParts(s *model.Session) []string {
-	tools := 0
-	for _, t := range s.Turns {
-		tools += t.ToolCount
+// selection names the span a narrowed transcript is showing, directly beneath
+// the header that counts the whole session, which is where the two would
+// otherwise contradict each other. Empty for a whole session, which needs no
+// line: a render that shows everything saying so would put chrome on every
+// session to describe the ordinary case.
+//
+// It goes on stdout rather than stderr, unlike the listing's cap note. That note
+// sits among line-oriented rows a caller reads a field off; a render is prose
+// and a reader who pipes one, pastes one, or reads one back later needs it to
+// say what it holds.
+func (r *renderer) selection(s *model.Session) string {
+	sel := r.opts.Selected
+	if sel == nil {
+		return ""
 	}
-	parts := []string{plural(len(s.Turns), "turn"), plural(tools, "tool")}
+	span := fmt.Sprintf("turn %d", sel.From)
+	if sel.To != sel.From {
+		// A plain hyphen rather than an en dash, so the span reads back as the
+		// flag value that produced it: a reader who copies "10-12" out of this
+		// line can pass it straight to --turn, where a dash they cannot type
+		// would make the line decorative.
+		span = fmt.Sprintf("turns %d-%d", sel.From, sel.To)
+	}
+	return r.dim.Render(fmt.Sprintf("%sshowing %s of %s", assistantIndent, span, plural(s.Meta.NumTurns, "turn"))) + "\n"
+}
+
+// Every figure comes off Meta rather than out of Turns, because Turns holds
+// what a caller asked to render and Meta holds the session. A narrowed
+// transcript counted from Turns reported "1 turn" beside the whole session's
+// tokens and dollars, which reads as one turn having cost the lot. The two
+// sources agree exactly on a whole session — the session tallies are the
+// per-turn counts grouped, not recounted — so this is one source rather than a
+// second answer.
+func (r *renderer) countParts(s *model.Session) []string {
+	parts := []string{plural(s.Meta.NumTurns, "turn"), plural(totalOf(s.Meta.Tools), "tool")}
 	if s.Meta.NumSubagents > 0 {
 		parts = append(parts, plural(s.Meta.NumSubagents, "subagent"))
 	}
@@ -313,7 +352,7 @@ func (r *renderer) countParts(s *model.Session) []string {
 	// different things — a failure is something to go fix, a refusal is a boundary
 	// that held — so they are counted apart rather than summed into "errors".
 	// Each is dropped when it is zero, the rule every optional figure here follows.
-	failed, denied := failedAndDenied(s)
+	failed, denied := totalOf(s.Meta.Failures), deniedTotal(s.Meta.Denials)
 	if failed > 0 {
 		parts = append(parts, r.bad.Render(fmt.Sprintf("%d failed", failed)))
 	}
@@ -355,6 +394,29 @@ func when(m model.Meta) string {
 		line += " · " + active
 	}
 	return line
+}
+
+// totalOf sums a tool tally's counts. The tallies are top-level calls grouped by
+// tool and identity, so the sum is the session's own call count — the figure the
+// header prints beside its turn count.
+func totalOf(stats []model.ToolStat) int {
+	n := 0
+	for _, s := range stats {
+		n += s.Count
+	}
+	return n
+}
+
+// deniedTotal sums the refusals. A separate function because a denial is
+// counted by a different row type: the same call can appear among the tools it
+// ran as and among the refusals it was stopped as, which is why the two are not
+// one list.
+func deniedTotal(stats []model.DenialStat) int {
+	n := 0
+	for _, s := range stats {
+		n += s.Count
+	}
+	return n
 }
 
 // ranOnParts is what the session ran on — the model, the effort it was run at,
