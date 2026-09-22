@@ -258,8 +258,8 @@ func searchOne(cmd *cobra.Command, spec searchArgs, re *regexp.Regexp, from, for
 	case "jsonl":
 		err2 = render.HitsJSONL(out, hits, sess.Meta.ID)
 	default:
-		color, _ := terminal(*noColor)
-		err2 = render.Hits(out, hits, re, color)
+		color, width := terminal(*noColor)
+		err2 = render.Hits(out, hits, re, color, width)
 	}
 	if err2 != nil {
 		return &exitError{code: 1, err: err2}
@@ -336,8 +336,8 @@ func searchSessions(cmd *cobra.Command, noun string, re *regexp.Regexp, format s
 		// stream addressable.
 		err = render.HitsJSONL(out, hits, "")
 	default:
-		color, _ := terminal(*noColor)
-		err = render.Findings(out, groups, re, color)
+		color, width := terminal(*noColor)
+		err = render.Findings(out, groups, re, color, width)
 	}
 	if err != nil {
 		return &exitError{code: 1, err: err}

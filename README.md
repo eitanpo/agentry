@@ -146,8 +146,10 @@ the most recent match is the one next to your prompt.
 The locator names the calls delegated through to reach the line and then which piece matched —
 `prompt`, `text`, `thinking`, `args`, `instruction` (the brief an `Agent` call handed a subagent) or
 `result`, with the line's number inside that body after a colon. It searches the whole session whatever `--level` would show, so a passage you know is in the
-log is never reported missing; nothing is capped and no line is cut, so pipe to `head` when a pattern
-is broad. A pattern that matched nothing prints nothing and exits zero.
+log is never reported missing. Each finding's text is one row, cut to your terminal's width around the
+match with `…` on whichever end was cut — a matching line can be a whole captured result, and one of
+those uncut buries the rest of the run. The number of findings is not capped, so pipe to `head` when a
+pattern is broad. A pattern that matched nothing prints nothing and exits zero.
 
 The pattern is a regular expression — Go's `regexp`, whose syntax is RE2, so look-around and
 backreferences are parse errors rather than features you are missing a flag for. Case comes from the

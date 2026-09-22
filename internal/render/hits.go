@@ -51,8 +51,8 @@ const (
 // conventions prefer a wrap to a drop for exactly that reason. Nothing caps the
 // number of hits either: the caller pipes to `head` the way they would any
 // search, and a cap agentry chose would hide matches a pattern asked for.
-func Hits(w io.Writer, hits []search.Hit, re *regexp.Regexp, color bool) error {
-	return Findings(w, []search.Group{{Hits: hits}}, re, color)
+func Hits(w io.Writer, hits []search.Hit, re *regexp.Regexp, color bool, width int) error {
+	return Findings(w, []search.Group{{Hits: hits}}, re, color, width)
 }
 
 // Findings writes each session's findings under its own heading, which is the
@@ -60,7 +60,10 @@ func Hits(w io.Writer, hits []search.Hit, re *regexp.Regexp, color bool) error {
 // rather than two invented ones. A single group whose match names no session is
 // the one-session case and prints no heading: the caller already knows which
 // session they searched, and a heading would indent every finding to say so.
-func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool) error {
+func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool, width int) error {
+	if width <= 0 {
+		width = fallbackWidth
+	}
 	if !color {
 		// The same global the session render sets: under the Ascii profile every
 		// style renders to plain text, so one styling path serves both.
@@ -82,7 +85,7 @@ func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool)
 				b.WriteString("\n")
 			}
 			b.WriteString(r.matchRow(g.Match, layout))
-			b.WriteString("\n\n")
+			b.WriteString("\n")
 			indent = findingIndent
 		}
 		for _, h := range g.Hits {
@@ -92,7 +95,7 @@ func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool)
 			b.WriteString(r.tool.Render(hitLocation(h)))
 			b.WriteString("\n")
 			b.WriteString(indent + findingIndent)
-			b.WriteString(r.highlight(h.Text, re))
+			b.WriteString(r.highlight(findingText(h.Text, re, width-len(indent)-len(findingIndent)), re))
 			b.WriteString("\n")
 		}
 	}
@@ -209,6 +212,64 @@ func (r *renderer) matchRow(m search.Match, l matchLayout) string {
 		b.WriteString(r.body.Render(title))
 	}
 	return b.String()
+}
+
+// findingText is the one row a finding's text occupies: the matching line where
+// it fits the column, and a window of it around the match where it does not.
+//
+// A matching line can be a whole captured result — lines of twenty-five thousand
+// characters occur in real logs, which wrap to hundreds of screen rows and bury
+// every other finding in the run. The window is centred on the match rather than
+// cut from the head of the line, because a head-cut window need not contain the
+// match at all: it would print characters the pattern never touched and leave the
+// reader to take on trust that the passage is in there somewhere.
+//
+// The cut end carries an ellipsis, so what went is named rather than silently
+// absent. What it costs the reader is the rest of that line, which the locator
+// beside it says how to reach: `agentry view --turn <n>` prints the body whole.
+func findingText(line string, re *regexp.Regexp, column int) string {
+	runes := []rune(line)
+	if column < minContentWidth {
+		column = minContentWidth
+	}
+	if len(runes) <= column {
+		return line
+	}
+	// Both ellipses are budgeted for up front rather than after placing the
+	// window: subtracting them afterwards can push the match back out of a window
+	// that had just been sized to hold it.
+	const ellipsis = "…"
+	room := column - 2*len([]rune(ellipsis))
+	if room < minContentWidth {
+		room = minContentWidth
+	}
+	start := 0
+	if re != nil {
+		if at := re.FindStringIndex(line); at != nil {
+			from := len([]rune(line[:at[0]]))
+			width := len([]rune(line[at[0]:at[1]]))
+			// Centred where the match is shorter than the window; otherwise the window
+			// opens at the match, which is the most of it a row can show.
+			start = from
+			if width < room {
+				start = from - (room-width)/2
+			}
+		}
+	}
+	if start+room > len(runes) {
+		start = len(runes) - room
+	}
+	if start < 0 {
+		start = 0
+	}
+	out := string(runes[start : start+room])
+	if start > 0 {
+		out = ellipsis + out
+	}
+	if start+room < len(runes) {
+		out += ellipsis
+	}
+	return out
 }
 
 // hitLocation names where inside the turn the line sits: the calls delegated

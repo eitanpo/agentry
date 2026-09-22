@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/eitanpo/agentry/internal/search"
 )
@@ -35,7 +36,7 @@ func hitFixture() []search.Hit {
 // two is the boundary rather than a decoration.
 func TestHitsFindingShape(t *testing.T) {
 	var b strings.Builder
-	if err := Hits(&b, hitFixture(), regexp.MustCompile("tally helper"), false); err != nil {
+	if err := Hits(&b, hitFixture(), regexp.MustCompile("tally helper"), false, 0); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
@@ -84,7 +85,7 @@ func TestFindingsHeadsEachSessionOnce(t *testing.T) {
 		},
 	}
 	var b strings.Builder
-	if err := Findings(&b, groups, nil, false); err != nil {
+	if err := Findings(&b, groups, nil, false, 0); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
@@ -136,7 +137,7 @@ func TestFindingsHeadsEachSessionOnce(t *testing.T) {
 	}
 
 	var one strings.Builder
-	if err := Hits(&one, groups[0].Hits, nil, false); err != nil {
+	if err := Hits(&one, groups[0].Hits, nil, false, 0); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(one.String(), "aaaa1111") {
@@ -152,7 +153,7 @@ func TestFindingsHeadsEachSessionOnce(t *testing.T) {
 // one hit list disagree with itself about which call it is pointing at.
 func TestHitsNamesACallOneWay(t *testing.T) {
 	var b strings.Builder
-	if err := Hits(&b, hitFixture(), nil, false); err != nil {
+	if err := Hits(&b, hitFixture(), nil, false, 0); err != nil {
 		t.Fatal(err)
 	}
 	if n := strings.Count(b.String(), "Agent[Explore@haiku]"); n != 2 {
@@ -160,26 +161,51 @@ func TestHitsNamesACallOneWay(t *testing.T) {
 	}
 }
 
-// TestHitsLeavesLongLinesWhole pins that no line is cut to a width. A hit the
-// caller cannot read in full is one they have to go looking for twice, and the
-// wrap the terminal does costs them a line instead of the fact.
-func TestHitsLeavesLongLinesWhole(t *testing.T) {
-	long := strings.Repeat("token ", 200)
+// TestHitsCutsALongLineAroundItsMatch pins the one-row rule and the window it
+// cuts. A matching line can be a whole captured result — twenty-five thousand
+// characters occurs in real logs, which wraps to hundreds of screen rows and
+// buries every other finding in the run.
+//
+// The window is centred on the match, and the failure that demands it is the
+// head-cut: a window taken from the start of a long line need not hold the match
+// at all, so the row would print characters the pattern never touched while
+// claiming to show where it matched.
+func TestHitsCutsALongLineAroundItsMatch(t *testing.T) {
+	const column = 60
+	// The match sits far past the column, which is where a head-cut window loses
+	// it.
+	long := strings.Repeat("token ", 200) + "the tally helper" + strings.Repeat(" more", 200)
 	hits := []search.Hit{{Turn: 1, Part: search.PartResult, Tool: "Read", Line: 1, Text: long}}
 	var b strings.Builder
-	if err := Hits(&b, hits, nil, false); err != nil {
+	if err := Hits(&b, hits, regexp.MustCompile("tally helper"), false, column); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(b.String(), long) {
-		t.Errorf("the matching line was cut: %q", b.String())
+	out := b.String()
+
+	if !strings.Contains(out, "tally helper") {
+		t.Errorf("the window does not hold the match it reported: %q", out)
 	}
-	if strings.Contains(b.String(), "…") {
-		t.Errorf("a hit line was elided, but nothing here is capped: %q", b.String())
+	if !strings.Contains(out, "…") {
+		t.Errorf("the line was cut and nothing says so: %q", out)
 	}
-	// One hit is two output lines whatever the text's length: the wrap is the
-	// terminal's to do, so nothing here breaks the text across lines itself.
-	if n := strings.Count(b.String(), "\n"); n != 2 {
-		t.Errorf("newlines = %d, want 2 for one finding", n)
+	// One finding is two rows however long its text, and the text row fits the
+	// column it was cut to.
+	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 for one finding: %q", len(rows), out)
+	}
+	if n := utf8.RuneCountInString(rows[1]); n > column {
+		t.Errorf("the text row is %d columns wide, want at most %d: %q", n, column, rows[1])
+	}
+
+	// A line that fits is printed whole, with nothing to name.
+	short := []search.Hit{{Turn: 1, Part: search.PartText, Line: 1, Text: "the tally helper"}}
+	var fits strings.Builder
+	if err := Hits(&fits, short, regexp.MustCompile("tally"), false, column); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fits.String(), "the tally helper") || strings.Contains(fits.String(), "…") {
+		t.Errorf("a line that fits was cut: %q", fits.String())
 	}
 }
 
@@ -188,7 +214,7 @@ func TestHitsLeavesLongLinesWhole(t *testing.T) {
 func TestHitsHighlightsOnlyWithColor(t *testing.T) {
 	hits := []search.Hit{{Turn: 1, Part: search.PartText, Line: 1, Text: "the tally helper"}}
 	var plain strings.Builder
-	if err := Hits(&plain, hits, regexp.MustCompile("tally"), false); err != nil {
+	if err := Hits(&plain, hits, regexp.MustCompile("tally"), false, 0); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(plain.String(), "\x1b") {
