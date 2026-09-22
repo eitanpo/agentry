@@ -231,6 +231,9 @@ terminal), `Tools (by identity)` (which skills, agents and commands ran, how oft
 `Day by day` (turns, active time and cost per day, on a session that ran across more than one) and
 `Session`. None of them is gated on `--level`, so a bare `agentry <uuid>` shows all seven;
 `--no-metrics` drops the four aggregates and keeps the files, the outputs and the closing card.
+Each section's rows hang off a rail closed by a rule (`╰─`) — the shape a turn's reply and a
+listing's detail blocks already use — so where a section ends is marked rather than left to the
+next header to imply.
 
 **Every session gets a dollar figure, and you can tell it from Claude Code's own.** Claude Code records a cost for some sessions; agentry prices the rest from their tokens, the same way
 `agentry cost` does. A recorded figure prints as `$12.50` and a computed one as `~$12.50`, and the

@@ -1133,6 +1133,25 @@ func (r *renderer) glamourFor(width int) *glamour.TermRenderer {
 
 // ── Outputs ────────────────────────────────────────────────────────────────
 
+// railHeaded bounds a footer section's rows with the rail every block under a
+// header hangs off. The first line is the header and the rest are the block: each
+// already carries sectionIndent, which the rail's own prefix replaces, so a
+// section goes on writing its rows and the chrome is applied in one place.
+//
+// A section with no rows is returned untouched, since a rule bounding nothing
+// reads as a section that found nothing rather than one with nothing to find.
+func (r *renderer) railHeaded(section string) string {
+	lines := strings.Split(strings.TrimRight(section, "\n"), "\n")
+	if len(lines) < 2 {
+		return section
+	}
+	rows := make([]string, 0, len(lines)-1)
+	for _, line := range lines[1:] {
+		rows = append(rows, strings.TrimPrefix(line, sectionIndent))
+	}
+	return strings.Join(append(lines[:1], Rail(rows, r.dim)...), "\n") + "\n"
+}
+
 // outputs lists what the session produced beyond its own transcript: the pull
 // requests it opened, then the artifacts it published. Empty when it produced
 // neither, which is the signal not to draw the section at all.
@@ -1170,7 +1189,7 @@ func (r *renderer) outputs(s *model.Session) string {
 		}
 		b.WriteString(indent + r.maybeLink(truncate(text, width), href) + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // files lists what the session modified, from Claude Code's own file-history
@@ -1186,7 +1205,7 @@ func (r *renderer) files(s *model.Session) string {
 	if len(paths) == 0 {
 		return ""
 	}
-	width := max(r.opts.Width-len(sectionIndent), minContentWidth)
+	width := max(r.opts.Width-RailWidth(), minContentWidth)
 
 	var b strings.Builder
 	b.WriteString(r.dim.Render("── Files ──") + "\n")
@@ -1202,7 +1221,7 @@ func (r *renderer) files(s *model.Session) string {
 	if rest := len(paths) - len(shown); rest > 0 {
 		b.WriteString(r.dim.Render(fmt.Sprintf("%s…  (%s)", sectionIndent, plural(rest, "more file"))) + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // identities tallies which skills, agents and commands ran, through the same
@@ -1216,14 +1235,14 @@ func (r *renderer) identities(s *model.Session) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	width := max(r.opts.Width-len(sectionIndent), minContentWidth)
+	width := max(r.opts.Width-RailWidth(), minContentWidth)
 
 	var b strings.Builder
 	b.WriteString(r.dim.Render("── Tools (by identity) ──") + "\n")
 	for _, line := range lines {
 		b.WriteString(sectionIndent + truncate(line, width) + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // dayByDay splits the session's turns and active time across the days it ran on.
@@ -1251,7 +1270,7 @@ func (r *renderer) dayByDay(s *model.Session) string {
 		}
 		b.WriteString(line + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // turnNoun is the bare noun plural() would attach to a count, for a column that
@@ -1287,7 +1306,7 @@ func (r *renderer) card(s *model.Session) string {
 	if m.ID == "" {
 		return ""
 	}
-	width := max(r.opts.Width-len(sectionIndent)-cardLabelWidth, minContentWidth)
+	width := max(r.opts.Width-RailWidth()-cardLabelWidth, minContentWidth)
 
 	var b strings.Builder
 	b.WriteString(r.dim.Render("── Session ──") + "\n")
@@ -1322,7 +1341,7 @@ func (r *renderer) card(s *model.Session) string {
 	// none of them, so a prefix printed here could name two sessions.
 	row("render", "agentry "+m.ID, false)
 	row("resume", "claude --resume "+m.ID, false)
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // spent is one axis's share of what the session's tokens are worth: a model, a
@@ -1417,7 +1436,7 @@ func (r *renderer) cost(s *model.Session) string {
 	if m.CostUSD == nil && total == 0 {
 		return ""
 	}
-	width := max(r.opts.Width-len(sectionIndent)-cardLabelWidth, minContentWidth)
+	width := max(r.opts.Width-RailWidth()-cardLabelWidth, minContentWidth)
 
 	var b strings.Builder
 	b.WriteString(r.dim.Render("── Cost ──") + "\n")
@@ -1453,7 +1472,7 @@ func (r *renderer) cost(s *model.Session) string {
 	if len(unpriced) > 0 {
 		row("unpriced", strings.Join(unpriced, ", ")+r.dim.Render("   no list price held for this model"))
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // truncateLeft cuts s to limit runes from the left, keeping the tail. Paths are
@@ -1521,7 +1540,7 @@ func (r *renderer) summary(s *model.Session) string {
 	if rest := len(rows) - limit; rest > 0 {
 		b.WriteString(r.dim.Render(fmt.Sprintf("  …  (%s)", plural(rest, "more step"))) + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // ── Formatting helpers ──────────────────────────────────────────────────────

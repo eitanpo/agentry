@@ -1559,6 +1559,12 @@ func TestTurnRuleSplitsFailedAndDenied(t *testing.T) {
 	}
 }
 
+// unrail is a footer row without the chrome bounding its section, so a test can
+// match on what the row says rather than on what encloses it.
+func unrail(line string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), railGlyph))
+}
+
 // TestCostSection pins the footer's money section (PRODUCT.md §Output): what
 // Claude Code recorded, what agentry prices the same tokens at, and which model,
 // which delegation and what unit of work that price went to. The recorded figure
@@ -1610,7 +1616,7 @@ func TestCostSection(t *testing.T) {
 		}
 		day := ""
 		for _, line := range strings.Split(b.String(), "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "2026-09-17") {
+			if strings.HasPrefix(unrail(line), "2026-09-17") {
 				day = line
 			}
 		}
@@ -2278,5 +2284,42 @@ func TestNumbersABodyOfManyLines(t *testing.T) {
 		if strings.Contains(line, "just the one line") && strings.Contains(line, "1 just") {
 			t.Errorf("a one-line body was numbered: %q", line)
 		}
+	}
+}
+
+// TestFooterSectionsHangOffTheRail pins that a rendered session's footer follows
+// the bounded-block rule the listing and the search findings follow: the rows
+// under a section header hang off a rail and a rule closes them.
+//
+// Without it the section's extent was left to the next header to imply, and the
+// last section on the page had nothing to imply it at all.
+func TestFooterSectionsHangOffTheRail(t *testing.T) {
+	sess := &model.Session{
+		Meta:  model.Meta{ID: "aaaa1111", NumTurns: 1, Title: "a session"},
+		Turns: []model.Turn{{Number: 1, Prompt: "go"}},
+	}
+	var b strings.Builder
+	if err := Session(&b, sess, Options{Width: 100, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	if !strings.Contains(out, "── Session ──\n"+assistantIndent+railGlyph+" id       aaaa1111") {
+		t.Errorf("the card's first row does not hang off the rail:\n%s", out)
+	}
+	if !strings.Contains(out, assistantIndent+railGlyph+" title    a session") {
+		t.Errorf("a card row does not hang off the rail:\n%s", out)
+	}
+	if !strings.Contains(out, assistantIndent+railClose) {
+		t.Errorf("no rule closes the section:\n%s", out)
+	}
+
+	// A section that wrote nothing stays nothing. Without this a caller that
+	// returns "" for an empty section would have it turned into a bare line,
+	// which is chrome bounding no content.
+	r := &renderer{opts: Options{Width: 100}}
+	r.initStyles()
+	if got := r.railHeaded(""); got != "" {
+		t.Errorf("an empty section rendered as %q, want nothing", got)
 	}
 }
