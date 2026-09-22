@@ -417,3 +417,112 @@ func TestSearchHelpNamesTheCaseRuleAndItsOverrides(t *testing.T) {
 		}
 	}
 }
+
+// TestSearchNounDispatch pins how the positionals are read. A first positional
+// naming a unit is that unit — the rule agentry already applies a level up,
+// where a first token naming a verb is the verb and not a session id — so the
+// word has to be reachable some other way, and `--` is that way.
+func TestSearchNounDispatch(t *testing.T) {
+	const id = "ba6b3ded-475b-4c3a-96fe-99698a557d14"
+
+	searchFixture(t, "sample.jsonl", id)
+	code, out, errOut := exec("search", "turn")
+	if code != exUsage {
+		t.Errorf("a noun with no pattern exits %d, want %d (exUsage)", code, exUsage)
+	}
+	// Both unambiguous spellings, since the caller meant one of them and the
+	// error is the only place they find out which they can type.
+	for _, want := range []string{"agentry search turn <pattern>", "agentry search -- turn"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("the error does not offer %q: %q", want, errOut)
+		}
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+
+	// The end-of-options form reaches the noun word itself. The pattern has to be
+	// the noun for this to test anything: any other word is not a noun at either
+	// position, so the run would succeed whether or not `--` was honoured.
+	searchFixture(t, "sample.jsonl", id)
+	code, out, errOut = exec("search", "--", "turn")
+	if code != 0 {
+		t.Errorf("`search -- turn` exits %d, want 0 — the word was read as the noun (stderr %q)", code, errOut)
+	}
+	if strings.Contains(errOut, "no pattern given") {
+		t.Errorf("`search -- turn` reported a missing pattern: %q", errOut)
+	}
+	// The fixture holds no such word, so nothing matching is the right answer and
+	// the exit code above is what says the word was read as a pattern.
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing — the fixture has no such word", out)
+	}
+
+	// The session noun reports a row per session rather than a finding per line.
+	searchFixture(t, "sample.jsonl", id)
+	code, out, errOut = exec("search", "session", "prompt")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	if !strings.Contains(out, id) || !strings.Contains(out, "matched") {
+		t.Errorf("the session row names neither the session nor its count: %q", out)
+	}
+	if strings.Contains(out, "second prompt") {
+		t.Errorf("the session noun printed a matching line: %q", out)
+	}
+
+	// And the turn noun reports findings, with the matching line under a locator.
+	searchFixture(t, "sample.jsonl", id)
+	code, out, errOut = exec("search", "turn", "second prompt")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	if !strings.Contains(out, "second prompt") || !strings.Contains(out, "turn 3") {
+		t.Errorf("the turn noun printed no finding: %q", out)
+	}
+}
+
+// TestSearchAndListSelectTheSameSessions is the drift guard on the selection
+// flags. Both verbs read them through one parser and apply them in one order, and
+// a filter that selected different sessions depending on the verb it was typed at
+// would be one flag with two behaviors — invisible, because each verb's own output
+// looks right on its own.
+func TestSearchAndListSelectTheSameSessions(t *testing.T) {
+	const id = "ba6b3ded-475b-4c3a-96fe-99698a557d14"
+
+	ids := func(t *testing.T, args ...string) []string {
+		t.Helper()
+		code, out, errOut := exec(args...)
+		if code != 0 {
+			t.Fatalf("%v: exit = %d (stderr %q)", args, code, errOut)
+		}
+		var found []string
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, id) {
+				found = append(found, id)
+			}
+		}
+		return found
+	}
+
+	for _, tc := range []struct {
+		what   string
+		filter []string
+		want   int
+	}{
+		// A filter the fixture satisfies, and one it does not: agreement on the
+		// empty answer is the half that a shared parser could still get wrong.
+		{"a tool the session used", []string{"--used-tool", "Bash"}, 1},
+		{"a tool it never used", []string{"--used-tool", "WebFetch"}, 0},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			searchFixture(t, "sample.jsonl", id)
+			listed := ids(t, append([]string{"list", "--limit", "all"}, tc.filter...)...)
+			searchFixture(t, "sample.jsonl", id)
+			searched := ids(t, append([]string{"search", "session", "prompt"}, tc.filter...)...)
+			if len(listed) != tc.want || len(searched) != tc.want {
+				t.Errorf("list selected %d and search selected %d, want %d each", len(listed), len(searched), tc.want)
+			}
+		})
+	}
+}

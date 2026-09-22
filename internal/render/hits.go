@@ -23,10 +23,18 @@ import (
 // in one cut however many separators that text holds itself.
 const hitSeparator = " · "
 
-// Hits writes one line per hit: the turn to go read, where inside that turn the
-// line sits, and the whole matching line. Line-oriented on purpose — the gap
-// this closes was a reader rendering a session to a file and grepping it, so
-// what replaces that had better pipe.
+// findingIndent is how far a finding's text sits under its locator. Two columns:
+// enough that the indent alone marks where one finding ends and the next begins,
+// which is why no blank line separates them — a blank line would restate the
+// boundary at a quarter more height again.
+const findingIndent = "  "
+
+// Hits writes one finding per hit as two rows: a locator naming the turn and
+// where inside it the line sits, then the matching line indented beneath. One
+// row does not fit — measured over 206 real hits the locator runs to 58 columns
+// and 72% of findings pass 80 columns with both on a line, wrapping mid-token
+// with no indent to mark the continuation. Two rows cost 20% more height rather
+// than double, because that text was already wrapping.
 //
 // The matched text is never cut to the terminal's width. A long line wraps for
 // display, which costs the reader a wrapped line and leaves them the fact;
@@ -35,6 +43,15 @@ const hitSeparator = " · "
 // number of hits either: the caller pipes to `head` the way they would any
 // search, and a cap agentry chose would hide matches a pattern asked for.
 func Hits(w io.Writer, hits []search.Hit, re *regexp.Regexp, color bool) error {
+	return Findings(w, []search.Group{{Hits: hits}}, re, color)
+}
+
+// Findings writes each session's findings under its own heading, which is the
+// row `agentry search session` prints on its own — one row type for both nouns
+// rather than two invented ones. A single group whose match names no session is
+// the one-session case and prints no heading: the caller already knows which
+// session they searched, and a heading would indent every finding to say so.
+func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool) error {
 	if !color {
 		// The same global the session render sets: under the Ascii profile every
 		// style renders to plain text, so one styling path serves both.
@@ -43,16 +60,69 @@ func Hits(w io.Writer, hits []search.Hit, re *regexp.Regexp, color bool) error {
 	r := &renderer{opts: Options{Color: color}}
 	r.initStyles()
 	var b strings.Builder
-	for _, h := range hits {
-		b.WriteString(r.dim.Render(fmt.Sprintf("turn %d", h.Turn)))
-		b.WriteString(hitSeparator)
-		b.WriteString(r.tool.Render(hitLocation(h)))
-		b.WriteString(hitSeparator)
-		b.WriteString(r.highlight(h.Text, re))
+	heading := len(groups) > 1 || (len(groups) == 1 && groups[0].Match.Session != "")
+	for i, g := range groups {
+		indent := ""
+		if heading {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(r.matchRow(g.Match))
+			b.WriteString("\n\n")
+			indent = findingIndent
+		}
+		for _, h := range g.Hits {
+			b.WriteString(indent)
+			b.WriteString(r.dim.Render(fmt.Sprintf("turn %d", h.Turn)))
+			b.WriteString(hitSeparator)
+			b.WriteString(r.tool.Render(hitLocation(h)))
+			b.WriteString("\n")
+			b.WriteString(indent + findingIndent)
+			b.WriteString(r.highlight(h.Text, re))
+			b.WriteString("\n")
+		}
+	}
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+// Matches writes one row per session that holds findings — `agentry search
+// session` with nothing beneath each row. The same row Findings heads a group
+// with, so a caller reading both sees one session described one way.
+func Matches(w io.Writer, matches []search.Match, color bool) error {
+	if !color {
+		lipgloss.SetColorProfile(termenv.Ascii)
+	}
+	r := &renderer{opts: Options{Color: color}}
+	r.initStyles()
+	var b strings.Builder
+	for _, m := range matches {
+		b.WriteString(r.matchRow(m))
 		b.WriteString("\n")
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// matchRow is the session row: when it ran, which project, its id, its title,
+// and how many of its turns matched. The fields and their order are the
+// listing's, so a caller who has read a listing finds the id where their eye
+// already looks; the match count is the one field a listing has no place for and
+// the one a caller chooses between sessions on.
+func (r *renderer) matchRow(m search.Match) string {
+	var parts []string
+	if !m.Start.IsZero() {
+		parts = append(parts, r.dim.Render(m.Start.Local().Format("2006-01-02 15:04")))
+	}
+	if m.Project != "" {
+		parts = append(parts, r.tool.Render(m.Project))
+	}
+	parts = append(parts, r.body.Render(m.Session))
+	if m.Title != "" {
+		parts = append(parts, r.body.Render(m.Title))
+	}
+	parts = append(parts, r.dim.Render(plural(m.Turns, "turn")+" matched"))
+	return strings.Join(parts, hitSeparator)
 }
 
 // hitLocation names where inside the turn the line sits: the calls delegated
@@ -128,12 +198,47 @@ func HitsJSON(w io.Writer, hits []search.Hit) error {
 // that matched nothing writes nothing rather than an empty array, there being no
 // wrapper to emit — the rule the listing's stream already follows.
 //
-// session rides the envelope rather than the payload, so a stream merged from
-// two searches says which session each hit came from after a `cat`.
+// The session rides the envelope rather than the payload, so a stream merged
+// from two searches says which session each hit came from after a `cat`. A hit
+// carrying its own session wins over the run's, which is what makes a
+// cross-session stream addressable: the consumer reads the session from the
+// envelope and the turn from the payload, and the pair is the address
+// `agentry view <id> --turn <n>` takes.
 func HitsJSONL(w io.Writer, hits []search.Hit, session string) error {
 	enc := jsonl.New(w)
 	for _, h := range hits {
-		if err := enc.Emit("hit", session, time.Time{}, h); err != nil {
+		of := session
+		if h.Session != "" {
+			of = h.Session
+		}
+		if err := enc.Emit("hit", of, time.Time{}, h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// MatchesJSON writes the session matches as one array, always well-formed: `[]`
+// where nothing matched, so a consumer pipes into jq without a guard.
+func MatchesJSON(w io.Writer, matches []search.Match) error {
+	if matches == nil {
+		matches = []search.Match{}
+	}
+	b, err := json.MarshalIndent(matches, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
+}
+
+// MatchesJSONL writes one `sessionMatch` record per line. Each names its own
+// session on the envelope, which is the whole point of the noun: the payload
+// says how many turns matched and the envelope says which session they are in.
+func MatchesJSONL(w io.Writer, matches []search.Match) error {
+	enc := jsonl.New(w)
+	for _, m := range matches {
+		if err := enc.Emit("sessionMatch", m.Session, m.Start, m); err != nil {
 			return err
 		}
 	}
@@ -155,5 +260,7 @@ func Shapes() []schema.Shape {
 		schema.Record("view", "event", eventRecord{}, schema.Omit("tool.subagent")),
 		schema.Document("search", "agentry search --format json", []search.Hit{}),
 		schema.Record("search", "hit", search.Hit{}),
+		schema.Document("search", "agentry search session --format json", []search.Match{}),
+		schema.Record("search", "sessionMatch", search.Match{}),
 	}
 }

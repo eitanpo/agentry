@@ -654,29 +654,80 @@ func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 
 	head := fmt.Sprintf("%s%s %s%s %s %s",
 		prefix, r.dim.Render("╭─"), style.Render(glyph+" "+t.Name+delegation(t)),
-		r.args.Render("("+truncate(oneLine(t.Args), 60)+")"), status, dur)
+		r.args.Render("("+argsSummary(t.Args)+")"), status, dur)
 	out := []string{strings.TrimRight(head, " ")}
+	bodyPrefix := prefix + r.dim.Render("│") + " "
+
+	// The whole argument text, where the parenthetical above left something out
+	// and the caller has narrowed to this turn. Above the instruction and the
+	// result because it is what the call was asked to do, and those are what came
+	// back.
+	if r.opts.Selected != nil && r.opts.Channels.ToolResults && argsElided(t.Args) {
+		out = append(out, r.toolArgs(t.Args, bodyPrefix)...)
+	}
 
 	// The instruction a delegated call was handed, above whatever the call went on
 	// to produce. It rides ToolResults rather than a channel of its own because it
 	// is this call's body, and the activation line has already flattened it to a
 	// description of a few words.
 	if t.Prompt != "" && r.opts.Channels.ToolResults {
-		out = append(out, r.toolPrompt(t.Prompt, prefix+r.dim.Render("│")+" ")...)
+		out = append(out, r.toolPrompt(t.Prompt, bodyPrefix)...)
 	}
 
 	if t.Subagent != nil && r.opts.Channels.Subagents {
-		nested := prefix + r.dim.Render("│") + " "
-		return append(out, r.events(t.Subagent, nested, depth+1)...)
+		return append(out, r.events(t.Subagent, bodyPrefix, depth+1)...)
 	}
 	// Otherwise show the (possibly truncated) result body, if enabled. With
 	// ToolResults off the activation line stands alone — the notion that the
 	// tool fired, without its output.
 	if r.opts.Channels.ToolResults {
-		bodyPrefix := prefix + r.dim.Render("│") + " "
 		return append(out, r.toolBody(t.Result, bodyPrefix)...)
 	}
 	return out
+}
+
+// toolArgsInlineMax bounds the activation line's parenthetical. Sixty characters
+// because the line already carries the call's name, status and duration, and the
+// summary is there to say which call this is rather than what it did.
+const toolArgsInlineMax = 60
+
+// argsSummary is the activation line's parenthetical: the first line of the
+// call's arguments, cut to a width, ending in "…" where either elision fired.
+// Both are named because a summary showing neither reads as the whole argument —
+// which is how a script passed to a shell came to look like a one-line call.
+func argsSummary(args string) string {
+	first := oneLine(args)
+	shown := truncate(first, toolArgsInlineMax)
+	if shown == first && argsElided(args) {
+		shown += "…"
+	}
+	return shown
+}
+
+// argsElided reports whether the parenthetical leaves anything out — lines after
+// the first, or characters past the width.
+func argsElided(args string) bool {
+	first := oneLine(args)
+	return first != strings.TrimSpace(args) || truncate(first, toolArgsInlineMax) != first
+}
+
+// toolArgs lays a call's whole argument text beneath its activation line, for a
+// render the caller narrowed to one turn. The parenthetical above is a summary,
+// so a search hit reported at `args:65` named a line no render would show, and
+// the search-then-read pair in PRODUCT.md's User flows turns on this block.
+//
+// Labelled with a word rather than marked with a glyph, and the word is the one
+// `agentry search` prints for that part, so a hit's location and the block
+// holding it read alike. The result body beneath needs no label of its own,
+// being the only other body a call can carry.
+//
+// Uncapped, because it is only reached on a selected turn, where toolBody's cap
+// has already lifted.
+func (r *renderer) toolArgs(text, prefix string) []string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return append([]string{prefix + r.dim.Render("args")}, r.toolBody(text, prefix)...)
 }
 
 // toolPrompt lays out a delegated call's instruction beneath its activation

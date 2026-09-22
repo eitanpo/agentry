@@ -47,6 +47,9 @@ func TestSchemaDescribesEveryRecordTheStreamsEmit(t *testing.T) {
 		// data, and the key this verb prunes by hand could come back unnoticed.
 		{"a session with a subagent", nested, nestedID, []string{"view", "--format", "jsonl"}},
 		{"a search", plain, plainID, []string{"search", "prompt", "--format", "jsonl"}},
+		// The session noun writes a record type the turn forms never do, so the
+		// turn run above pins nothing about it.
+		{"a search by session", plain, plainID, []string{"search", "session", "prompt", "--format", "jsonl"}},
 		{"a listing", plain, plainID, []string{"list", "--format", "jsonl"}},
 		{"the settings report", plain, plainID, []string{"config", "--format", "jsonl"}},
 		// Both roll-up forms, because they write disjoint record types: the bare

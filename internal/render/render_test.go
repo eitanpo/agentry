@@ -2127,3 +2127,100 @@ func TestSelectedTurnPrintsBodiesWhole(t *testing.T) {
 		t.Errorf("a whole-session render stopped naming its remainder: %q", capped)
 	}
 }
+
+// TestSelectedTurnPrintsArgumentsWhole pins the other half of the
+// search-then-read pair. The activation line's parenthetical is a summary — the
+// first line, cut to a width — so a hit the search reported at `args:65` named a
+// line no render would show, and four of five hits in a real turn were
+// unreachable for exactly this reason.
+func TestSelectedTurnPrintsArgumentsWhole(t *testing.T) {
+	lines := []string{"python3 - <<'PY'", "import io", "deep = 'the last line'", "PY"}
+	args := strings.Join(lines, "\n")
+	deep := lines[2]
+
+	sess := &model.Session{
+		Meta: model.Meta{NumTurns: 1},
+		Turns: []model.Turn{{
+			Number: 1, Prompt: "go",
+			Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", Args: args, Result: "done"}}},
+		}},
+	}
+	render := func(t *testing.T, selected *model.TurnRange) string {
+		t.Helper()
+		var b strings.Builder
+		opts := Options{Width: 120, Color: false, Channels: Channels{Tools: true, ToolResults: true}, Selected: selected}
+		if err := Session(&b, sess, opts); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	whole := render(t, &model.TurnRange{From: 1, To: 1})
+	if !strings.Contains(whole, deep) {
+		t.Errorf("a selected turn hid a line of the call's arguments (%q):\n%s", deep, whole)
+	}
+	// Labelled with the word `agentry search` prints for that part, so a hit's
+	// location and the block holding it read alike.
+	if !strings.Contains(whole, "args\n") {
+		t.Errorf("the argument block carries no label:\n%s", whole)
+	}
+
+	// A whole-session render is untouched: the pressure the summary answers is a
+	// session's worth of calls, and this block is the narrowed case only.
+	capped := render(t, nil)
+	if strings.Contains(capped, deep) {
+		t.Errorf("a whole-session render printed argument text whole:\n%s", capped)
+	}
+	if strings.Contains(capped, "args\n") {
+		t.Errorf("a whole-session render grew an argument block:\n%s", capped)
+	}
+}
+
+// TestArgsSummaryNamesBothElisions pins that the parenthetical says when it left
+// something out. It drops every line after the first and then cuts what remains
+// to a width; naming only the second is how a script passed to a shell came to
+// read as a one-line call.
+func TestArgsSummaryNamesBothElisions(t *testing.T) {
+	long := strings.Repeat("x", toolArgsInlineMax+10)
+	for _, tc := range []struct {
+		what   string
+		args   string
+		elided bool
+	}{
+		{"a short single line leaves nothing out", "ls -la", false},
+		{"lines after the first are named", "short\nand more lines follow", true},
+		{"a line past the width is named", long, true},
+		{"both at once are named once", long + "\nmore", true},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			got := argsSummary(tc.args)
+			if ends := strings.HasSuffix(got, "…"); ends != tc.elided {
+				t.Errorf("argsSummary(%q) = %q; names an elision = %v, want %v", tc.args, got, ends, tc.elided)
+			}
+			if n := strings.Count(got, "…"); n > 1 {
+				t.Errorf("argsSummary(%q) = %q, naming the elision %d times", tc.args, got, n)
+			}
+			if argsElided(tc.args) != tc.elided {
+				t.Errorf("argsElided(%q) = %v, want %v", tc.args, argsElided(tc.args), tc.elided)
+			}
+		})
+	}
+
+	// Nothing left out means no block on a selected turn either, or the block
+	// would repeat the line above it.
+	sess := &model.Session{
+		Meta: model.Meta{NumTurns: 1},
+		Turns: []model.Turn{{
+			Number: 1, Prompt: "go",
+			Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", Args: "ls -la", Result: "done"}}},
+		}},
+	}
+	var b strings.Builder
+	opts := Options{Width: 120, Color: false, Channels: Channels{Tools: true, ToolResults: true}, Selected: &model.TurnRange{From: 1, To: 1}}
+	if err := Session(&b, sess, opts); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "args\n") {
+		t.Errorf("a call whose parenthetical is complete grew a block repeating it:\n%s", b.String())
+	}
+}

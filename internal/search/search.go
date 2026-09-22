@@ -12,6 +12,7 @@ package search
 import (
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/eitanpo/agentry/internal/model"
 )
@@ -33,6 +34,11 @@ const (
 
 // Hit is one line inside a session that matched.
 type Hit struct {
+	// Session is the id of the session the hit came from, set only on a run that
+	// searched more than one: a turn number names nothing without it, so a
+	// cross-session consumer needs both halves of the address and a single-session
+	// one already knows which session it asked about.
+	Session string `json:"session,omitempty"`
 	// Turn is 1-based and counts the main thread's turns, so a hit inside a
 	// subagent carries the turn of the call that spawned it — which is the turn a
 	// reader renders to go read it.
@@ -60,6 +66,39 @@ type Hit struct {
 	// width. A hit the caller cannot read in full is a hit they have to go looking
 	// for twice.
 	Text string `json:"text"`
+}
+
+// Match is one session that holds findings — the row `agentry search session`
+// prints, and the heading `agentry search turn` groups its findings under. Its
+// fields are the listing's own so that one session is not described two ways,
+// plus the count of distinct turns that matched, which is the thing a caller
+// chooses between sessions on.
+type Match struct {
+	Session string    `json:"session"`
+	Start   time.Time `json:"start"`
+	Project string    `json:"project,omitempty"`
+	Title   string    `json:"title,omitempty"`
+	Turns   int       `json:"turns"`
+}
+
+// Group pairs a session with its findings, for the text render. The machine
+// forms carry one or the other rather than this pairing: the turn noun writes
+// hits that each name their session, and the session noun writes matches with no
+// hits at all.
+type Group struct {
+	Match Match
+	Hits  []Hit
+}
+
+// TurnsIn counts the distinct turns hits fall in, which is not len(hits): one
+// turn commonly matches on several lines, and a count of lines offered as a count
+// of turns would rank a session with one wordy turn above one with ten.
+func TurnsIn(hits []Hit) int {
+	seen := map[int]bool{}
+	for _, h := range hits {
+		seen[h.Turn] = true
+	}
+	return len(seen)
 }
 
 // In returns every line of the session that re matches, in document order:

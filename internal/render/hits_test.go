@@ -24,30 +24,90 @@ func hitFixture() []search.Hit {
 	}
 }
 
-// TestHitsLineShape pins the three fields a hit line carries and the order they
-// appear in: the turn to go read, where inside it the line sits, then the whole
-// matching line. A consumer splitting on the separator reaches the text in one
-// cut, so the separator must not appear in either field before it.
-func TestHitsLineShape(t *testing.T) {
+// TestHitsFindingShape pins the two rows a finding carries and what sits on
+// each: the locator names the turn to go read and where inside it the line sits,
+// and the matching line follows indented beneath. One row was the old shape and
+// did not fit — the locator alone runs to 58 columns on a real session.
+//
+// The text's indent is what separates one finding from the next, there being no
+// blank line between them, so a locator at column zero and its text at column
+// two is the boundary rather than a decoration.
+func TestHitsFindingShape(t *testing.T) {
 	var b strings.Builder
 	if err := Hits(&b, hitFixture(), regexp.MustCompile("tally helper"), false); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("lines = %d, want one per hit (3)", len(lines))
-	}
 	want := []string{
-		"turn 3 · prompt:1 · find every caller",
-		"turn 3 · Agent[Explore@haiku] instruction:1 · sweep the tally helper",
+		"turn 3 · prompt:1",
+		"  find every caller",
+		"turn 3 · Agent[Explore@haiku] instruction:1",
+		"  sweep the tally helper",
 		// Line 4 of that subagent's text block: the number is what says a hit sits
 		// past the ten lines a rendered result body would show.
-		"turn 3 · Agent[Explore@haiku] › text:4 · the tally helper is called twice",
+		"turn 3 · Agent[Explore@haiku] › text:4",
+		"  the tally helper is called twice",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("lines = %d, want two per hit (%d):\n%s", len(lines), len(want), b.String())
 	}
 	for i, w := range want {
 		if lines[i] != w {
 			t.Errorf("line %d:\n got %q\nwant %q", i+1, lines[i], w)
 		}
+	}
+}
+
+// TestFindingsHeadsEachSessionOnce pins the grouping a cross-session run prints:
+// one heading per session, the findings indented under it, and the heading
+// carrying the fields a caller chooses between sessions on. A run confined to one
+// session prints no heading at all — the caller already knows which session they
+// searched, and a heading would indent every finding to tell them.
+func TestFindingsHeadsEachSessionOnce(t *testing.T) {
+	groups := []search.Group{
+		{
+			Match: search.Match{Session: "aaaa1111", Project: "dotfiles", Title: "first", Turns: 1},
+			Hits:  []search.Hit{{Session: "aaaa1111", Turn: 3, Part: search.PartPrompt, Line: 1, Text: "find every caller"}},
+		},
+		{
+			Match: search.Match{Session: "bbbb2222", Project: "agentry", Title: "second", Turns: 1},
+			Hits:  []search.Hit{{Session: "bbbb2222", Turn: 9, Part: search.PartText, Line: 2, Text: "the tally helper"}},
+		},
+	}
+	var b strings.Builder
+	if err := Findings(&b, groups, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{
+		"aaaa1111 · first · 1 turn matched",
+		"bbbb2222 · second · 1 turn matched",
+		"  turn 3 · prompt:1",
+		"    find every caller",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+	// The heading is the session row, so `search session` and a `search turn`
+	// heading describe one session one way.
+	var rows strings.Builder
+	if err := Matches(&rows, []search.Match{groups[0].Match}, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, strings.TrimRight(rows.String(), "\n")) {
+		t.Errorf("the heading and the session row differ:\n heading in %q\n row %q", out, rows.String())
+	}
+
+	var one strings.Builder
+	if err := Hits(&one, groups[0].Hits, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(one.String(), "aaaa1111") {
+		t.Errorf("a one-session run printed a heading: %q", one.String())
+	}
+	if strings.HasPrefix(one.String(), " ") {
+		t.Errorf("a one-session run indented its findings: %q", one.String())
 	}
 }
 
@@ -80,10 +140,10 @@ func TestHitsLeavesLongLinesWhole(t *testing.T) {
 	if strings.Contains(b.String(), "…") {
 		t.Errorf("a hit line was elided, but nothing here is capped: %q", b.String())
 	}
-	// One hit is one output line, whatever its length — what makes the output
-	// pipe into a line-oriented reader.
-	if n := strings.Count(b.String(), "\n"); n != 1 {
-		t.Errorf("newlines = %d, want 1 for one hit", n)
+	// One hit is two output lines whatever the text's length: the wrap is the
+	// terminal's to do, so nothing here breaks the text across lines itself.
+	if n := strings.Count(b.String(), "\n"); n != 2 {
+		t.Errorf("newlines = %d, want 2 for one finding", n)
 	}
 }
 

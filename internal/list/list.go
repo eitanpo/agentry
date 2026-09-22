@@ -939,6 +939,14 @@ func worktreeName(cwd string) string {
 //
 // Labels are computed over projectRoot, not over the cwd, so several worktrees
 // of one repo share one label and count as one project.
+// ProjectLabels labels each session's working directory with the shortest name
+// that tells its project apart from the others in the set, keyed by cwd, and nil
+// where every session shares one project and a label would say nothing.
+//
+// Exported so `agentry search`'s session headings name a project exactly as a
+// listing row does: one session labelled two ways reads as two sessions.
+func ProjectLabels(sums []model.Summary) map[string]string { return projectLabels(sums) }
+
 func projectLabels(sums []model.Summary) map[string]string {
 	roots := map[string]bool{}
 	byCwd := map[string]string{}

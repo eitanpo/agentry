@@ -43,13 +43,26 @@ func newListCmd(noColor *bool) *cobra.Command {
 // a flag is read from whichever command was invoked. --format is added
 // separately (addFormatFlag) since it is shared with the render path.
 func addListFlags(cmd *cobra.Command) {
-	cmd.Flags().String("limit", "10", `cap to N most-recent sessions, or "all" for no cap`)
-	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
-	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
+	addSelectionFlags(cmd, "10")
 	// The channel list is spelled from includeNames rather than repeated, so help
 	// and the parser cannot name different sets — they already had, the help text
 	// having been left behind when a channel was added.
 	cmd.Flags().String("include", "", "add detail channels (comma-separated): "+strings.Join(includeNames, ", "))
+}
+
+// addSelectionFlags installs the flags that choose which sessions a command
+// covers. Registered from one place because two verbs read them — the listing
+// and `agentry search`'s turn and session nouns — so a filter added for either
+// is available to both and a caller learns the set once. The display flags stay
+// with the listing, the only verb with rows to decorate.
+//
+// limitDefault differs by verb and is the caller's to pass: the listing caps at
+// ten because a row is one of hundreds, and search caps at nothing because a cap
+// on which sessions are searched hides matches the pattern asked for.
+func addSelectionFlags(cmd *cobra.Command, limitDefault string) {
+	cmd.Flags().String("limit", limitDefault, `cap to N most-recent sessions, or "all" for no cap`)
+	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
+	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
 	for _, u := range usageFilters {
 		cmd.Flags().String(u.flag, "", "only sessions that "+u.did)
 		cmd.Flags().String("not-"+u.flag, "", "only sessions that never "+u.did)
@@ -144,6 +157,40 @@ var usageFilters = []struct {
 		c.Reply = re
 		return nil
 	}},
+}
+
+// parseFilters reads every what-a-session-did selector off the command line, the
+// values `list.Filter` tests a session against. Shared by the listing and by
+// `agentry search`'s nouns: read in two places, a filter would mean one thing on
+// a listing and another in a search, which is one flag with two behaviors.
+//
+// Both sides of every filter are validated before any session is read, so a
+// malformed value errors as usage rather than after a directory scan's delay.
+func parseFilters(cmd *cobra.Command) (list.Filters, list.Run, list.Changed, error) {
+	get := func(name string) string { v, _ := cmd.Flags().GetString(name); return v }
+	// The flag reads a pattern, and the only pattern among these selectors is the
+	// reply filter. Passed without one it would do nothing at all, which is the
+	// silence the bare command used to keep about a render flag on a listing: the
+	// caller asked for something and got no sign it had been dropped.
+	if cmd.Flags().Changed(fixedStringsFlag) && get("reply-matches") == "" && get("not-reply-matches") == "" && cmd.Name() != "search" {
+		return list.Filters{}, list.Run{}, list.Changed{}, usageErr("--%s reads a pattern and this listing gave none: pass --reply-matches or --not-reply-matches, or search a session with `agentry search -F`", fixedStringsFlag)
+	}
+	literal := literalPattern(cmd)
+	var filters list.Filters
+	for _, u := range usageFilters {
+		if err := u.set(&filters.Used, get(u.flag), literal); err != nil {
+			return list.Filters{}, list.Run{}, list.Changed{}, usageErr("--%s: %v", u.flag, err)
+		}
+		if err := u.set(&filters.NotUsed, get("not-"+u.flag), literal); err != nil {
+			return list.Filters{}, list.Run{}, list.Changed{}, usageErr("--not-%s: %v", u.flag, err)
+		}
+	}
+	run := list.Run{Model: get("model"), Effort: get("effort")}
+	changed, err := parseChanged(cmd)
+	if err != nil {
+		return list.Filters{}, list.Run{}, list.Changed{}, err
+	}
+	return filters, run, changed, nil
 }
 
 // parseChanged reads the two line bounds off the command line. A bound is set
@@ -322,28 +369,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		limit = 0
 	}
 
-	get := func(name string) string { v, _ := cmd.Flags().GetString(name); return v }
-	// The flag reads a pattern, and the listing's only pattern is the reply
-	// filter. Passed without one it would do nothing at all, which is the silence
-	// the bare command used to keep about a render flag on a listing: the caller
-	// asked for something and got no sign it had been dropped.
-	if cmd.Flags().Changed(fixedStringsFlag) && get("reply-matches") == "" && get("not-reply-matches") == "" {
-		return usageErr("--%s reads a pattern and this listing gave none: pass --reply-matches or --not-reply-matches, or search a session with `agentry search -F`", fixedStringsFlag)
-	}
-	literal := literalPattern(cmd)
-	var filters list.Filters
-	for _, u := range usageFilters {
-		// Both sides are validated before any session is read, so a malformed
-		// value errors as usage rather than after a directory scan's delay.
-		if err := u.set(&filters.Used, get(u.flag), literal); err != nil {
-			return usageErr("--%s: %v", u.flag, err)
-		}
-		if err := u.set(&filters.NotUsed, get("not-"+u.flag), literal); err != nil {
-			return usageErr("--not-%s: %v", u.flag, err)
-		}
-	}
-	run := list.Run{Model: get("model"), Effort: get("effort")}
-	changed, err := parseChanged(cmd)
+	filters, run, changed, err := parseFilters(cmd)
 	if err != nil {
 		return err
 	}
