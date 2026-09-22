@@ -729,7 +729,7 @@ const toolArgsInlineMax = 60
 // whole argument — which is how a script passed to a shell came to look like a
 // one-line call.
 func argsSummary(args string) string {
-	return truncate(oneLine(args), toolArgsInlineMax)
+	return truncate(OneLine(args), toolArgsInlineMax)
 }
 
 // argsElided reports whether the parenthetical leaves anything out: characters
@@ -737,7 +737,7 @@ func argsSummary(args string) string {
 // than ended at the first. A short multi-line argument is shown whole, and the
 // caller that used to be told otherwise printed the arguments twice.
 func argsElided(args string) bool {
-	joined := oneLine(args)
+	joined := OneLine(args)
 	return truncate(joined, toolArgsInlineMax) != joined
 }
 
@@ -1322,7 +1322,7 @@ func (r *renderer) card(s *model.Session) string {
 		b.WriteString(sectionIndent + r.dim.Render(fmt.Sprintf("%-*s", cardLabelWidth, label)) + value + "\n")
 	}
 	row("id", m.ID, false)
-	row("title", oneLine(m.Title), false)
+	row("title", OneLine(m.Title), false)
 	// The directory is cut from the left, like every other path here: what names
 	// one repository against another is the tail.
 	row("project", m.Cwd, true)
@@ -1521,7 +1521,7 @@ func (r *renderer) summary(s *model.Session) string {
 	for i, t := range s.Turns {
 		tok := t.Usage.Input + t.Usage.Output
 		total += tok
-		rows = append(rows, row{i + 1, tok, t.ToolCount, oneLine(t.Prompt)})
+		rows = append(rows, row{i + 1, tok, t.ToolCount, OneLine(t.Prompt)})
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].tok > rows[j].tok })
 
@@ -1596,7 +1596,7 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// oneLine puts text on one line by joining its lines, not by ending at the
+// OneLine puts text on one line by joining its lines, not by ending at the
 // first. Ending there deleted every line after it with nothing to mark that they
 // went: a session titled by a multi-line prompt listed under its opening words
 // and read as a session about them. Joined, whatever will not fit is cut by the
@@ -1605,7 +1605,11 @@ func plural(n int, noun string) string {
 // Runs of whitespace collapse with the line breaks, since a title or a prompt
 // laid out for reading — an indented list, a table's padding — becomes a row of
 // gaps once its lines are joined.
-func oneLine(s string) string {
+//
+// Exported because the listing draws the same titles and prompts into columns of
+// its own. How a title reaches one line is one rule on both surfaces, and a
+// second copy of it can only come to differ from the first.
+func OneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 

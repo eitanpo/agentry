@@ -204,7 +204,7 @@ func (r *renderer) matchRow(m search.Match, l matchLayout) string {
 	}
 	b.WriteString(matchGap)
 	b.WriteString(r.body.Render(m.Session))
-	if title := oneLine(m.Title); title != "" {
+	if title := OneLine(m.Title); title != "" {
 		b.WriteString(matchGap)
 		b.WriteString(r.body.Render(title))
 	}

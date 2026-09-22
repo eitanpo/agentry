@@ -735,9 +735,9 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		}
 		// A fork's title is indented under its family's original; the marker eats
 		// into the title column so the when/turns/id columns stay aligned.
-		title := truncate(oneLine(s.Title), titleW)
+		title := truncate(render.OneLine(s.Title), titleW)
 		if r.fork {
-			title = forkGlyph + truncate(oneLine(s.Title), titleW-forkGlyphW)
+			title = forkGlyph + truncate(render.OneLine(s.Title), titleW-forkGlyphW)
 		}
 		from := ""
 		if fromW > 0 {
@@ -776,7 +776,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		}
 		if opts.Prompts {
 			for _, p := range s.Prompts {
-				detail = append(detail, dim.Render(promptGlyph)+" "+truncate(oneLine(p), promptW))
+				detail = append(detail, dim.Render(promptGlyph)+" "+truncate(render.OneLine(p), promptW))
 			}
 		}
 		// The conversation's far end, so it sits with the prompts rather than among
@@ -1200,19 +1200,6 @@ func fmtDur(secs int) string {
 		return fmt.Sprintf("%dh%02dm", h, m)
 	}
 	return fmt.Sprintf("%dm", m)
-}
-
-// oneLine puts text on one line by joining its lines, not by ending at the
-// first. Ending there deleted every line after it with nothing to mark that they
-// went: a session titled by a multi-line prompt listed under its opening words
-// and read as a session about them. Joined, whatever will not fit is cut by the
-// column the caller applies next, and that cut ends in an ellipsis.
-//
-// Runs of whitespace collapse with the line breaks, since a title or a prompt
-// laid out for reading — an indented list, a table's padding — becomes a row of
-// gaps once its lines are joined.
-func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
 }
 
 func truncate(s string, limit int) string {

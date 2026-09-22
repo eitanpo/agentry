@@ -435,8 +435,8 @@ func TestTruncateAndOneLine(t *testing.T) {
 	// Joined, not ended at the first line: ending there deleted "second" with
 	// nothing to mark that it went, and the column applied next cannot mark a cut
 	// it never saw.
-	if got := oneLine("  first\nsecond  "); got != "first second" {
-		t.Errorf("oneLine = %q, want \"first second\"", got)
+	if got := OneLine("  first\nsecond  "); got != "first second" {
+		t.Errorf("OneLine = %q, want \"first second\"", got)
 	}
 }
 
