@@ -1221,10 +1221,11 @@ func footerSession() *model.Session {
 	}
 }
 
-// TestFooterSections pins the footer (PRODUCT.md §Output): five sections in a
-// fixed order, none of them gated on verbosity, and the three aggregates leaving
-// together on --no-metrics. The ungating is the regression this guards: gating
-// cost real lines, and hid the sections from anyone who never typed the flag.
+// TestFooterSections pins the footer (PRODUCT.md §Output): the order of the
+// sections a session with content draws, none of them gated on verbosity, and
+// the four aggregates leaving together on --no-metrics. The ungating is the
+// regression this guards: gating cost real lines, and hid the sections from
+// anyone who never typed the flag.
 func TestFooterSections(t *testing.T) {
 	order := []string{
 		"── Files ──",
@@ -1234,7 +1235,7 @@ func TestFooterSections(t *testing.T) {
 		"── Day by day ──",
 	}
 
-	t.Run("all five print at minimal verbosity, in order", func(t *testing.T) {
+	t.Run("every section this fixture draws prints at minimal verbosity, in order", func(t *testing.T) {
 		// Channels{Metrics: true} is what the CLI resolves at every level, including
 		// minimal — TestLevelChannels pins that half.
 		var b strings.Builder
@@ -1255,18 +1256,39 @@ func TestFooterSections(t *testing.T) {
 		}
 	})
 
-	t.Run("--no-metrics drops the three aggregates and keeps the outcomes", func(t *testing.T) {
+	t.Run("--no-metrics drops the four aggregates and keeps the outcomes", func(t *testing.T) {
+		// A session the Cost section would draw for, so its absence below says the
+		// flag dropped it rather than that there was nothing to draw.
+		sess := footerSession()
+		recorded := 12.50
+		sess.Meta.CostUSD = &recorded
+		var withCost strings.Builder
+		if err := Session(&withCost, sess, Options{Width: 100, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(withCost.String(), "── Cost ──") {
+			t.Fatalf("the fixture draws no Cost section, so dropping it proves nothing: %q", withCost.String())
+		}
+
 		var b strings.Builder
-		if err := Session(&b, footerSession(), Options{Width: 100, Color: false, Channels: Channels{}}); err != nil {
+		if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{}}); err != nil {
 			t.Fatal(err)
 		}
 		out := b.String()
-		for _, want := range []string{"── Files ──", "── Outputs ──"} {
+		for _, want := range []string{"── Files ──", "── Outputs ──", "── Session ──"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%q must survive --no-metrics: %q", want, out)
 			}
 		}
-		for _, gone := range order[2:] {
+		// Cost among them, which nothing here asserted while the spec said three
+		// aggregates and the program dropped four: a section could have started or
+		// stopped leaving with the flag and no test would have moved.
+		for _, gone := range []string{
+			"── Tools (by identity) ──",
+			"── Cost ──",
+			"── Summary (by token cost) ──",
+			"── Day by day ──",
+		} {
 			if strings.Contains(out, gone) {
 				t.Errorf("%q must leave with --no-metrics: %q", gone, out)
 			}

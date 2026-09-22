@@ -233,7 +233,7 @@ log cannot tell a long test run from a person who walked away. A session's wall-
 at all, because Claude Code records line counts for a minority of sessions.
 
 **A rendered session ends with a footer saying what it touched, produced and spent.** After the last
-turn come five sections, each shown only when it has something: `Files` (every file the session
+turn come seven sections, each shown only when it has something: `Files` (every file the session
 modified), `Outputs` (each pull request it opened and artifact it published, clickable on a
 terminal), `Tools (by identity)` (which skills, agents and commands ran, how often, and which of them failed or were refused),
 `Cost` (what the session's dollars went to), `Summary (by token cost)` (the per-turn table),

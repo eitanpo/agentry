@@ -250,7 +250,7 @@ func Session(w io.Writer, s *model.Session, opts Options) error {
 	// section's own cap instead. PRODUCT.md's Output section owns the rule.
 	//
 	// Outcomes lead, so a reader who stops after two sections still has them. The
-	// three aggregates leave together on --no-metrics, which is why they sit last.
+	// four aggregates leave together on --no-metrics, which is why they sit last.
 	footer := []string{r.files(s), r.outputs(s)}
 	if opts.Channels.Metrics {
 		footer = append(footer, r.identities(s), r.cost(s), r.summary(s), r.dayByDay(s))
