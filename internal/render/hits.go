@@ -82,15 +82,34 @@ func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool,
 		// Under a heading the findings are that heading's block, so they hang off
 		// the rail every block under a header hangs off; the rail's own columns come
 		// out of the text they bound.
-		column := width - len(findingIndent)
+		column := width - len(findingIndent) - len(textIndent)
 		if heading {
 			column -= RailWidth()
 		}
 		var block []string
-		for _, h := range g.Hits {
-			block = append(block,
-				r.dim.Render(fmt.Sprintf("turn %d", h.Turn))+hitSeparator+r.tool.Render(hitLocation(h)),
-				findingIndent+r.highlight(findingText(h.Text, re, column), re))
+		for _, turn := range byTurn(g.Hits) {
+			block = append(block, r.turnHead(turn))
+			shown := 0
+			seen := map[string]bool{}
+			for _, h := range turn {
+				// The sample passes over a row the reader has already seen, and what
+				// they see is the window, not the whole line: a pattern inside a path
+				// is named again by every command that touched that path, and those
+				// lines differ only in a tail the window cuts. Three rows of one path
+				// say less than one row of it does.
+				text := findingText(h.Text, re, column)
+				if shown == linesPerTurn || seen[text] {
+					continue
+				}
+				seen[text] = true
+				shown++
+				block = append(block,
+					findingIndent+r.tool.Render(hitLocation(h)),
+					findingIndent+textIndent+r.highlight(text, re))
+			}
+			if rest := len(turn) - shown; rest > 0 {
+				block = append(block, findingIndent+r.dim.Render(fmt.Sprintf("…  (%s)", plural(rest, "more line"))))
+			}
 		}
 		if heading {
 			if i > 0 {
@@ -159,6 +178,48 @@ func layOutMatches(matches []search.Match) matchLayout {
 		}
 	}
 	return l
+}
+
+// linesPerTurn bounds how many of a turn's matching lines print. Three, because
+// the sample says why the turn matched rather than standing in for reading it:
+// the first line establishes that it matched, the next two say whether the
+// pattern runs through the turn's own words or only through machine output it
+// quoted, and a fourth answers nothing the third did not. What keeps this a cap
+// rather than a deletion is the count beside the turn and the remainder beneath
+// the sample, which together say how much more the turn holds.
+const linesPerTurn = 3
+
+// textIndent is how far a matching line's text sits under its locator, and the
+// locator under its turn. One step for each level, so the block's three kinds of
+// row are told apart by where they start rather than by a glyph each.
+const textIndent = "  "
+
+// byTurn splits one session's hits into a group per turn, in the order the turns
+// matched — which is turn order, the hits arriving in document order. The turn
+// heads its group rather than repeating beside each line: it is the address a
+// reader navigates to, and one turn can match on hundreds of lines.
+func byTurn(hits []search.Hit) [][]search.Hit {
+	var turns [][]search.Hit
+	at := map[int]int{}
+	for _, h := range hits {
+		i, ok := at[h.Turn]
+		if !ok {
+			at[h.Turn] = len(turns)
+			turns = append(turns, []search.Hit{h})
+			continue
+		}
+		turns[i] = append(turns[i], h)
+	}
+	return turns
+}
+
+// turnHead is a turn's row: which turn to go read, and how many of its lines
+// matched. The count is there because it is what separates a turn the pattern
+// runs through from one that mentions it once, and the sample beneath cannot say
+// that on its own once it is capped.
+func (r *renderer) turnHead(turn []search.Hit) string {
+	return r.dim.Render(fmt.Sprintf("turn %d", turn[0].Turn)) +
+		hitSeparator + r.dim.Render(plural(len(turn), "line"))
 }
 
 // matchCount is how many of a session's turns matched over how many it holds,

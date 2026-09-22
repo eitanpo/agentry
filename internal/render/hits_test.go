@@ -26,14 +26,15 @@ func hitFixture() []search.Hit {
 	}
 }
 
-// TestHitsFindingShape pins the two rows a finding carries and what sits on
-// each: the locator names the turn to go read and where inside it the line sits,
-// and the matching line follows indented beneath. One row was the old shape and
-// did not fit — the locator alone runs to 58 columns on a real session.
+// TestHitsFindingShape pins the block a matching turn prints: the turn named
+// once with the count of its matching lines, then each line as a locator row and
+// the matching text indented beneath it. The turn used to sit beside every line,
+// which restated one address on row after row — a pattern that occurs in a path
+// produced hundreds of rows all reading "turn 1".
 //
-// The text's indent is what separates one finding from the next, there being no
-// blank line between them, so a locator at column zero and its text at column
-// two is the boundary rather than a decoration.
+// One row per line was the older shape still and did not fit either: the locator
+// alone runs to 58 columns on a real session. Each level's indent is what tells
+// the three kinds of row apart, there being no blank line between them.
 func TestHitsFindingShape(t *testing.T) {
 	var b strings.Builder
 	if err := Hits(&b, hitFixture(), regexp.MustCompile("tally helper"), false, 0); err != nil {
@@ -41,17 +42,18 @@ func TestHitsFindingShape(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
 	want := []string{
-		"turn 3 · prompt:1",
-		"  find every caller",
-		"turn 3 · Agent[Explore@haiku] instruction:1",
-		"  sweep the tally helper",
+		"turn 3 · 3 lines",
+		"  prompt:1",
+		"    find every caller",
+		"  Agent[Explore@haiku] instruction:1",
+		"    sweep the tally helper",
 		// Line 4 of that subagent's text block: the number is what says a hit sits
 		// past the ten lines a rendered result body would show.
-		"turn 3 · Agent[Explore@haiku] › text:4",
-		"  the tally helper is called twice",
+		"  Agent[Explore@haiku] › text:4",
+		"    the tally helper is called twice",
 	}
 	if len(lines) != len(want) {
-		t.Fatalf("lines = %d, want two per hit (%d):\n%s", len(lines), len(want), b.String())
+		t.Fatalf("lines = %d, want a turn row and two per line (%d):\n%s", len(lines), len(want), b.String())
 	}
 	for i, w := range want {
 		if lines[i] != w {
@@ -98,8 +100,9 @@ func TestFindingsHeadsEachSessionOnce(t *testing.T) {
 	for _, want := range []string{
 		wantOlder,
 		wantNewer,
-		"  │ turn 3 · prompt:1",
-		"  │   find every caller",
+		"  │ turn 3 · 1 line",
+		"  │   prompt:1",
+		"  │     find every caller",
 		"  ╰─",
 	} {
 		if !strings.Contains(out, want) {
@@ -189,14 +192,15 @@ func TestHitsCutsALongLineAroundItsMatch(t *testing.T) {
 	if !strings.Contains(out, "…") {
 		t.Errorf("the line was cut and nothing says so: %q", out)
 	}
-	// One finding is two rows however long its text, and the text row fits the
-	// column it was cut to.
+	// A turn row, a locator and one text row however long the text, and the text
+	// row fits the column it was cut to — its own indent counted in, since a row
+	// that fits its budget and not the terminal still wraps.
 	rows := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(rows) != 2 {
-		t.Fatalf("rows = %d, want 2 for one finding: %q", len(rows), out)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3 for one finding in one turn: %q", len(rows), out)
 	}
-	if n := utf8.RuneCountInString(rows[1]); n > column {
-		t.Errorf("the text row is %d columns wide, want at most %d: %q", n, column, rows[1])
+	if n := utf8.RuneCountInString(rows[2]); n > column {
+		t.Errorf("the text row is %d columns wide, want at most %d: %q", n, column, rows[2])
 	}
 
 	// A line that fits is printed whole, with nothing to name.
@@ -302,5 +306,57 @@ func TestHitsJSONLRecords(t *testing.T) {
 	}
 	if b.String() != "" {
 		t.Errorf("no hits wrote %q, want nothing", b.String())
+	}
+}
+
+// TestATurnShowsASampleOfItsLines pins the block a heavily matching turn prints:
+// the turn named once with how many of its lines matched, three of those lines,
+// and a row naming the rest. A pattern that occurs in a path matches in every
+// command that touched it, so one turn can carry hundreds of lines — printed in
+// full they were a reader's whole screen, every row restating one turn number.
+//
+// The sample also passes over a row already shown, judged by the window the
+// reader sees rather than the whole line: the lines behind those rows differ
+// only in a tail the window cuts, so three of them said less than one.
+func TestATurnShowsASampleOfItsLines(t *testing.T) {
+	var hits []search.Hit
+	for _, text := range []string{
+		"alpha tally", "alpha tally", "beta tally", "gamma tally", "delta tally", "epsilon tally",
+	} {
+		hits = append(hits, search.Hit{Turn: 1, Part: search.PartText, Line: len(hits) + 1, Text: text})
+	}
+	hits = append(hits, search.Hit{Turn: 4, Part: search.PartPrompt, Line: 1, Text: "omega tally"})
+
+	var b strings.Builder
+	if err := Hits(&b, hits, regexp.MustCompile("tally"), false, 0); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	for _, want := range []string{
+		"turn 1 · 6 lines",
+		"    alpha tally",
+		"    beta tally",
+		"    gamma tally",
+		"…  (3 more lines)",
+		"turn 4 · 1 line",
+		"    omega tally",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+	for _, gone := range []string{"delta tally", "epsilon tally"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("a line past the sample printed anyway (%q):\n%s", gone, out)
+		}
+	}
+	if n := strings.Count(out, "alpha tally"); n != 1 {
+		t.Errorf("the repeated line printed %d times, want once:\n%s", n, out)
+	}
+	// The turn is the address a reader navigates to, and naming it once per block
+	// rather than once per line is the whole point of the block.
+	if n := strings.Count(out, "turn 1"); n != 1 {
+		t.Errorf("turn 1 is named %d times, want once:\n%s", n, out)
 	}
 }
