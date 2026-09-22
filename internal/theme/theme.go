@@ -23,35 +23,43 @@ import "github.com/charmbracelet/lipgloss"
 // Codes 1-7 are the terminal's own scheme, which a reader has already chosen and
 // can read; the 8-bit codes are for the shades between them, where no named
 // entry says "quieter than the text but louder than the background".
-// The palette, as terminal color codes. They sit together so the whole scheme
-// can be read at once, and nothing outside this file names one: a color that
-// appears in two files is two colors the moment one of them is edited.
+// A shade chosen to sit against a dark background fails against a light one, so
+// every shade agentry picks for itself is a pair and the terminal's own
+// background chooses between them. The dark half of each pair is what agentry
+// printed before the pairs existed, so a dark terminal's output is unchanged and
+// only a light one gains anything.
 //
-// Codes 1-7 are the terminal's own scheme, which a reader has already chosen and
-// can read; the 8-bit codes are for the shades between them, where no named
-// entry says "quieter than the text but louder than the background".
+// The pairs are not symmetrical, and cannot be. Against a dark background a
+// quoted body is drawn brighter than the prose around it, which is what marks it
+// as quoted; against a light one the prose is already close to black, so the body
+// takes the strongest shade available and is legible rather than prominent.
+// Legible on both beats prominent on one and invisible on the other.
 const (
-	codeDim      = "8"   // bright black: quieter than body text on either background
-	codeMeta     = "250" // light gray, still legible where dim would be chrome
-	codeBody     = "15"  // bright white
-	codeArgs     = "248" // light gray, quieter than the call it annotates
-	codeThinking = "243" // medium gray, readable but secondary
-	codeLink     = "80"  // sky cyan, distinct from glamour's heading blue (39)
-	codePromptBg = "237" // the prompt row's highlight
-	codeBorder   = "7"
-	codeRed      = "1"
-	codeGreen    = "2"
-	codeYellow   = "3"
-	codeBlue     = "4"
-	codeMagenta  = "5"
-	codeCyan     = "6"
+	codeDim     = "8" // bright black: the terminal sets it per theme, so it needs no pair
+	codeBorder  = "7"
+	codeRed     = "1"
+	codeGreen   = "2"
+	codeYellow  = "3"
+	codeBlue    = "4"
+	codeMagenta = "5"
+	codeCyan    = "6"
+)
+
+// Each pair is the light background's shade, then the dark background's.
+var (
+	pairMeta     = [2]string{"240", "250"} // a row's own facts: legible, quieter than a title
+	pairBody     = [2]string{"16", "15"}   // a quoted body
+	pairArgs     = [2]string{"242", "248"} // quieter than the call it annotates
+	pairThinking = [2]string{"240", "243"} // readable but secondary
+	pairLink     = [2]string{"31", "80"}   // sky cyan on dark, its darker twin on light — the pair a plotted line already uses
+	pairPromptBg = [2]string{"254", "237"} // the prompt row's highlight: a band one shade off the page, either way
 )
 
 // Meta is a row's own facts: when it happened, how long it took, the half of an
 // id a reader has to type. Legible rather than loud — these are what a row is
 // scanned by, and they sit beside quieter chrome rather than competing with the
 // title.
-func Meta() lipgloss.Style { return fg(codeMeta) }
+func Meta() lipgloss.Style { return pairFg(pairMeta) }
 
 // Dim is everything secondary on a row and every piece of chrome: a count, a
 // path label, a rail, a table's note, the half of an id nobody types. It is the
@@ -61,7 +69,7 @@ func Dim() lipgloss.Style { return fg(codeDim) }
 // Body is a verbatim body's own text — a tool's result, a machine-readable
 // value. Brighter than the prose around it because it is quoted material and the
 // quoting has to be visible.
-func Body() lipgloss.Style { return fg(codeBody) }
+func Body() lipgloss.Style { return pairFg(pairBody) }
 
 // Plain is text that takes the terminal's own foreground: a title, a session's
 // prose. It is a role rather than an absence, because "draw this in whatever the
@@ -76,8 +84,10 @@ func Plain() lipgloss.Style { return lipgloss.NewStyle() }
 func Prompt() lipgloss.Style {
 	return fg(codeCyan).Bold(true).Background(PromptBackground())
 }
-func PromptRow() lipgloss.Style        { return lipgloss.NewStyle().Background(PromptBackground()) }
-func PromptBackground() lipgloss.Color { return lipgloss.Color(codePromptBg) }
+func PromptRow() lipgloss.Style { return lipgloss.NewStyle().Background(PromptBackground()) }
+func PromptBackground() lipgloss.TerminalColor {
+	return lipgloss.AdaptiveColor{Light: pairPromptBg[0], Dark: pairPromptBg[1]}
+}
 
 // Match is the span of a line a search pattern matched. It is drawn like a typed
 // prompt — the same highlight, for the same reason: both are the words the reader
@@ -102,7 +112,7 @@ func Subagent() lipgloss.Style { return fg(codeBlue).Bold(true) }
 
 // Thinking is the model's reasoning: italic as well as quiet, because it is the
 // one channel a reader may want to skim past without reading.
-func Thinking() lipgloss.Style { return fg(codeThinking).Italic(true) }
+func Thinking() lipgloss.Style { return pairFg(pairThinking).Italic(true) }
 
 // OK and Bad are a call's outcome. Both carry a glyph as well as a color, since
 // color alone cannot be the only carrier of a fact.
@@ -110,10 +120,10 @@ func OK() lipgloss.Style  { return fg(codeGreen).Bold(true) }
 func Bad() lipgloss.Style { return fg(codeRed).Bold(true) }
 
 // Args is a call's argument parenthetical, quieter than the call it annotates.
-func Args() lipgloss.Style { return fg(codeArgs) }
+func Args() lipgloss.Style { return pairFg(pairArgs) }
 
 // Link is hyperlinked text.
-func Link() lipgloss.Style { return fg(codeLink) }
+func Link() lipgloss.Style { return pairFg(pairLink) }
 
 // Border is the rule around a box.
 func Border() lipgloss.Style {
@@ -153,6 +163,8 @@ func Magnitude(rank int) lipgloss.Style {
 func adaptive(light, dark string) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: light, Dark: dark})
 }
+
+func pairFg(pair [2]string) lipgloss.Style { return adaptive(pair[0], pair[1]) }
 
 func fg(code string) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(code))
