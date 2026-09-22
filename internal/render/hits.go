@@ -169,15 +169,6 @@ func matchCount(m search.Match) string {
 	return fmt.Sprintf("%d/%dt", m.Matched, m.Turns)
 }
 
-// flattenTitle puts a title carrying line breaks on one line. It joins rather
-// than ending at the first break: a title is a session's first prompt where
-// nothing better was recorded, and a prompt can run to many lines, so cutting at
-// the break deletes the rest of it with nothing to mark that it went. Joined,
-// the row wraps and the reader keeps the whole of it.
-func flattenTitle(title string) string {
-	return strings.Join(strings.Fields(title), " ")
-}
-
 // padRight is the listing's own padding, by rune count: a label column here is a
 // path or a worktree name, which is what that measure already serves there.
 func padRight(s string, width int) string {
@@ -213,7 +204,7 @@ func (r *renderer) matchRow(m search.Match, l matchLayout) string {
 	}
 	b.WriteString(matchGap)
 	b.WriteString(r.body.Render(m.Session))
-	if title := flattenTitle(m.Title); title != "" {
+	if title := oneLine(m.Title); title != "" {
 		b.WriteString(matchGap)
 		b.WriteString(r.body.Render(title))
 	}

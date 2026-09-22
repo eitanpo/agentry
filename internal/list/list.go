@@ -1202,11 +1202,17 @@ func fmtDur(secs int) string {
 	return fmt.Sprintf("%dm", m)
 }
 
+// oneLine puts text on one line by joining its lines, not by ending at the
+// first. Ending there deleted every line after it with nothing to mark that they
+// went: a session titled by a multi-line prompt listed under its opening words
+// and read as a session about them. Joined, whatever will not fit is cut by the
+// column the caller applies next, and that cut ends in an ellipsis.
+//
+// Runs of whitespace collapse with the line breaks, since a title or a prompt
+// laid out for reading — an indented list, a table's padding — becomes a row of
+// gaps once its lines are joined.
 func oneLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	return strings.TrimSpace(s)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func truncate(s string, limit int) string {

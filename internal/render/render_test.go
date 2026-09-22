@@ -432,8 +432,11 @@ func TestTruncateAndOneLine(t *testing.T) {
 	if got := truncate("ab", 3); got != "ab" {
 		t.Errorf("truncate short = %q, want ab", got)
 	}
-	if got := oneLine("  first\nsecond  "); got != "first" {
-		t.Errorf("oneLine = %q, want first", got)
+	// Joined, not ended at the first line: ending there deleted "second" with
+	// nothing to mark that it went, and the column applied next cannot mark a cut
+	// it never saw.
+	if got := oneLine("  first\nsecond  "); got != "first second" {
+		t.Errorf("oneLine = %q, want \"first second\"", got)
 	}
 }
 
@@ -2134,7 +2137,7 @@ func TestSelectedTurnPrintsBodiesWhole(t *testing.T) {
 // line no render would show, and four of five hits in a real turn were
 // unreachable for exactly this reason.
 func TestSelectedTurnPrintsArgumentsWhole(t *testing.T) {
-	lines := []string{"python3 - <<'PY'", "import io", "deep = 'the last line'", "PY"}
+	lines := []string{"python3 - <<'PY'", strings.Repeat("import io; ", 8), "deep = 'the last line'", "PY"}
 	args := strings.Join(lines, "\n")
 	deep := lines[2]
 
@@ -2176,11 +2179,12 @@ func TestSelectedTurnPrintsArgumentsWhole(t *testing.T) {
 	}
 }
 
-// TestArgsSummaryNamesBothElisions pins that the parenthetical says when it left
-// something out. It drops every line after the first and then cuts what remains
-// to a width; naming only the second is how a script passed to a shell came to
-// read as a one-line call.
-func TestArgsSummaryNamesBothElisions(t *testing.T) {
+// TestArgsSummaryNamesWhatItCut pins that the parenthetical says when it left
+// something out. It joins the argument's lines and cuts the result to a width, so
+// the width is the one thing it can lose and the one thing it has to name;
+// leaving that unmarked is how a script passed to a shell came to read as a
+// one-line call.
+func TestArgsSummaryNamesWhatItCut(t *testing.T) {
 	long := strings.Repeat("x", toolArgsInlineMax+10)
 	for _, tc := range []struct {
 		what   string
@@ -2188,9 +2192,13 @@ func TestArgsSummaryNamesBothElisions(t *testing.T) {
 		elided bool
 	}{
 		{"a short single line leaves nothing out", "ls -la", false},
-		{"lines after the first are named", "short\nand more lines follow", true},
+		// The lines are joined rather than ended at the first, so a short
+		// multi-line argument is shown entire and there is nothing to name. Ending
+		// at the first line deleted the rest with no mark, and claimed an elision
+		// on arguments it had in fact shown whole.
+		{"a short multi-line argument fits once joined", "short\nand more", false},
 		{"a line past the width is named", long, true},
-		{"both at once are named once", long + "\nmore", true},
+		{"many lines past the width are named once", long + "\nmore", true},
 	} {
 		t.Run(tc.what, func(t *testing.T) {
 			got := argsSummary(tc.args)

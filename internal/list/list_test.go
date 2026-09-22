@@ -182,8 +182,10 @@ func TestRenderPlain(t *testing.T) {
 	if wantWhen != startWhen && strings.Contains(out, startWhen) {
 		t.Errorf("when column should not show Start time %q: %q", startWhen, out)
 	}
-	if strings.Contains(out, "line only") {
-		t.Errorf("title should be truncated at newline: %q", out)
+	// A title's lines are joined rather than ended at the first, which used to
+	// delete the rest of it with nothing to mark that they went.
+	if !strings.Contains(out, "first line only") {
+		t.Errorf("title dropped the lines after its first: %q", out)
 	}
 	if strings.Contains(out, "\x1b") {
 		t.Errorf("color off should emit no ANSI: %q", out)

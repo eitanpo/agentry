@@ -723,24 +723,22 @@ func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 // summary is there to say which call this is rather than what it did.
 const toolArgsInlineMax = 60
 
-// argsSummary is the activation line's parenthetical: the first line of the
-// call's arguments, cut to a width, ending in "…" where either elision fired.
-// Both are named because a summary showing neither reads as the whole argument —
-// which is how a script passed to a shell came to look like a one-line call.
+// argsSummary is the activation line's parenthetical: the call's arguments
+// joined onto one line and cut to a width, ending in "…" where the cut fired.
+// The cut is named because a summary showing none of its elision reads as the
+// whole argument — which is how a script passed to a shell came to look like a
+// one-line call.
 func argsSummary(args string) string {
-	first := oneLine(args)
-	shown := truncate(first, toolArgsInlineMax)
-	if shown == first && argsElided(args) {
-		shown += "…"
-	}
-	return shown
+	return truncate(oneLine(args), toolArgsInlineMax)
 }
 
-// argsElided reports whether the parenthetical leaves anything out — lines after
-// the first, or characters past the width.
+// argsElided reports whether the parenthetical leaves anything out: characters
+// past the width, which is all it can lose now that the lines are joined rather
+// than ended at the first. A short multi-line argument is shown whole, and the
+// caller that used to be told otherwise printed the arguments twice.
 func argsElided(args string) bool {
-	first := oneLine(args)
-	return first != strings.TrimSpace(args) || truncate(first, toolArgsInlineMax) != first
+	joined := oneLine(args)
+	return truncate(joined, toolArgsInlineMax) != joined
 }
 
 // toolArgs lays a call's whole argument text beneath its activation line, for a
@@ -1579,11 +1577,17 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
+// oneLine puts text on one line by joining its lines, not by ending at the
+// first. Ending there deleted every line after it with nothing to mark that they
+// went: a session titled by a multi-line prompt listed under its opening words
+// and read as a session about them. Joined, whatever will not fit is cut by the
+// column the caller applies next, and that cut ends in an ellipsis.
+//
+// Runs of whitespace collapse with the line breaks, since a title or a prompt
+// laid out for reading — an indented list, a table's padding — becomes a row of
+// gaps once its lines are joined.
 func oneLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	return strings.TrimSpace(s)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func truncate(s string, limit int) string {
