@@ -13,6 +13,7 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,8 @@ const (
 	// it — see toolPrompt.
 	toolBodyMaxLines = 10
 	assistantIndent  = "  " // left pad before the assistant turn's rail (│ … ╰─)
+	railGlyph        = "│"  // the rail a bounded block hangs off
+	railClose        = "╰─" // the rule that closes one
 	glyphUser        = "❯"
 	glyphClaude      = "◆"
 	glyphTool        = "●"
@@ -485,13 +488,42 @@ func (r *renderer) box(content string) string {
 	return r.border.Width(w).Render(content) + "\n"
 }
 
+// Rail bounds a block of lines the way a turn's reply is bounded: a left rail
+// down the block and a rule closing it. It is the shape for every multi-line
+// block printed under a header, so one shape means one thing wherever a reader
+// meets it, and it lives here because the turn's reply is where it comes from.
+//
+// One line hangs off the closing rule instead, because chrome must never cost
+// more lines than the content it bounds. Two or more keep the rail: content on
+// the rule there would give the last line different chrome from its siblings
+// while saying nothing different about it. No content prints nothing — a bare
+// rule bounds nothing, and reads as a header that found nothing rather than one
+// with nothing to find.
+func Rail(lines []string, dim lipgloss.Style) []string {
+	switch len(lines) {
+	case 0:
+		return nil
+	case 1:
+		return []string{assistantIndent + dim.Render(railClose) + " " + lines[0]}
+	}
+	out := make([]string, 0, len(lines)+1)
+	for _, line := range lines {
+		out = append(out, assistantIndent+dim.Render(railGlyph)+" "+line)
+	}
+	return append(out, assistantIndent+dim.Render(railClose))
+}
+
+// RailWidth is the columns Rail's own prefix takes, which a caller sizing its
+// content to a terminal has to subtract before it lays that content out.
+func RailWidth() int { return lipgloss.Width(assistantIndent + railGlyph + " ") }
+
 // ── Turns ────────────────────────────────────────────────────────────────
 
 func (r *renderer) turn(t model.Turn) string {
 	var b strings.Builder
 	b.WriteString(r.userPrompt(t.Prompt))
 
-	bar := assistantIndent + r.dim.Render("│") + " "
+	bar := assistantIndent + r.dim.Render(railGlyph) + " "
 	b.WriteString(assistantIndent + r.claude.Render(glyphClaude) + "\n")
 	for _, line := range r.events(t.Events, bar, 0) {
 		b.WriteString(line + "\n")
@@ -542,7 +574,7 @@ func (r *renderer) turnClose(t model.Turn) string {
 		parts = append(parts, r.dim.Render(fmt.Sprintf("%d denied", denied)))
 	}
 	parts = append(parts, r.turnSpend(t)...)
-	return assistantIndent + r.dim.Render("╰─ ") + strings.Join(parts, " · ")
+	return assistantIndent + r.dim.Render(railClose+" ") + strings.Join(parts, " · ")
 }
 
 // turnSpend is what the turn's tokens came to, phrased the way the header
@@ -761,13 +793,44 @@ func (r *renderer) toolPrompt(text, prefix string) []string {
 	return out
 }
 
+// gutterWidth is the columns a numbered body spends on its numbers: the digits
+// plus the space separating them from the text, and nothing where the body is
+// one line and carries no number.
+func (r *renderer) gutterWidth(numberW int) int {
+	if numberW == 0 {
+		return 0
+	}
+	return numberW + 1
+}
+
+// lineNumber is the gutter one display line carries: the source line's number on
+// the first display line it takes, and blanks on the lines it wrapped onto, so a
+// continuation is not read as a line of its own.
+func (r *renderer) lineNumber(number, wrapped, numberW int) string {
+	if numberW == 0 {
+		return ""
+	}
+	if wrapped > 0 {
+		return strings.Repeat(" ", r.gutterWidth(numberW))
+	}
+	return r.dim.Render(fmt.Sprintf("%*d", numberW, number)) + " "
+}
+
 func (r *renderer) toolBody(text, prefix string) []string {
 	text = strings.TrimRight(text, "\n")
 	if text == "" {
 		return nil
 	}
-	width := r.opts.Width - lipgloss.Width(prefix)
 	lines := strings.Split(text, "\n")
+	// A body of more than one line is numbered from 1, because that is what a
+	// search hit counts from: a hit reported at result:66 located nothing while
+	// the body it named printed unnumbered, leaving the reader to count by eye.
+	// One line needs no number, being the only one a hit could have named.
+	numberW := 0
+	if len(lines) > 1 {
+		numberW = len(strconv.Itoa(len(lines)))
+	}
+	width := r.opts.Width - lipgloss.Width(prefix) - r.gutterWidth(numberW)
 	var out []string
 	limit := r.bodyCap()
 	// The cap counts display lines and the remainder counts source lines, so the
@@ -776,7 +839,7 @@ func (r *renderer) toolBody(text, prefix string) []string {
 	// narrow width — a cap that names what it left out cannot name "-6 more
 	// lines". PRODUCT.md's Verbosity section owns the rule this restores.
 	whole := 0 // source lines printed entire
-	for _, raw := range lines {
+	for i, raw := range lines {
 		room := limit - len(out)
 		if room <= 0 {
 			break
@@ -786,13 +849,13 @@ func (r *renderer) toolBody(text, prefix string) []string {
 			// A line too long for the room left shows its head rather than being
 			// dropped, so a body that is one very long line is not blank. It stays
 			// outside whole, which is what makes the remainder name it.
-			for _, w := range wrapped[:room] {
-				out = append(out, prefix+r.body.Render(w))
+			for j, w := range wrapped[:room] {
+				out = append(out, prefix+r.lineNumber(i+1, j, numberW)+r.body.Render(w))
 			}
 			break
 		}
-		for _, w := range wrapped {
-			out = append(out, prefix+r.body.Render(w))
+		for j, w := range wrapped {
+			out = append(out, prefix+r.lineNumber(i+1, j, numberW)+r.body.Render(w))
 		}
 		whole++
 	}

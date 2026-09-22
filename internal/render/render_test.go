@@ -2224,3 +2224,51 @@ func TestArgsSummaryNamesBothElisions(t *testing.T) {
 		t.Errorf("a call whose parenthetical is complete grew a block repeating it:\n%s", b.String())
 	}
 }
+
+// TestNumbersABodyOfManyLines pins the gutter a verbatim body carries and what
+// it is for: `agentry search` reports a hit as `result:66`, and the number
+// located nothing while the body it named printed unnumbered — the reader was
+// told which line held the passage and left to count sixty-six lines by eye.
+//
+// Three properties, each of which has to hold for the number to mean anything: a
+// numbered line carries its own source number, a line that wrapped carries
+// blanks rather than repeating it, and a one-line body carries no number at all.
+func TestNumbersABodyOfManyLines(t *testing.T) {
+	long := strings.Repeat("word ", 60) // one source line, several display lines
+	body := strings.Join([]string{"first", "second", long, "fourth"}, "\n")
+	sess := &model.Session{
+		Meta: model.Meta{NumTurns: 1},
+		Turns: []model.Turn{{Number: 1, Prompt: "one", Events: []model.Event{
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: body}},
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", Result: "just the one line"}},
+		}}},
+	}
+	var b strings.Builder
+	opts := Options{Width: 60, Color: false, Channels: Channels{Tools: true, ToolResults: true},
+		Selected: &model.TurnRange{From: 1, To: 1}}
+	if err := Session(&b, sess, opts); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	// The number a hit would cite, against the line it names.
+	for _, want := range []string{"1 first", "2 second", "4 fourth"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q numbered in:\n%s", want, out)
+		}
+	}
+
+	// The third source line wraps. Only its first display line carries the
+	// number, or the body would report more lines than it holds.
+	if n := strings.Count(out, "3 word"); n != 1 {
+		t.Errorf("the number appears on %d display lines of one source line, want 1:\n%s", n, out)
+	}
+
+	// The one-line body beside it carries none: its only line is the one a hit
+	// could have named, and a lone "1" is chrome saying nothing.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "just the one line") && strings.Contains(line, "1 just") {
+			t.Errorf("a one-line body was numbered: %q", line)
+		}
+	}
+}

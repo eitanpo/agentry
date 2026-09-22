@@ -48,9 +48,6 @@ type Options struct {
 
 // Prompt blocks reuse the renderer's turn chrome: a left rail closed by a rule.
 const (
-	railIndent  = "  "
-	railGlyph   = "│"
-	railClose   = "╰─"
 	promptGlyph = "❯"
 	// Budgeted against the widest prefix a detail line can take, "  ╰─ ❯ ": a
 	// one-line block draws the closing rule in place of the rail glyph, which is
@@ -830,15 +827,8 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		// A block every selected channel left empty prints nothing at all: a bare
 		// rule here would cost a line bounding no content, and would read as a
 		// channel that ran and found nothing rather than one with nothing to find.
-		switch {
-		case len(detail) == 1:
-			fmt.Fprintf(&b, "%s%s %s\n", railIndent, dim.Render(railClose), detail[0])
-		case len(detail) > 1:
-			rail := railIndent + dim.Render(railGlyph) + " "
-			for _, line := range detail {
-				fmt.Fprintf(&b, "%s%s\n", rail, line)
-			}
-			fmt.Fprintf(&b, "%s%s\n", railIndent, dim.Render(railClose))
+		for _, line := range render.Rail(detail, dim) {
+			fmt.Fprintf(&b, "%s\n", line)
 		}
 	}
 	_, err := io.WriteString(w, b.String())

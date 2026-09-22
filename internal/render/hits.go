@@ -79,23 +79,29 @@ func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool,
 	}
 	layout := layOutMatches(matches)
 	for i, g := range inDisplayOrder(groups) {
-		indent := ""
+		// Under a heading the findings are that heading's block, so they hang off
+		// the rail every block under a header hangs off; the rail's own columns come
+		// out of the text they bound.
+		column := width - len(findingIndent)
+		if heading {
+			column -= RailWidth()
+		}
+		var block []string
+		for _, h := range g.Hits {
+			block = append(block,
+				r.dim.Render(fmt.Sprintf("turn %d", h.Turn))+hitSeparator+r.tool.Render(hitLocation(h)),
+				findingIndent+r.highlight(findingText(h.Text, re, column), re))
+		}
 		if heading {
 			if i > 0 {
 				b.WriteString("\n")
 			}
 			b.WriteString(r.matchRow(g.Match, layout))
 			b.WriteString("\n")
-			indent = findingIndent
+			block = Rail(block, r.dim)
 		}
-		for _, h := range g.Hits {
-			b.WriteString(indent)
-			b.WriteString(r.dim.Render(fmt.Sprintf("turn %d", h.Turn)))
-			b.WriteString(hitSeparator)
-			b.WriteString(r.tool.Render(hitLocation(h)))
-			b.WriteString("\n")
-			b.WriteString(indent + findingIndent)
-			b.WriteString(r.highlight(findingText(h.Text, re, width-len(indent)-len(findingIndent)), re))
+		for _, line := range block {
+			b.WriteString(line)
 			b.WriteString("\n")
 		}
 	}

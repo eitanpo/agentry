@@ -98,8 +98,9 @@ func TestFindingsHeadsEachSessionOnce(t *testing.T) {
 	for _, want := range []string{
 		wantOlder,
 		wantNewer,
-		"  turn 3 · prompt:1",
-		"    find every caller",
+		"  │ turn 3 · prompt:1",
+		"  │   find every caller",
+		"  ╰─",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("want %q in:\n%s", want, out)

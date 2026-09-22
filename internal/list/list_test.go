@@ -15,6 +15,15 @@ import (
 	"github.com/muesli/termenv"
 )
 
+// The chrome a detail block is bounded by, spelled out here rather than imported
+// from the renderer that draws it: these are the expected values, and an
+// expectation that reads its own answer off the code under test pins nothing.
+const (
+	railIndent = "  "
+	railGlyph  = "│"
+	railClose  = "╰─"
+)
+
 func TestParseWhen(t *testing.T) {
 	now := time.Date(2026, 6, 3, 14, 30, 0, 0, time.Local)
 	midnightToday := time.Date(2026, 6, 3, 0, 0, 0, 0, time.Local)
