@@ -248,7 +248,9 @@ func searchOne(cmd *cobra.Command, spec searchArgs, re *regexp.Regexp, from, for
 				Title: sess.Meta.Title, Matched: search.TurnsIn(hits), Turns: len(sess.Turns),
 			}}
 		}
-		return emitMatches(cmd, matches, format, noColor)
+		// One session carries no label at all, so which end of a label would
+		// survive its column cannot arise.
+		return emitMatches(cmd, matches, format, noColor, false)
 	}
 	out := cmd.OutOrStdout()
 	var err2 error
@@ -308,7 +310,7 @@ func searchSessions(cmd *cobra.Command, noun string, re *regexp.Regexp, format s
 	for _, p := range paths {
 		byID[strings.TrimSuffix(filepath.Base(p), ".jsonl")] = p
 	}
-	labels, _ := list.RowLabels(selected)
+	labels, labelKeepsTail := list.RowLabels(selected)
 
 	groups := searchEach(selected, byID, labels, re)
 
@@ -317,7 +319,7 @@ func searchSessions(cmd *cobra.Command, noun string, re *regexp.Regexp, format s
 		for _, g := range groups {
 			matches = append(matches, g.Match)
 		}
-		return emitMatches(cmd, matches, format, noColor)
+		return emitMatches(cmd, matches, format, noColor, labelKeepsTail)
 	}
 	out := cmd.OutOrStdout()
 	switch format {
@@ -337,7 +339,7 @@ func searchSessions(cmd *cobra.Command, noun string, re *regexp.Regexp, format s
 		err = render.HitsJSONL(out, hits, "")
 	default:
 		color, width := terminal(*noColor)
-		err = render.Findings(out, groups, re, color, width)
+		err = render.Findings(out, groups, re, color, width, labelKeepsTail)
 	}
 	if err != nil {
 		return &exitError{code: 1, err: err}
@@ -415,7 +417,7 @@ func searchEach(selected []model.Summary, byID map[string]string, labels map[str
 	return groups
 }
 
-func emitMatches(cmd *cobra.Command, matches []search.Match, format string, noColor *bool) error {
+func emitMatches(cmd *cobra.Command, matches []search.Match, format string, noColor *bool, labelKeepsTail bool) error {
 	out := cmd.OutOrStdout()
 	var err error
 	switch format {
@@ -424,8 +426,8 @@ func emitMatches(cmd *cobra.Command, matches []search.Match, format string, noCo
 	case "jsonl":
 		err = render.MatchesJSONL(out, matches)
 	default:
-		color, _ := terminal(*noColor)
-		err = render.Matches(out, matches, color)
+		color, width := terminal(*noColor)
+		err = render.Matches(out, matches, color, width, labelKeepsTail)
 	}
 	if err != nil {
 		return &exitError{code: 1, err: err}

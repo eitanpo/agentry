@@ -90,16 +90,16 @@ func TestFindingsHeadsEachSessionOnce(t *testing.T) {
 		},
 	}
 	var b strings.Builder
-	if err := Findings(&b, groups, nil, false, 0); err != nil {
+	if err := Findings(&b, groups, nil, false, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
 
 	// Exact rows, because every space in them is doing work: the count is
-	// right-aligned to the widest, the label padded to the widest, and the title
-	// last and whole.
-	wantOlder := "2026-05-01 10:00   1/4t  dotfiles  aaaa1111  first"
-	wantNewer := "2026-05-02 11:00  2/30t  agentry   bbbb2222  second and a second line"
+	// right-aligned to the widest, the label and the title padded to their
+	// columns, and the id last so the value a reader copies never moves.
+	wantOlder := "2026-05-01 10:00   1/4t  dotfiles  first" + strings.Repeat(" ", 52) + "aaaa1111"
+	wantNewer := "2026-05-02 11:00  2/30t  agentry   second and a second line" + strings.Repeat(" ", 33) + "bbbb2222"
 	for _, want := range []string{
 		wantOlder,
 		wantNewer,
@@ -119,16 +119,22 @@ func TestFindingsHeadsEachSessionOnce(t *testing.T) {
 	}
 
 	// The id starts at the same column in both rows, which is the whole point of
-	// padding the fields before it: a ragged edge is what a reader cannot scan.
+	// padding the fields before it — the title included, now that the id follows
+	// it. A ragged edge is what a reader cannot scan.
 	if i, j := strings.Index(wantOlder, "aaaa1111"), strings.Index(wantNewer, "bbbb2222"); i != j {
 		t.Errorf("the id column starts at %d in one row and %d in the other", i, j)
+	}
+	// And it is the row's last field, which is what lets a reader select it with
+	// one gesture at the end of the line.
+	if !strings.HasSuffix(wantOlder, "aaaa1111") || !strings.HasSuffix(wantNewer, "bbbb2222") {
+		t.Errorf("the id does not end the row: %q / %q", wantOlder, wantNewer)
 	}
 
 	// The heading is the session row, so `search session` and a `search turn`
 	// heading describe one session one way — laid out over the same run, since a
 	// column's width is a property of the run and not of one row.
 	var rows strings.Builder
-	if err := Matches(&rows, []search.Match{groups[0].Match, groups[1].Match}, false); err != nil {
+	if err := Matches(&rows, []search.Match{groups[0].Match, groups[1].Match}, false, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, row := range strings.Split(strings.TrimRight(rows.String(), "\n"), "\n") {
@@ -419,7 +425,7 @@ func TestASearchRowIsDrawnLikeAListingRow(t *testing.T) {
 		{Session: "bbbb2222-2222", Activity: when, Project: "dotfiles", Title: "another", Matched: 1, Turns: 4},
 	}
 	var b strings.Builder
-	if err := Matches(&b, matches, true); err != nil {
+	if err := Matches(&b, matches, true, 0, false); err != nil {
 		t.Fatal(err)
 	}
 	row := strings.Split(b.String(), "\n")[0]
@@ -450,5 +456,45 @@ func TestASearchRowIsDrawnLikeAListingRow(t *testing.T) {
 	// thing on one and nearly the background on the other.
 	if strings.Contains(row, theme.Body().Render("another")) {
 		t.Errorf("the title is painted a fixed shade rather than the reader's own: %q", row)
+	}
+}
+
+// TestALongLabelDoesNotStarveTheTitle pins the cap on the path column. The label
+// and the title divide what the fixed columns leave, and an uncapped label takes
+// it: at 100 columns one long worktree name cut every title on the run to a dozen
+// characters, which is the column the row is actually read by.
+//
+// The cap is a share of the shared space rather than a number, so it holds at
+// every width, and it is the listing's own rule read from one owner — two copies
+// would let one surface starve a column the other protects.
+func TestALongLabelDoesNotStarveTheTitle(t *testing.T) {
+	long := "a-very-long-worktree-name-indeed"
+	matches := []search.Match{
+		{Session: "aaaa1111-1111-1111", Project: long, Title: "a title long enough to be cut by any column", Matched: 1, Turns: 4},
+		{Session: "bbbb2222-2222-2222", Project: "short", Title: "another title of some length", Matched: 2, Turns: 9},
+	}
+	const width = 100
+	l := layOutMatches(matches, width, true)
+
+	if l.label >= len(long) {
+		t.Errorf("the label column is %d wide, the widest label being %d: it was not capped", l.label, len(long))
+	}
+	if l.label > l.title {
+		t.Errorf("the label column (%d) took more than the title (%d), which is the column the row is read by", l.label, l.title)
+	}
+	if l.title <= titleFloor {
+		t.Errorf("the title is at its floor (%d) on a %d-column terminal", l.title, width)
+	}
+
+	// Whatever the split, the row fits the terminal: a row one column over wraps,
+	// and the id a reader copies is what the wrap breaks.
+	var b strings.Builder
+	if err := Matches(&b, matches, false, width, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range strings.Split(strings.TrimRight(b.String(), "\n"), "\n") {
+		if n := utf8.RuneCountInString(row); n > width {
+			t.Errorf("a row spends %d columns of %d: %q", n, width, row)
+		}
 	}
 }

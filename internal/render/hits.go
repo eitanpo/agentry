@@ -54,7 +54,9 @@ const (
 // number of hits either: the caller pipes to `head` the way they would any
 // search, and a cap agentry chose would hide matches a pattern asked for.
 func Hits(w io.Writer, hits []search.Hit, re *regexp.Regexp, color bool, width int) error {
-	return Findings(w, []search.Group{{Hits: hits}}, re, color, width)
+	// A single-session run draws no label column, so which end of a label would
+	// survive cannot arise.
+	return Findings(w, []search.Group{{Hits: hits}}, re, color, width, false)
 }
 
 // Findings writes each session's findings under its own heading, which is the
@@ -62,7 +64,7 @@ func Hits(w io.Writer, hits []search.Hit, re *regexp.Regexp, color bool, width i
 // rather than two invented ones. A single group whose match names no session is
 // the one-session case and prints no heading: the caller already knows which
 // session they searched, and a heading would indent every finding to say so.
-func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool, width int) error {
+func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool, width int, keepTail bool) error {
 	if width <= 0 {
 		width = fallbackWidth
 	}
@@ -79,7 +81,7 @@ func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool,
 	for _, g := range groups {
 		matches = append(matches, g.Match)
 	}
-	layout := layOutMatches(matches)
+	layout := layOutMatches(matches, width, keepTail)
 	for i, g := range inDisplayOrder(groups) {
 		// Under a heading the findings are that heading's block, so they hang off
 		// the rail every block under a header hangs off; the rail's own columns come
@@ -133,13 +135,16 @@ func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool,
 // Matches writes one row per session that holds findings — `agentry search
 // session` with nothing beneath each row. The same row Findings heads a group
 // with, so a caller reading both sees one session described one way.
-func Matches(w io.Writer, matches []search.Match, color bool) error {
+func Matches(w io.Writer, matches []search.Match, color bool, width int, keepTail bool) error {
+	if width <= 0 {
+		width = fallbackWidth
+	}
 	if !color {
 		lipgloss.SetColorProfile(termenv.Ascii)
 	}
 	r := &renderer{opts: Options{Color: color}}
 	r.initStyles()
-	layout := layOutMatches(matches)
+	layout := layOutMatches(matches, width, keepTail)
 	var b strings.Builder
 	for _, m := range inDisplayOrder(matches) {
 		b.WriteString(r.matchRow(m, layout))
@@ -164,15 +169,59 @@ func inDisplayOrder[T any](run []T) []T {
 	return out
 }
 
-// matchLayout is the width of each fixed column across a run of session rows,
-// plus how much of an id tells these rows apart. Computed over the whole run
-// before any row is written, because a column is only a column if every row
-// agrees on its width — and because the significant half of an id is a property
-// of the set of ids, not of any one of them.
-type matchLayout struct{ count, label, unique int }
+// matchLayout is the width of each column across a run of session rows, plus how
+// much of an id tells these rows apart. Computed over the whole run before any
+// row is written, because a column is only a column if every row agrees on its
+// width — and because the significant half of an id is a property of the set of
+// ids, not of any one of them.
+type matchLayout struct {
+	count, label, title, id, unique int
+	// keepTail says which end of a label survives its column. It comes from the
+	// chooser that produced the labels rather than from reading the label, so one
+	// value is not cut two ways on two surfaces.
+	keepTail bool
+}
 
-func layOutMatches(matches []search.Match) matchLayout {
-	var l matchLayout
+// titleFloor is the narrowest the title column goes. A terminal too narrow for
+// the floor overruns rather than dropping the id, the id being what every other
+// verb takes and the title being readable at any length.
+const titleFloor = 10
+
+// labelMax and labelFloor bound the path column, which holds a project or, inside
+// one project, a worktree. The absolute cap is what a path suffix or a chosen
+// name needs; the share cap below is what stops a long one starving the title.
+const (
+	labelMax   = 24
+	labelFloor = 8
+)
+
+// LabelColumn is the width the path column takes, given the widest label in the
+// run and the columns the label and the title share. It is capped twice:
+// absolutely, and at a third of the shared space — without the second, one long
+// project name leaves the title at its floor, and the title is what the row is
+// actually read by.
+//
+// One owner, because a listing row and a search row divide the same space
+// between the same two columns. Two copies of the rule would let one surface
+// starve a column the other protects.
+func LabelColumn(widest, shared int) int {
+	if widest <= 0 {
+		return 0
+	}
+	if third := shared / 3; widest > third {
+		widest = third
+	}
+	if widest > labelMax {
+		widest = labelMax
+	}
+	if widest < labelFloor {
+		widest = labelFloor
+	}
+	return widest
+}
+
+func layOutMatches(matches []search.Match, width int, keepTail bool) matchLayout {
+	l := matchLayout{keepTail: keepTail}
 	ids := make([]string, 0, len(matches))
 	for _, m := range matches {
 		if n := utf8.RuneCountInString(matchCount(m)); n > l.count {
@@ -181,9 +230,23 @@ func layOutMatches(matches []search.Match) matchLayout {
 		if n := utf8.RuneCountInString(m.Project); n > l.label {
 			l.label = n
 		}
+		if n := utf8.RuneCountInString(m.Session); n > l.id {
+			l.id = n
+		}
 		ids = append(ids, m.Session)
 	}
 	l.unique = UniqueIDPrefix(ids)
+	// The label and the title share what the fixed columns leave, and the title
+	// takes what the label does not: it is the one column whose content has no
+	// length worth aligning to, so it absorbs the remainder the way the listing's
+	// does. Three gaps without a label column, four with.
+	gaps := 3 * len(matchGap)
+	if l.label > 0 {
+		gaps += len(matchGap)
+	}
+	shared := width - len(whenFormat) - l.count - l.id - gaps
+	l.label = LabelColumn(l.label, shared)
+	l.title = max(shared-l.label, titleFloor)
 	return l
 }
 
@@ -295,6 +358,21 @@ func matchCount(m search.Match) string {
 	return fmt.Sprintf("%d/%dt", m.Matched, m.Turns)
 }
 
+// fitLabel cuts a label to its column, from whichever end does not tell these
+// rows apart: a project label is a path suffix and keeps its tail, a worktree
+// name keeps the head somebody chose. Which it is comes from the chooser that
+// produced the labels, never guessed from the string.
+//
+// Padding alone was what this row did, and padding does not cut: one worktree
+// name of thirty-two characters put every row fourteen columns past the terminal,
+// where the id a reader copies is what the wrap breaks.
+func fitLabel(label string, width int, keepTail bool) string {
+	if keepTail {
+		return truncateLeft(label, width)
+	}
+	return truncate(label, width)
+}
+
 // padRight is the listing's own padding, by rune count: a label column here is a
 // path or a worktree name, which is what that measure already serves there.
 func padRight(s string, width int) string {
@@ -305,13 +383,14 @@ func padRight(s string, width int) string {
 }
 
 // matchRow is the session row: the session's last activity, how many of its
-// turns matched, its project or worktree, its id, and its title. Every field is
-// a fixed-width column but the title, which comes last and is never cut.
+// turns matched, its project or worktree, its title, and its id. The order is
+// the listing's, the id last, because the two rows carry the same facts and a
+// reader moving between them should not find one field in two places.
 //
-// The count has to read down a column, being what a caller chooses between
-// sessions on, and it cannot while it sits at the end of a line whose length
-// varies with the title beside it. Keeping the title whole is what puts it last:
-// any column after an uncut title would be ragged instead.
+// Every column is fixed-width, the title taking whatever the others leave. The
+// id ends the row rather than the title because the id is the value a reader
+// copies out and hands to every other verb, and a value being copied must not
+// move left and right as the title beside it changes length.
 func (r *renderer) matchRow(m search.Match, l matchLayout) string {
 	var b strings.Builder
 	// A summary always carries a start, so a zero time here is a row that cannot
@@ -332,18 +411,16 @@ func (r *renderer) matchRow(m search.Match, l matchLayout) string {
 	b.WriteString(r.dim.Render(fmt.Sprintf("%*s", l.count, matchCount(m))))
 	if l.label > 0 {
 		b.WriteString(matchGap)
-		b.WriteString(r.dim.Render(padRight(m.Project, l.label)))
+		b.WriteString(r.dim.Render(padRight(fitLabel(m.Project, l.label, l.keepTail), l.label)))
 	}
-	b.WriteString(matchGap)
-	b.WriteString(SessionID(m.Session, l.unique))
 	// The title takes the terminal's own foreground, as the listing's does. A
 	// fixed near-white is the brightest thing on a dark background and close to
 	// invisible on a light one, and the title is the field the row is read by.
-	if title := OneLine(m.Title); title != "" {
-		b.WriteString(matchGap)
-		b.WriteString(r.plain.Render(title))
-	}
-	return b.String()
+	b.WriteString(matchGap)
+	b.WriteString(padRight(r.plain.Render(truncate(OneLine(m.Title), l.title)), l.title))
+	b.WriteString(matchGap)
+	b.WriteString(SessionID(m.Session, l.unique))
+	return strings.TrimRight(b.String(), " ")
 }
 
 // findingText is the one row a finding's text occupies: the matching line where

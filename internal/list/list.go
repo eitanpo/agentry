@@ -694,18 +694,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	// name starves the title — at 100 columns a 21-character repo name leaves the
 	// title at its 10-column floor, which is the column the row is actually read
 	// by. The same cap serves the worktree column, which fills the same slot.
-	if projW > 0 {
-		avail := width - (whenW + durW + turnsW + idW + fromW + gaps*2)
-		if cap := avail / 3; projW > cap {
-			projW = cap
-		}
-		if projW > projMaxW {
-			projW = projMaxW
-		}
-		if projW < 8 {
-			projW = 8
-		}
-	}
+	projW = render.LabelColumn(projW, width-(whenW+durW+turnsW+idW+fromW+gaps*2))
 	titleW := width - (whenW + durW + turnsW + idW + fromW + projW + gaps*2)
 	if titleW < 10 {
 		titleW = 10
