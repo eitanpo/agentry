@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/model"
 )
 
@@ -426,14 +428,23 @@ func TestMarkdownBareURLEndToEnd(t *testing.T) {
 }
 
 func TestTruncateAndOneLine(t *testing.T) {
-	if got := truncate("abcdef", 3); got != "abc…" {
-		t.Errorf("truncate = %q, want abc…", got)
+	// The ellipsis is counted among the limit's columns. Spending one more than
+	// the caller budgeted put a footer row one column past the terminal, where it
+	// wrapped onto a line carrying none of its section's rail.
+	if got := truncate("abcdef", 3); got != "ab…" {
+		t.Errorf("truncate = %q, want ab…", got)
+	}
+	if got := utf8.RuneCountInString(truncate("abcdef", 3)); got != 3 {
+		t.Errorf("truncate spent %d columns of a 3-column budget", got)
 	}
 	if got := truncate("ab", 3); got != "ab" {
 		t.Errorf("truncate short = %q, want ab", got)
 	}
-	if got := oneLine("  first\nsecond  "); got != "first" {
-		t.Errorf("oneLine = %q, want first", got)
+	// Joined, not ended at the first line: ending there deleted "second" with
+	// nothing to mark that it went, and the column applied next cannot mark a cut
+	// it never saw.
+	if got := OneLine("  first\nsecond  "); got != "first second" {
+		t.Errorf("OneLine = %q, want \"first second\"", got)
 	}
 }
 
@@ -450,6 +461,7 @@ func gatingSession() *model.Session {
 				{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: "TOOLBODYMARKER"}},
 				{Kind: model.EventTool, Tool: &model.Tool{
 					Name:     "Agent",
+					Prompt:   "AGENTPROMPTMARKER",
 					Result:   "AGENTRESULTMARKER",
 					Subagent: []model.Event{{Kind: model.EventText, Text: "NESTEDMARKER"}},
 				}},
@@ -468,9 +480,10 @@ func renderChannels(t *testing.T, ch Channels) string {
 }
 
 // TestChannelGating verifies the activation/body/expansion split: Tools gates
-// whether a tool's head line appears, ToolResults gates its result body, and
-// Subagents gates expansion of a nested stream (falling through to the
-// ToolResults body when off). The response text is always shown.
+// whether a tool's head line appears, ToolResults gates its result body and a
+// delegated call's instruction, and Subagents gates expansion of a nested
+// stream (falling through to the ToolResults body when off). The response text
+// is always shown.
 func TestChannelGating(t *testing.T) {
 	has := func(t *testing.T, s, marker string, want bool) {
 		t.Helper()
@@ -485,6 +498,7 @@ func TestChannelGating(t *testing.T) {
 		has(t, out, "Read", false)
 		has(t, out, "TOOLBODYMARKER", false)
 		has(t, out, "NESTEDMARKER", false)
+		has(t, out, "AGENTPROMPTMARKER", false)
 	})
 
 	t.Run("detailed: activation + expansion, no bodies", func(t *testing.T) {
@@ -493,6 +507,9 @@ func TestChannelGating(t *testing.T) {
 		has(t, out, "TOOLBODYMARKER", false) // but no result body
 		has(t, out, "NESTEDMARKER", true)    // subagent expanded
 		has(t, out, "AGENTRESULTMARKER", false)
+		// The instruction is a body too, so the level that shows no bodies shows
+		// none of it either — the expansion beneath it is the shape of the work.
+		has(t, out, "AGENTPROMPTMARKER", false)
 	})
 
 	t.Run("full: activation + expansion + bodies", func(t *testing.T) {
@@ -500,6 +517,7 @@ func TestChannelGating(t *testing.T) {
 		has(t, out, "Read", true)
 		has(t, out, "TOOLBODYMARKER", true)
 		has(t, out, "NESTEDMARKER", true)
+		has(t, out, "AGENTPROMPTMARKER", true)
 	})
 
 	t.Run("subagents off falls through to result body", func(t *testing.T) {
@@ -507,13 +525,149 @@ func TestChannelGating(t *testing.T) {
 		has(t, out, "Agent", true)             // head line present
 		has(t, out, "NESTEDMARKER", false)     // not expanded
 		has(t, out, "AGENTRESULTMARKER", true) // its result body shown instead
+		has(t, out, "AGENTPROMPTMARKER", true) // and the instruction above it either way
 	})
 
 	t.Run("tools on, results off: head without body", func(t *testing.T) {
 		out := renderChannels(t, Channels{Tools: true})
 		has(t, out, "Read", true)
 		has(t, out, "TOOLBODYMARKER", false)
+		has(t, out, "AGENTPROMPTMARKER", false)
 	})
+}
+
+// TestResultBodyNamesItsRemainder pins the cap on a result body: ten source
+// lines, then a count of what is left. The count is what makes this a cap rather
+// than a deletion, so a wrong count is the same defect as no count at all.
+//
+// The wrapped case is why the test exists. The cap counts display lines and the
+// remainder counts source lines, and subtracting one from the other printed
+// "… -6 more lines" on any body long enough to wrap — which at a narrow width is
+// every long body.
+func TestResultBodyNamesItsRemainder(t *testing.T) {
+	render := func(t *testing.T, result string, width int) string {
+		t.Helper()
+		sess := &model.Session{Turns: []model.Turn{{
+			Prompt: "go",
+			Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: result}}},
+		}}}
+		var b strings.Builder
+		opts := Options{Width: width, Color: false, Channels: Channels{Tools: true, ToolResults: true}}
+		if err := Session(&b, sess, opts); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	t.Run("short lines name the lines left over", func(t *testing.T) {
+		lines := make([]string, 0, toolBodyMaxLines*2)
+		for i := 0; i < toolBodyMaxLines*2; i++ {
+			lines = append(lines, fmt.Sprintf("row%02d", i))
+		}
+		out := render(t, strings.Join(lines, "\n"), 120)
+		want := fmt.Sprintf("… %d more lines", toolBodyMaxLines)
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q, got %q", want, out)
+		}
+	})
+
+	t.Run("wrapped lines never name a negative remainder", func(t *testing.T) {
+		// Each source line is far wider than the rail, so every one of them wraps
+		// into several display lines and the cap is reached partway through the
+		// body rather than at a line boundary.
+		long := strings.Repeat("wordy ", 40)
+		lines := make([]string, 0, toolBodyMaxLines)
+		for i := 0; i < toolBodyMaxLines; i++ {
+			lines = append(lines, long)
+		}
+		out := render(t, strings.Join(lines, "\n"), 40)
+		// The exact count, not merely a non-negative one: subtracting display
+		// lines from source lines printed "-6 more lines" on some widths and
+		// "0 more lines" on others, and a remainder of zero beside nine missing
+		// lines reads as a complete body.
+		if !strings.Contains(out, "… 9 more lines") {
+			t.Errorf("want the nine unprinted source lines named, got %q", out)
+		}
+	})
+
+	t.Run("one very long line shows its head and says so", func(t *testing.T) {
+		// The body is a single source line wrapping past the cap. Printing nothing
+		// but a remainder would hide the result entirely; printing the head with no
+		// remainder would truncate it silently.
+		out := render(t, strings.Repeat("token ", 200), 40)
+		if !strings.Contains(out, "token") {
+			t.Errorf("the head of the line was dropped: %q", out)
+		}
+		if !strings.Contains(out, "… 1 more line") {
+			t.Errorf("want the one unprinted line named, got %q", out)
+		}
+	})
+
+	t.Run("a body inside the cap names no remainder", func(t *testing.T) {
+		out := render(t, "one\ntwo\nthree", 120)
+		if strings.Contains(out, "more line") {
+			t.Errorf("a body that fit named a remainder: %q", out)
+		}
+	})
+}
+
+// TestDelegatedPromptPrintsWhole pins the instruction an Agent call was handed:
+// that it prints at all, that it prints entire where a result body is capped,
+// that it stands above the expansion rather than inside it, and that a tool
+// carrying no instruction prints no prompt chrome.
+//
+// The uncapped half is the point of the test. A reader asking what a subagent
+// was told is asking for all of it — the whole reason this fact was worth adding
+// is that the activation line already carries the description — so a cap here
+// would reinstate the gap while looking like a feature.
+func TestDelegatedPromptPrintsWhole(t *testing.T) {
+	brief := make([]string, 0, toolBodyMaxLines*3)
+	for i := 0; i < toolBodyMaxLines*3; i++ {
+		brief = append(brief, fmt.Sprintf("BRIEFLINE%02d", i))
+	}
+	sess := &model.Session{Turns: []model.Turn{{
+		Prompt: "go",
+		Events: []model.Event{
+			{Kind: model.EventTool, Tool: &model.Tool{
+				Name:     "Agent",
+				Identity: "Explore",
+				Args:     "sweep for callers",
+				Prompt:   strings.Join(brief, "\n"),
+				Subagent: []model.Event{{Kind: model.EventText, Text: "NESTEDMARKER"}},
+			}},
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: "TOOLBODYMARKER"}},
+		},
+	}}}
+	var b strings.Builder
+	opts := Options{Width: 120, Color: false, Channels: Channels{Tools: true, ToolResults: true, Subagents: true}}
+	if err := Session(&b, sess, opts); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	for _, line := range brief {
+		if !strings.Contains(out, line) {
+			t.Errorf("instruction line %q missing — the brief was truncated", line)
+		}
+	}
+	if strings.Contains(out, "more line") {
+		t.Errorf("the instruction was capped, but only a result body is: %q", out)
+	}
+	// The ❯ glyph is what says "this is what the call asked for" rather than
+	// what it returned, the two being otherwise adjacent bodies on one rail.
+	if !strings.Contains(out, glyphUser+" "+brief[0]) {
+		t.Errorf("want the ❯ glyph opening the instruction, got %q", out)
+	}
+	// Above the expansion: the call's terms come before the work it produced.
+	if strings.Index(out, brief[0]) > strings.Index(out, "NESTEDMARKER") {
+		t.Error("the instruction printed below the expanded stream, not above it")
+	}
+	// A tool that delegates nothing gets no prompt chrome — the gate is the field
+	// being set, not the channel being on.
+	body := out[strings.Index(out, "TOOLBODYMARKER"):]
+	if strings.Contains(body, glyphUser) {
+		t.Errorf("a non-delegating call printed a ❯: %q", body)
+	}
 }
 
 // TestHeaderEffort pins how the header reports reasoning effort. It reads as a
@@ -912,9 +1066,23 @@ func TestHeaderActiveTime(t *testing.T) {
 // different things. The log marks a refusal as an error too, so a single count
 // filed a refusal as a failure.
 func TestHeaderFailedAndDenied(t *testing.T) {
+	// The tallies sit on Meta because that is where the header reads them: Turns
+	// holds what a caller asked to render and Meta holds the session, so a
+	// narrowed transcript cannot make the header report a smaller session. The
+	// parser fills both from the same entries, and TestLoadTalliesAgreeWithTurns
+	// pins them against each other.
 	sess := &model.Session{
-		Meta: model.Meta{ID: "s1"},
+		Meta: model.Meta{
+			ID:       "s1",
+			NumTurns: 1,
+			Tools: []model.ToolStat{
+				{Tool: "Bash", Count: 1}, {Tool: "Write", Identity: "hosts", Count: 1}, {Tool: "Read", Count: 1},
+			},
+			Failures: []model.ToolStat{{Tool: "Bash", Count: 1}},
+			Denials:  []model.DenialStat{{Kind: "permission-rule", Tool: "Write", Identity: "hosts", Count: 1}},
+		},
 		Turns: []model.Turn{{
+			Number: 1,
 			Prompt: "go",
 			Events: []model.Event{
 				{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", IsError: true}},
@@ -1035,22 +1203,29 @@ func footerSession() *model.Session {
 				{Tool: "Bash", Identity: "grep", Count: 21},
 			},
 			Denials: []model.DenialStat{{Kind: "permission-rule", Tool: "Write", Identity: "/etc/hosts", Count: 1}},
+			// NumTurns and the per-turn tool counts below say the same thing twice
+			// because the parser fills them from one pass: 22 calls across two turns.
+			// A fixture whose Meta tally and whose turns disagree describes no real
+			// session, and the header reads Meta, so the disagreement would surface
+			// there as a count no session could produce.
+			NumTurns: 2,
 			DailyActivity: []model.DailyActivity{
 				{Day: "2026-09-17", Turns: 1, ActiveSeconds: 600},
 				{Day: "2026-09-18", Turns: 1, ActiveSeconds: 900},
 			},
 		},
 		Turns: []model.Turn{
-			{Prompt: "first", Usage: model.Usage{Input: 10, Output: 100}},
-			{Prompt: "second", Usage: model.Usage{Input: 20, Output: 200}},
+			{Number: 1, Prompt: "first", ToolCount: 21, Usage: model.Usage{Input: 10, Output: 100}},
+			{Number: 2, Prompt: "second", ToolCount: 1, Usage: model.Usage{Input: 20, Output: 200}},
 		},
 	}
 }
 
-// TestFooterSections pins the footer (PRODUCT.md §Output): five sections in a
-// fixed order, none of them gated on verbosity, and the three aggregates leaving
-// together on --no-metrics. The ungating is the regression this guards: gating
-// cost real lines, and hid the sections from anyone who never typed the flag.
+// TestFooterSections pins the footer (PRODUCT.md §Output): the order of the
+// sections a session with content draws, none of them gated on verbosity, and
+// the four aggregates leaving together on --no-metrics. The ungating is the
+// regression this guards: gating cost real lines, and hid the sections from
+// anyone who never typed the flag.
 func TestFooterSections(t *testing.T) {
 	order := []string{
 		"── Files ──",
@@ -1060,7 +1235,7 @@ func TestFooterSections(t *testing.T) {
 		"── Day by day ──",
 	}
 
-	t.Run("all five print at minimal verbosity, in order", func(t *testing.T) {
+	t.Run("every section this fixture draws prints at minimal verbosity, in order", func(t *testing.T) {
 		// Channels{Metrics: true} is what the CLI resolves at every level, including
 		// minimal — TestLevelChannels pins that half.
 		var b strings.Builder
@@ -1081,18 +1256,39 @@ func TestFooterSections(t *testing.T) {
 		}
 	})
 
-	t.Run("--no-metrics drops the three aggregates and keeps the outcomes", func(t *testing.T) {
+	t.Run("--no-metrics drops the four aggregates and keeps the outcomes", func(t *testing.T) {
+		// A session the Cost section would draw for, so its absence below says the
+		// flag dropped it rather than that there was nothing to draw.
+		sess := footerSession()
+		recorded := 12.50
+		sess.Meta.CostUSD = &recorded
+		var withCost strings.Builder
+		if err := Session(&withCost, sess, Options{Width: 100, Color: false, Channels: Channels{Metrics: true}}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(withCost.String(), "── Cost ──") {
+			t.Fatalf("the fixture draws no Cost section, so dropping it proves nothing: %q", withCost.String())
+		}
+
 		var b strings.Builder
-		if err := Session(&b, footerSession(), Options{Width: 100, Color: false, Channels: Channels{}}); err != nil {
+		if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{}}); err != nil {
 			t.Fatal(err)
 		}
 		out := b.String()
-		for _, want := range []string{"── Files ──", "── Outputs ──"} {
+		for _, want := range []string{"── Files ──", "── Outputs ──", "── Session ──"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%q must survive --no-metrics: %q", want, out)
 			}
 		}
-		for _, gone := range order[2:] {
+		// Cost among them, which nothing here asserted while the spec said three
+		// aggregates and the program dropped four: a section could have started or
+		// stopped leaving with the flag and no test would have moved.
+		for _, gone := range []string{
+			"── Tools (by identity) ──",
+			"── Cost ──",
+			"── Summary (by token cost) ──",
+			"── Day by day ──",
+		} {
 			if strings.Contains(out, gone) {
 				t.Errorf("%q must leave with --no-metrics: %q", gone, out)
 			}
@@ -1283,7 +1479,7 @@ func TestSessionCard(t *testing.T) {
 		// away by the time a reader decides what to do with what they read. Counted
 		// twice in the output, so a card that dropped either line fails here.
 		out := render(t, Channels{Metrics: true})
-		for _, line := range []string{"2 turns · 0 tools · 2 subagents", "Tokens: 30 in / 300 out"} {
+		for _, line := range []string{"2 turns · 22 tools · 2 subagents · 1 denied", "Tokens: 30 in / 300 out"} {
 			if n := strings.Count(out, line); n != 2 {
 				t.Errorf("%q appears %d times, want 2 (header and card): %q", line, n, out)
 			}
@@ -1393,6 +1589,12 @@ func TestTurnRuleSplitsFailedAndDenied(t *testing.T) {
 	}
 }
 
+// unrail is a footer row without the chrome bounding its section, so a test can
+// match on what the row says rather than on what encloses it.
+func unrail(line string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), railGlyph))
+}
+
 // TestCostSection pins the footer's money section (PRODUCT.md §Output): what
 // Claude Code recorded, what agentry prices the same tokens at, and which model,
 // which delegation and what unit of work that price went to. The recorded figure
@@ -1444,7 +1646,7 @@ func TestCostSection(t *testing.T) {
 		}
 		day := ""
 		for _, line := range strings.Split(b.String(), "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "2026-09-17") {
+			if strings.HasPrefix(unrail(line), "2026-09-17") {
 				day = line
 			}
 		}
@@ -1554,8 +1756,13 @@ func TestFailedLine(t *testing.T) {
 // flattening has a real tree to reproduce.
 func jsonlSession() *model.Session {
 	return &model.Session{
-		Meta: model.Meta{ID: "s1", Model: "claude-opus-4-8", Usage: model.Usage{Input: 10, Output: 20}},
+		Meta: model.Meta{ID: "s1", Model: "claude-opus-4-8", NumTurns: 2, Usage: model.Usage{Input: 10, Output: 20}},
 		Turns: []model.Turn{{
+			// Numbered like the parser numbers them. A hand-built turn that leaves
+			// this zero is not a shortcut: the stream reports a turn's number from
+			// the turn, since its index in a selected slice is not its place in the
+			// session.
+			Number:    1,
 			Prompt:    "first",
 			ToolCount: 1,
 			Events: []model.Event{
@@ -1572,6 +1779,7 @@ func jsonlSession() *model.Session {
 				}},
 			},
 		}, {
+			Number: 2,
 			Prompt: "second",
 			Events: []model.Event{{Kind: model.EventText, Text: "done"}},
 		}},
@@ -1903,5 +2111,363 @@ func TestTurnRuleCarriesSpend(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSelectedTurnPrintsBodiesWhole pins the second half of the search-then-read
+// flow: a hit the search reports by its line number inside a result body has to
+// be visible in the render of the turn it names. The cap that keeps a
+// whole-session render scannable would otherwise hide any hit past its tenth
+// line, leaving the caller told the text exists with no way to reach it.
+func TestSelectedTurnPrintsBodiesWhole(t *testing.T) {
+	lines := make([]string, 0, toolBodyMaxLines*3)
+	for i := 0; i < toolBodyMaxLines*3; i++ {
+		lines = append(lines, fmt.Sprintf("row%02d", i))
+	}
+	body := strings.Join(lines, "\n")
+	deep := lines[len(lines)-1]
+
+	sess := &model.Session{
+		Meta: model.Meta{NumTurns: 2},
+		Turns: []model.Turn{
+			{Number: 1, Prompt: "one", Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: body}}}},
+			{Number: 2, Prompt: "two", Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: body}}}},
+		},
+	}
+	render := func(t *testing.T, selected *model.TurnRange) string {
+		t.Helper()
+		var b strings.Builder
+		opts := Options{Width: 120, Color: false, Channels: Channels{Tools: true, ToolResults: true}, Selected: selected}
+		shown := sess
+		if selected != nil {
+			shown = model.Select(sess, *selected)
+		}
+		if err := Session(&b, shown, opts); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	whole := render(t, &model.TurnRange{From: 2, To: 2})
+	if !strings.Contains(whole, deep) {
+		t.Errorf("a selected turn hid the body's last line (%q): %q", deep, whole)
+	}
+	if strings.Contains(whole, "more lines") {
+		t.Errorf("a selected turn still named a remainder: %q", whole)
+	}
+
+	// The cap is what makes a whole-session render scannable, so selecting one
+	// turn must not be the same as turning it off everywhere.
+	capped := render(t, nil)
+	if strings.Contains(capped, deep) {
+		t.Errorf("a whole-session render printed a capped body whole: %q", capped)
+	}
+	if !strings.Contains(capped, fmt.Sprintf("… %d more lines", toolBodyMaxLines*2)) {
+		t.Errorf("a whole-session render stopped naming its remainder: %q", capped)
+	}
+}
+
+// TestSelectedTurnPrintsArgumentsWhole pins the other half of the
+// search-then-read pair. The activation line's parenthetical is a summary — the
+// first line, cut to a width — so a hit the search reported at `args:65` named a
+// line no render would show, and four of five hits in a real turn were
+// unreachable for exactly this reason.
+func TestSelectedTurnPrintsArgumentsWhole(t *testing.T) {
+	lines := []string{"python3 - <<'PY'", strings.Repeat("import io; ", 8), "deep = 'the last line'", "PY"}
+	args := strings.Join(lines, "\n")
+	deep := lines[2]
+
+	sess := &model.Session{
+		Meta: model.Meta{NumTurns: 1},
+		Turns: []model.Turn{{
+			Number: 1, Prompt: "go",
+			Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", Args: args, Result: "done"}}},
+		}},
+	}
+	render := func(t *testing.T, selected *model.TurnRange) string {
+		t.Helper()
+		var b strings.Builder
+		opts := Options{Width: 120, Color: false, Channels: Channels{Tools: true, ToolResults: true}, Selected: selected}
+		if err := Session(&b, sess, opts); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	whole := render(t, &model.TurnRange{From: 1, To: 1})
+	if !strings.Contains(whole, deep) {
+		t.Errorf("a selected turn hid a line of the call's arguments (%q):\n%s", deep, whole)
+	}
+	// Labelled with the word `agentry search` prints for that part, so a hit's
+	// location and the block holding it read alike.
+	if !strings.Contains(whole, "args\n") {
+		t.Errorf("the argument block carries no label:\n%s", whole)
+	}
+
+	// A whole-session render is untouched: the pressure the summary answers is a
+	// session's worth of calls, and this block is the narrowed case only.
+	capped := render(t, nil)
+	if strings.Contains(capped, deep) {
+		t.Errorf("a whole-session render printed argument text whole:\n%s", capped)
+	}
+	if strings.Contains(capped, "args\n") {
+		t.Errorf("a whole-session render grew an argument block:\n%s", capped)
+	}
+}
+
+// TestArgsSummaryNamesWhatItCut pins that the parenthetical says when it left
+// something out. It joins the argument's lines and cuts the result to a width, so
+// the width is the one thing it can lose and the one thing it has to name;
+// leaving that unmarked is how a script passed to a shell came to read as a
+// one-line call.
+func TestArgsSummaryNamesWhatItCut(t *testing.T) {
+	long := strings.Repeat("x", toolArgsInlineMax+10)
+	for _, tc := range []struct {
+		what   string
+		args   string
+		elided bool
+	}{
+		{"a short single line leaves nothing out", "ls -la", false},
+		// The lines are joined rather than ended at the first, so a short
+		// multi-line argument is shown entire and there is nothing to name. Ending
+		// at the first line deleted the rest with no mark, and claimed an elision
+		// on arguments it had in fact shown whole.
+		{"a short multi-line argument fits once joined", "short\nand more", false},
+		{"a line past the width is named", long, true},
+		{"many lines past the width are named once", long + "\nmore", true},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			got := argsSummary(tc.args)
+			if ends := strings.HasSuffix(got, "…"); ends != tc.elided {
+				t.Errorf("argsSummary(%q) = %q; names an elision = %v, want %v", tc.args, got, ends, tc.elided)
+			}
+			if n := strings.Count(got, "…"); n > 1 {
+				t.Errorf("argsSummary(%q) = %q, naming the elision %d times", tc.args, got, n)
+			}
+			if argsElided(tc.args) != tc.elided {
+				t.Errorf("argsElided(%q) = %v, want %v", tc.args, argsElided(tc.args), tc.elided)
+			}
+		})
+	}
+
+	// Nothing left out means no block on a selected turn either, or the block
+	// would repeat the line above it.
+	sess := &model.Session{
+		Meta: model.Meta{NumTurns: 1},
+		Turns: []model.Turn{{
+			Number: 1, Prompt: "go",
+			Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", Args: "ls -la", Result: "done"}}},
+		}},
+	}
+	var b strings.Builder
+	opts := Options{Width: 120, Color: false, Channels: Channels{Tools: true, ToolResults: true}, Selected: &model.TurnRange{From: 1, To: 1}}
+	if err := Session(&b, sess, opts); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(b.String(), "args\n") {
+		t.Errorf("a call whose parenthetical is complete grew a block repeating it:\n%s", b.String())
+	}
+}
+
+// TestNumbersABodyOfManyLines pins the gutter a verbatim body carries and what
+// it is for: `agentry search` reports a hit as `result:66`, and the number
+// located nothing while the body it named printed unnumbered — the reader was
+// told which line held the passage and left to count sixty-six lines by eye.
+//
+// Three properties, each of which has to hold for the number to mean anything: a
+// numbered line carries its own source number, a line that wrapped carries
+// blanks rather than repeating it, and a one-line body carries no number at all.
+func TestNumbersABodyOfManyLines(t *testing.T) {
+	long := strings.Repeat("word ", 60) // one source line, several display lines
+	body := strings.Join([]string{"first", "second", long, "fourth"}, "\n")
+	sess := &model.Session{
+		Meta: model.Meta{NumTurns: 1},
+		Turns: []model.Turn{{Number: 1, Prompt: "one", Events: []model.Event{
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: body}},
+			{Kind: model.EventTool, Tool: &model.Tool{Name: "Bash", Result: "just the one line"}},
+		}}},
+	}
+	var b strings.Builder
+	opts := Options{Width: 60, Color: false, Channels: Channels{Tools: true, ToolResults: true},
+		Selected: &model.TurnRange{From: 1, To: 1}}
+	if err := Session(&b, sess, opts); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	// The number a hit would cite, against the line it names.
+	for _, want := range []string{"1 first", "2 second", "4 fourth"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q numbered in:\n%s", want, out)
+		}
+	}
+
+	// The third source line wraps. Only its first display line carries the
+	// number, or the body would report more lines than it holds.
+	if n := strings.Count(out, "3 word"); n != 1 {
+		t.Errorf("the number appears on %d display lines of one source line, want 1:\n%s", n, out)
+	}
+
+	// The one-line body beside it carries none: its only line is the one a hit
+	// could have named, and a lone "1" is chrome saying nothing.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "just the one line") && strings.Contains(line, "1 just") {
+			t.Errorf("a one-line body was numbered: %q", line)
+		}
+	}
+}
+
+// TestFooterSectionsHangOffTheRail pins that a rendered session's footer follows
+// the bounded-block rule the listing and the search findings follow: the rows
+// under a section header hang off a rail and a rule closes them.
+//
+// Without it the section's extent was left to the next header to imply, and the
+// last section on the page had nothing to imply it at all.
+func TestFooterSectionsHangOffTheRail(t *testing.T) {
+	sess := &model.Session{
+		Meta:  model.Meta{ID: "aaaa1111", NumTurns: 1, Title: "a session"},
+		Turns: []model.Turn{{Number: 1, Prompt: "go"}},
+	}
+	var b strings.Builder
+	if err := Session(&b, sess, Options{Width: 100, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	if !strings.Contains(out, "── Session ──\n"+assistantIndent+railGlyph+" id       aaaa1111") {
+		t.Errorf("the card's first row does not hang off the rail:\n%s", out)
+	}
+	if !strings.Contains(out, assistantIndent+railGlyph+" title    a session") {
+		t.Errorf("a card row does not hang off the rail:\n%s", out)
+	}
+	if !strings.Contains(out, assistantIndent+railClose) {
+		t.Errorf("no rule closes the section:\n%s", out)
+	}
+
+	// A section that wrote nothing stays nothing. Without this a caller that
+	// returns "" for an empty section would have it turned into a bare line,
+	// which is chrome bounding no content.
+	r := &renderer{opts: Options{Width: 100}}
+	r.initStyles()
+	if got := r.railHeaded(""); got != "" {
+		t.Errorf("an empty section rendered as %q, want nothing", got)
+	}
+}
+
+// TestFooterRowsFitTheTerminal pins that no footer row spends more columns than
+// the terminal has. A row one column over wraps, and the wrapped remainder
+// carries none of the section's rail — so the chrome that says where a section
+// ends stops saying it, on exactly the rows that were too long to read already.
+//
+// Two budgets were wrong at once when the rail went on. truncate spent one
+// column more than the caller gave it, and the summary table stated its label's
+// budget as a number rather than measuring the columns printed beside it.
+func TestFooterRowsFitTheTerminal(t *testing.T) {
+	sess := footerSession()
+	sess.Meta.Files = []string{"/" + strings.Repeat("a-long-directory-name/", 12) + "render.go"}
+	sess.Meta.Tools = []model.ToolStat{{Tool: "Bash", Identity: strings.Repeat("grep-with-a-long-identity ", 8), Count: 3}}
+	sess.Turns[0].Prompt = strings.Repeat("a long prompt that keeps going ", 8)
+
+	for _, width := range []int{60, 80, 100} {
+		r := &renderer{opts: Options{Width: width}}
+		r.initStyles()
+		footer := r.outputs(sess) + r.files(sess) + r.identities(sess) +
+			r.dayByDay(sess) + r.card(sess) + r.cost(sess) + r.summary(sess)
+		for _, line := range strings.Split(strings.TrimRight(footer, "\n"), "\n") {
+			if got := lipgloss.Width(line); got > width {
+				t.Errorf("at width %d a footer row spends %d columns: %q", width, got, line)
+			}
+		}
+	}
+}
+
+// TestActivationLineNamesItsCall pins the number a rendered call carries. It is
+// what a search hands a reader — a locator naming call 7 is useless if the turn
+// it points into numbers nothing — and it is the only field that separates two
+// calls of one tool, whose name, status and duration can all be identical.
+func TestActivationLineNamesItsCall(t *testing.T) {
+	tool := func(call int, args string) model.Event {
+		return model.Event{Kind: model.EventTool, Tool: &model.Tool{
+			Name: "Bash", Identity: "grep", Call: call, Args: args, Result: "nothing",
+		}}
+	}
+	sess := &model.Session{
+		Meta: model.Meta{ID: "aaaa1111", NumTurns: 1},
+		Turns: []model.Turn{{Number: 1, Prompt: "go", ToolCount: 2, Events: []model.Event{
+			tool(1, "grep -rn first ."),
+			tool(2, "grep -rn second ."),
+		}}},
+	}
+	var b strings.Builder
+	if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{Tools: true}}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	for _, want := range []string{
+		"call 1 · ● Bash(grep -rn first .)",
+		"call 2 · ● Bash(grep -rn second .)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+
+	// A call the parser did not number prints no number rather than "call 0",
+	// which would name a call that cannot exist.
+	sess.Turns[0].Events = []model.Event{tool(0, "grep -rn third .")}
+	var unnumbered strings.Builder
+	if err := Session(&unnumbered, sess, Options{Width: 100, Color: false, Channels: Channels{Tools: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(unnumbered.String(), "call 0") {
+		t.Errorf("an unnumbered call printed a number:\n%s", unnumbered.String())
+	}
+}
+
+// TestAProseBlockNamesItsNumber pins the marker a rendered prose block carries.
+// It is what a search hands a reader — a locator naming block 7 is useless if the
+// turn it points into numbers nothing — and prose is the one body whose lines a
+// render cannot number, being reflowed to the terminal, so the block is the
+// finest address a reader can be given.
+//
+// The marker sits on a line of its own because prose is markdown: a number
+// prefixed to a heading or a list item is read as part of it.
+func TestAProseBlockNamesItsNumber(t *testing.T) {
+	sess := &model.Session{
+		Meta: model.Meta{ID: "aaaa1111", NumTurns: 1},
+		Turns: []model.Turn{{Number: 1, Prompt: "go", Events: []model.Event{
+			{Kind: model.EventThinking, Text: "first reasoning", Block: 1},
+			{Kind: model.EventText, Text: "## A heading", Block: 2},
+			{Kind: model.EventText, Text: "the reply", Block: 3},
+		}}},
+	}
+	var b strings.Builder
+	if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{Thinking: true}}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	for _, want := range []string{"block 1", "block 2", "block 3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+	// On its own line, ahead of the block it names, rather than inside the
+	// markdown it would otherwise be read as part of.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "block 2") && strings.Contains(line, "A heading") {
+			t.Errorf("the marker was written into the block's own first line: %q", line)
+		}
+	}
+
+	// Reasoning takes a marker only where reasoning is shown: a number standing
+	// over nothing is worse than no number.
+	var quiet strings.Builder
+	if err := Session(&quiet, sess, Options{Width: 100, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(quiet.String(), "block 1") {
+		t.Errorf("a hidden reasoning block still printed its number:\n%s", quiet.String())
 	}
 }

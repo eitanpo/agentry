@@ -69,6 +69,7 @@ func Load(jsonlPath string) (*model.Session, error) {
 			Model:        lastOf(ms),
 			Models:       manyOrNone(ms),
 			NumSubagents: len(subs),
+			NumTurns:     len(turns),
 			Entrypoint:   lastOf(eps),
 			Entrypoints:  manyOrNone(eps),
 			Effort:       lastOf(effs),
@@ -105,6 +106,7 @@ func Load(jsonlPath string) (*model.Session, error) {
 	forksPerTurn := unclaimedForks(turns, entries, subs, nameLinks)
 	for i, t := range turns {
 		turn := model.Turn{
+			Number: i + 1,
 			Prompt: t.prompt,
 			Start:  t.start,
 			End:    t.end,
@@ -113,11 +115,46 @@ func Load(jsonlPath string) (*model.Session, error) {
 		// The fork leads the turn and the printed reply follows it, the order a
 		// turn that called a tool and then answered already reads in.
 		turn.Events = append(forkEvents(typedPerTurn[i], subs, nameLinks, localCommandOutputs(t.entries)), turn.Events...)
+		numberEvents(turn.Events)
 		tm := turnMetrics(t, subs, nameLinks, forksPerTurn[i], len(typedPerTurn[i]))
 		turn.Usage, turn.ToolCount, turn.ErrorCount, turn.CostUSD = tm.usage, tm.tools, tm.errors, tm.costUSD
 		sess.Turns = append(sess.Turns, turn)
 	}
 	return sess, nil
+}
+
+// numberEvents gives everything in a turn a reader can be sent to its position
+// in that turn, counted in the order a render prints the turn and a search walks
+// it: depth first, a call before the stream it spawned. Calls and prose are
+// counted separately, because a locator already says which of the two it names
+// and one sequence over both would make a reader count past the kind they are
+// looking for. It runs once the turn's events are final, forks included, since
+// the number has to match the order a reader will scroll through.
+//
+// One pass assigns both so no two surfaces can disagree. A search that named the
+// third call while a render numbered a different one would send a reader to the
+// wrong place, and nothing on either surface would look wrong.
+func numberEvents(events []model.Event) {
+	calls, blocks := 0, 0
+	var walk func([]model.Event)
+	walk = func(stream []model.Event) {
+		for i := range stream {
+			e := &stream[i]
+			switch e.Kind {
+			case model.EventText, model.EventThinking:
+				blocks++
+				e.Block = blocks
+			case model.EventTool:
+				if e.Tool == nil {
+					continue
+				}
+				calls++
+				e.Tool.Call = calls
+				walk(e.Tool.Subagent)
+			}
+		}
+	}
+	walk(events)
 }
 
 // Summarize scans a session JSONL into a lightweight Summary without building
@@ -1004,6 +1041,20 @@ func toolModel(input map[string]any) string {
 	return s
 }
 
+// toolPrompt returns the instruction a delegated call was handed, or "" when the
+// tool is not one that delegates. Gated on the name where toolModel is not,
+// because "prompt" does not mean one thing across tools: docs/session-format.md
+// records it on an Agent call's input as the brief the subagent runs on, and a
+// tool that passes a prompt to something other than a delegated run would be
+// answering a different question under the same key.
+func toolPrompt(name string, input map[string]any) string {
+	if name != "Agent" {
+		return ""
+	}
+	s, _ := input["prompt"].(string)
+	return s
+}
+
 // bashProgram reduces a shell command to the program a histogram groups by: the
 // first token after any leading VAR=value assignments, reduced to its basename
 // ("/a/b/exa --x" → "exa"). A heuristic — a pipeline or "cd x && y" reports only
@@ -1156,11 +1207,22 @@ type entry struct {
 	// a skill body, a re-invocation notice — which older logs file under the
 	// user's name with no turnCompanion flag.
 	harnessReminder bool
-	// localCommandOutput is what a local_command system entry printed, unwrapped
-	// from its marker. Empty on every other entry. A slash command the caller
+	// localCommandOutput is what a locally-run command left for reading,
+	// unwrapped from its marker: what it printed to the terminal, and on the
+	// entry carrying a command's report, that report. A slash command the caller
 	// typed leaves this and nothing else in the main log, so it is that turn's
 	// whole visible reply.
 	localCommandOutput string
+	// meta is Claude Code's own isMeta flag, which does not mark injected
+	// material on its own — a prompt somebody typed can carry it, and
+	// harnessReminder above is the pair that does mark it. splitTurns reads it
+	// only inside a turn a typed command opened, where it is what separates that
+	// command's report from the next prompt.
+	meta bool
+	// typedCommand is the line a caller typed, on the local_command system entry
+	// recording it rather than what it printed. Empty on every other entry, the
+	// sibling entry holding that command's output included.
+	typedCommand string
 	// cost is the running totals a cost-state entry carries. Nil on every other
 	// entry type, which is what makes "the log recorded none" a single check.
 	cost *costState
@@ -1511,7 +1573,7 @@ func loadEntries(path string) ([]entry, error) {
 			effort:     re.Effort,
 			denialKind: re.ToolDenialKind, trackingPath: re.TrackingPath,
 			requestID: re.RequestID, promptID: re.PromptID, turnCompanion: re.TurnCompanion,
-			harnessReminder: re.IsMeta && re.SourceToolUseID != "",
+			harnessReminder: re.IsMeta && re.SourceToolUseID != "", meta: re.IsMeta,
 		}
 		if re.Type == "cost-state" {
 			e.cost = &costState{}
@@ -1534,7 +1596,15 @@ func loadEntries(path string) ([]entry, error) {
 			if re.Subtype == localCommandSubtype {
 				var text string
 				if json.Unmarshal(re.Content, &text) == nil {
-					e.localCommandOutput = unwrapLocalCommand(text)
+					// A command and what it printed arrive as two entries of this one
+					// kind, told apart by the markers their content carries. The entry
+					// recording the command is not output, and rendering it as output
+					// printed its markers as text.
+					if line, typed := typedCommandLine(text); typed {
+						e.typedCommand = line
+					} else {
+						e.localCommandOutput = unwrapLocalCommand(text)
+					}
 				}
 			}
 		}
@@ -2388,15 +2458,51 @@ type rawTurn struct {
 func splitTurns(entries []entry) []rawTurn {
 	var turns []rawTurn
 	var cur *rawTurn
+	// awaitingReport is set from the moment a typed command recorded on a system
+	// entry opens a turn until anything else fills that turn. Inside the window,
+	// an entry filed under the caller's name and marked as Claude Code's own
+	// writing is the command's report — the text it wrote into the conversation
+	// rather than to the terminal — and reading it as a prompt opened a turn
+	// nobody took and let a report title the session.
+	//
+	// The window closes at the first reply, prompt or further command, because
+	// outside it that mark is carried by prompts people really typed.
+	awaitingReport := false
 	for _, e := range entries {
+		if e.typedCommand != "" {
+			if cur != nil {
+				turns = append(turns, *cur)
+			}
+			cur = &rawTurn{prompt: e.typedCommand, start: e.t, end: e.t}
+			awaitingReport = true
+			continue
+		}
 		if e.typ == "user" {
 			if prompt, ok := userPrompt(e); ok {
-				if cur != nil {
-					turns = append(turns, *cur)
+				// An entry recording a command of its own never lands here: Claude Code
+				// files an expanded command with the pair userPrompt already refuses.
+				if cur != nil && awaitingReport && e.meta {
+					// The report renders where what the command printed renders, and its
+					// prompt id becomes the turn's — the system entry naming the command
+					// carries none, and that id is what charges a forked command to the
+					// turn that ran it.
+					e.localCommandOutput = prompt
+					if cur.promptID == "" {
+						cur.promptID = e.promptID
+					}
+					awaitingReport = false
+				} else {
+					if cur != nil {
+						turns = append(turns, *cur)
+					}
+					cur = &rawTurn{prompt: prompt, start: e.t, end: e.t, promptID: e.promptID}
+					awaitingReport = false
+					continue
 				}
-				cur = &rawTurn{prompt: prompt, start: e.t, end: e.t, promptID: e.promptID}
-				continue
 			}
+		}
+		if e.typ == "assistant" {
+			awaitingReport = false
 		}
 		if cur != nil {
 			cur.entries = append(cur.entries, e)
@@ -2415,6 +2521,27 @@ var (
 	cmdNameRe = regexp.MustCompile(`<command-name>(.*?)</command-name>`)
 	cmdArgsRe = regexp.MustCompile(`<command-args>(.*?)</command-args>`)
 )
+
+// typedCommandLine is the line a caller typed for a slash command, read from the
+// markers Claude Code wraps it in. Both entry shapes that record a command are
+// read here, so the two produce the same prompt text: the shape decides which
+// entry to look at and nothing else.
+func typedCommandLine(content string) (string, bool) {
+	if !strings.Contains(content, "<command-name>") {
+		return "", false
+	}
+	cmd, args := "?", ""
+	if m := cmdNameRe.FindStringSubmatch(content); m != nil {
+		cmd = m[1]
+	}
+	if m := cmdArgsRe.FindStringSubmatch(content); m != nil {
+		args = strings.TrimSpace(m[1])
+	}
+	// Claude Code records command-name inconsistently — built-ins carry a
+	// leading slash ("/clear"), custom commands do not ("sonar") — so strip any
+	// leading slashes and add exactly one rather than doubling to "//clear".
+	return strings.TrimRight("/"+strings.TrimLeft(cmd, "/")+" "+args, " "), true
+}
 
 // compactSummaryPlaceholder stands in for a compaction boundary's summary, which
 // is a user entry Claude Code wrote rather than a prompt anyone typed.
@@ -2489,18 +2616,8 @@ func userPrompt(e entry) (string, bool) {
 	if strings.Contains(content, "This session is being continued from a previous conversation") {
 		return compactSummaryPlaceholder, true
 	}
-	if strings.Contains(content, "<command-name>") {
-		cmd, args := "?", ""
-		if m := cmdNameRe.FindStringSubmatch(content); m != nil {
-			cmd = m[1]
-		}
-		if m := cmdArgsRe.FindStringSubmatch(content); m != nil {
-			args = strings.TrimSpace(m[1])
-		}
-		// Claude Code records command-name inconsistently — built-ins carry a
-		// leading slash ("/clear"), custom commands do not ("sonar") — so strip any
-		// leading slashes and add exactly one rather than doubling to "//clear".
-		return strings.TrimRight("/"+strings.TrimLeft(cmd, "/")+" "+args, " "), true
+	if line, typed := typedCommandLine(content); typed {
+		return line, true
 	}
 	if text := strings.TrimSpace(content); text != "" {
 		return text, true
@@ -2559,6 +2676,7 @@ func buildEvents(entries []entry, subs map[string]*subagent, nameLinks map[strin
 					// drift into naming one call two things.
 					Identity: toolIdentity(b.name, b.input),
 					Model:    toolModel(b.input),
+					Prompt:   toolPrompt(b.name, b.input),
 					Denial:   res.denial,
 					Result:   res.text,
 					IsError:  res.isError,

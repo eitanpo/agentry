@@ -646,6 +646,20 @@ single slash. Array-of-`text` user content is also injected (e.g. skill bodies),
 typed prompt; since 2.1.236 those entries also carry `turnCompanion: true`, which is the
 signal to prefer wherever it is present.
 
+**A typed command reaches the log in one of two shapes.** Most commands are recorded as a
+`user` entry holding `<command-name>`. Some are recorded as a `system` / `local_command`
+entry holding the same markers, with no `user` entry for the command at all. `/context`,
+`/rename`, `/config`, `/model`, `/memory`, `/subtask`, `/login`, `/feedback` and
+`/remote-control` take the second shape, and a custom command can take it too. The shape
+belongs to the command rather than to the Claude Code version, so one session can hold
+both. In the second shape the marker entry is always followed by the
+`<local-command-stdout>` entry, and for some commands by a further `user` entry carrying
+the command's report — `/context` writes its whole usage breakdown there as markdown, and
+`/rename` writes a `<system-reminder>` naming the new session name. That report entry
+carries `isMeta: true` and no `sourceToolUseID`, and it arrives before any `assistant`
+entry. Code that reads only the first shape sees no command and reads the report as a
+typed prompt.
+
 ## Subagent stitching
 
 A `tool_use` that spawns a child session writes a sidecar; stitching maps the call to it.
@@ -717,6 +731,12 @@ A `tool_use` that spawns a child session writes a sidecar; stitching maps the ca
   deletes real turns. The pair — set together on a re-invocation notice, an inlined
   skill body, an expanded slash command — appears together on harness material and
   never on a typed prompt.
+- **After a `local_command` command marker, `isMeta` does separate the command's report
+  from a typed prompt.** The general warning above still holds everywhere else, but inside
+  that window — after the marker, before any `assistant` entry — every observed `isMeta`
+  entry is the command's own report and every entry without it is prose somebody typed.
+  Widening the window past the first reply, or dropping the `isMeta` test inside it, takes
+  the next real prompt as a command's output and loses that turn.
 - **A forked skill a subagent starts is linked by name, not by a structured id.** The
   session-wide pairing resolves it and marks the sidecar claimed, so a walk that follows
   only `toolUseResult.agentId` and the Skill id map finds the log claimed and

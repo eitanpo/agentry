@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -44,17 +43,31 @@ func newListCmd(noColor *bool) *cobra.Command {
 // a flag is read from whichever command was invoked. --format is added
 // separately (addFormatFlag) since it is shared with the render path.
 func addListFlags(cmd *cobra.Command) {
-	cmd.Flags().String("limit", "10", `cap to N most-recent sessions, or "all" for no cap`)
-	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
-	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
+	addSelectionFlags(cmd, "10")
 	// The channel list is spelled from includeNames rather than repeated, so help
 	// and the parser cannot name different sets — they already had, the help text
 	// having been left behind when a channel was added.
 	cmd.Flags().String("include", "", "add detail channels (comma-separated): "+strings.Join(includeNames, ", "))
+}
+
+// addSelectionFlags installs the flags that choose which sessions a command
+// covers. Registered from one place because two verbs read them — the listing
+// and `agentry search`'s turn and session nouns — so a filter added for either
+// is available to both and a caller learns the set once. The display flags stay
+// with the listing, the only verb with rows to decorate.
+//
+// limitDefault differs by verb and is the caller's to pass: the listing caps at
+// ten because a row is one of hundreds, and search caps at nothing because a cap
+// on which sessions are searched hides matches the pattern asked for.
+func addSelectionFlags(cmd *cobra.Command, limitDefault string) {
+	cmd.Flags().String("limit", limitDefault, `cap to N most-recent sessions, or "all" for no cap`)
+	cmd.Flags().String("since", "", "only sessions active at or after WHEN (today|yesterday, Nh|Nd|Nw, YYYY-MM-DD)")
+	cmd.Flags().String("until", "", "only sessions active at or before WHEN")
 	for _, u := range usageFilters {
 		cmd.Flags().String(u.flag, "", "only sessions that "+u.did)
 		cmd.Flags().String("not-"+u.flag, "", "only sessions that never "+u.did)
 	}
+	addFixedStringsFlag(cmd)
 	cmd.Flags().String("model", "", "only sessions that ran on a matching model (substring: opus, claude-opus-5)")
 	cmd.Flags().String("effort", "", "only sessions run at this reasoning effort (exact: low, medium, high, xhigh, max)")
 	_ = cmd.RegisterFlagCompletionFunc("effort", fixedComp(effortLevels))
@@ -123,21 +136,21 @@ func sessionPaths(cmd *cobra.Command) ([]string, error) {
 var usageFilters = []struct {
 	flag string
 	did  string
-	set  func(*list.Criteria, string) error
+	set  func(c *list.Criteria, v string, literal bool) error
 }{
-	{"used-tool", "used this tool, by name (Bash, Skill, Agent, WebFetch, …)", func(c *list.Criteria, v string) error { c.Tool = v; return nil }},
-	{"used-skill", "invoked this skill", func(c *list.Criteria, v string) error { c.Skill = v; return nil }},
-	{"used-agent", "spawned this subagent type", func(c *list.Criteria, v string) error { c.Agent = v; return nil }},
-	{"used-command", "ran a Bash command matching this text", func(c *list.Criteria, v string) error { c.Command = v; return nil }},
-	{"used-file", "modified a file matching this path", func(c *list.Criteria, v string) error { c.File = v; return nil }},
-	{"used", "used this as a skill, agent, or command", func(c *list.Criteria, v string) error { c.Any = v; return nil }},
-	{"opened-pr", "opened a matching pull request, by repository, number, or url", func(c *list.Criteria, v string) error { c.PR = v; return nil }},
-	{"published-artifact", "published a matching artifact, by title, url, or local path", func(c *list.Criteria, v string) error { c.Artifact = v; return nil }},
-	{"reply-matches", "wrote a reply matching this pattern (case-insensitive regexp)", func(c *list.Criteria, v string) error {
+	{"used-tool", "used this tool, by name (Bash, Skill, Agent, WebFetch, …)", func(c *list.Criteria, v string, _ bool) error { c.Tool = v; return nil }},
+	{"used-skill", "invoked this skill", func(c *list.Criteria, v string, _ bool) error { c.Skill = v; return nil }},
+	{"used-agent", "spawned this subagent type", func(c *list.Criteria, v string, _ bool) error { c.Agent = v; return nil }},
+	{"used-command", "ran a Bash command matching this text", func(c *list.Criteria, v string, _ bool) error { c.Command = v; return nil }},
+	{"used-file", "modified a file matching this path", func(c *list.Criteria, v string, _ bool) error { c.File = v; return nil }},
+	{"used", "used this as a skill, agent, or command", func(c *list.Criteria, v string, _ bool) error { c.Any = v; return nil }},
+	{"opened-pr", "opened a matching pull request, by repository, number, or url", func(c *list.Criteria, v string, _ bool) error { c.PR = v; return nil }},
+	{"published-artifact", "published a matching artifact, by title, url, or local path", func(c *list.Criteria, v string, _ bool) error { c.Artifact = v; return nil }},
+	{"reply-matches", "wrote a reply matching this pattern (regexp, smart case; -F reads it as text)", func(c *list.Criteria, v string, literal bool) error {
 		if v == "" {
 			return nil // unset flag: no constraint, and "" would match every reply
 		}
-		re, err := compileReply(v)
+		re, err := compilePattern(v, literal)
 		if err != nil {
 			return err
 		}
@@ -146,17 +159,38 @@ var usageFilters = []struct {
 	}},
 }
 
-// compileReply turns a --reply-matches value into the matcher the filter uses:
-// the caller's own pattern, made case-insensitive to match the rest of the
-// family. The (?i) prefix covers the whole pattern including every branch of a
-// top-level alternation, and a caller who wants case to matter overrides it with
-// (?-i). The error names the pattern, since cobra reports only the flag.
-func compileReply(pattern string) (*regexp.Regexp, error) {
-	re, err := regexp.Compile("(?i)" + pattern)
-	if err != nil {
-		return nil, fmt.Errorf("%q is not a valid regular expression: %w", pattern, err)
+// parseFilters reads every what-a-session-did selector off the command line, the
+// values `list.Filter` tests a session against. Shared by the listing and by
+// `agentry search`'s nouns: read in two places, a filter would mean one thing on
+// a listing and another in a search, which is one flag with two behaviors.
+//
+// Both sides of every filter are validated before any session is read, so a
+// malformed value errors as usage rather than after a directory scan's delay.
+func parseFilters(cmd *cobra.Command) (list.Filters, list.Run, list.Changed, error) {
+	get := func(name string) string { v, _ := cmd.Flags().GetString(name); return v }
+	// The flag reads a pattern, and the only pattern among these selectors is the
+	// reply filter. Passed without one it would do nothing at all, which is the
+	// silence the bare command used to keep about a render flag on a listing: the
+	// caller asked for something and got no sign it had been dropped.
+	if cmd.Flags().Changed(fixedStringsFlag) && get("reply-matches") == "" && get("not-reply-matches") == "" && cmd.Name() != "search" {
+		return list.Filters{}, list.Run{}, list.Changed{}, usageErr("--%s reads a pattern and this listing gave none: pass --reply-matches or --not-reply-matches, or search a session with `agentry search -F`", fixedStringsFlag)
 	}
-	return re, nil
+	literal := literalPattern(cmd)
+	var filters list.Filters
+	for _, u := range usageFilters {
+		if err := u.set(&filters.Used, get(u.flag), literal); err != nil {
+			return list.Filters{}, list.Run{}, list.Changed{}, usageErr("--%s: %v", u.flag, err)
+		}
+		if err := u.set(&filters.NotUsed, get("not-"+u.flag), literal); err != nil {
+			return list.Filters{}, list.Run{}, list.Changed{}, usageErr("--not-%s: %v", u.flag, err)
+		}
+	}
+	run := list.Run{Model: get("model"), Effort: get("effort")}
+	changed, err := parseChanged(cmd)
+	if err != nil {
+		return list.Filters{}, list.Run{}, list.Changed{}, err
+	}
+	return filters, run, changed, nil
 }
 
 // parseChanged reads the two line bounds off the command line. A bound is set
@@ -335,20 +369,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 		limit = 0
 	}
 
-	get := func(name string) string { v, _ := cmd.Flags().GetString(name); return v }
-	var filters list.Filters
-	for _, u := range usageFilters {
-		// Both sides are validated before any session is read, so a malformed
-		// value errors as usage rather than after a directory scan's delay.
-		if err := u.set(&filters.Used, get(u.flag)); err != nil {
-			return usageErr("--%s: %v", u.flag, err)
-		}
-		if err := u.set(&filters.NotUsed, get("not-"+u.flag)); err != nil {
-			return usageErr("--not-%s: %v", u.flag, err)
-		}
-	}
-	run := list.Run{Model: get("model"), Effort: get("effort")}
-	changed, err := parseChanged(cmd)
+	filters, run, changed, err := parseFilters(cmd)
 	if err != nil {
 		return err
 	}

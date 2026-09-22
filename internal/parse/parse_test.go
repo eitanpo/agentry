@@ -544,9 +544,10 @@ func TestLoadEffort(t *testing.T) {
 
 // TestLoadCarriesDelegation pins the structured facts a rendered Agent call used
 // to lose. Args flattens an Agent's input to its human description, so before
-// this the subagent type and the delegated model were unrecoverable from a
-// rendered session — and a cost audit asking what a subagent ran on had nowhere
-// to read it.
+// this the subagent type, the delegated model and the instruction the subagent
+// ran on were unrecoverable from a rendered session — a cost audit asking what a
+// subagent ran on had nowhere to read it, and a reader asking what it was told
+// had to go back to the raw log.
 func TestLoadCarriesDelegation(t *testing.T) {
 	sess, err := Load(filepath.Join("testdata", "agent-delegation.jsonl"))
 	if err != nil {
@@ -566,21 +567,24 @@ func TestLoadCarriesDelegation(t *testing.T) {
 	}
 
 	cases := []struct {
-		what             string
-		tool             *model.Tool
-		identity, model_ string
+		what                     string
+		tool                     *model.Tool
+		identity, model_, prompt string
 	}{
-		// The audit case: both facts named, neither derivable from args.
-		{"an Agent naming type and model", tools[0], "Explore", "haiku"},
+		// The audit case: every fact named, none derivable from args.
+		{"an Agent naming type and model", tools[0], "Explore", "haiku", "find every caller"},
 		// No model named means the subagent inherited the session's. Defaulting to
 		// Meta.Model here would report a choice the caller never made.
-		{"an Agent naming no model", tools[1], "researcher", ""},
+		{"an Agent naming no model", tools[1], "researcher", "", "research it"},
 		// subagent_type is optional in the log; agentry reports it absent rather
 		// than guessing the harness default.
-		{"an Agent naming no type", tools[2], "", "sonnet"},
+		{"an Agent naming no type", tools[2], "", "sonnet", "do a thing"},
 		// Identity is not Agent-only: it is the same label the listing groups by,
-		// which is what stops the two paths naming one call two things.
-		{"a Bash call", tools[3], "git", ""},
+		// which is what stops the two paths naming one call two things. The
+		// instruction is Agent-only, though: this call's input carries a "prompt"
+		// key and the field stays empty, because a prompt passed to something that
+		// is not a delegated run answers a different question under the same name.
+		{"a Bash call", tools[3], "git", "", ""},
 	}
 	for _, c := range cases {
 		if c.tool.Identity != c.identity {
@@ -588,6 +592,9 @@ func TestLoadCarriesDelegation(t *testing.T) {
 		}
 		if c.tool.Model != c.model_ {
 			t.Errorf("%s: model = %q, want %q", c.what, c.tool.Model, c.model_)
+		}
+		if c.tool.Prompt != c.prompt {
+			t.Errorf("%s: prompt = %q, want %q", c.what, c.tool.Prompt, c.prompt)
 		}
 	}
 	// Args keeps being the human summary — the new fields are additions to it,
@@ -2024,4 +2031,230 @@ func TestForkWithNoMatchingPromptIsPlacedByTime(t *testing.T) {
 	if listed != 1 {
 		t.Errorf("listing counts Skill %d times, want 1", listed)
 	}
+}
+
+// TestLoadTalliesAgreeWithTurns pins the invariant the rendered header rests on.
+// The header reads its counts off Meta rather than off Turns, because Turns holds
+// what a caller asked to render and Meta holds the session — so a narrowed
+// transcript cannot make the header report a smaller session. That only holds
+// while the two agree on a whole session, and nothing else checks it: Meta's
+// tallies are built from the entries and the per-turn counts from the turn tree,
+// by different code down different paths.
+func TestLoadTalliesAgreeWithTurns(t *testing.T) {
+	for _, logFile := range []string{"sample.jsonl", "tools.jsonl", "failures.jsonl", "agent-delegation.jsonl"} {
+		t.Run(logFile, func(t *testing.T) {
+			sess, err := Load(filepath.Join("testdata", logFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sess.Meta.NumTurns != len(sess.Turns) {
+				t.Errorf("NumTurns = %d, turns = %d", sess.Meta.NumTurns, len(sess.Turns))
+			}
+			tools, errs := 0, 0
+			for _, turn := range sess.Turns {
+				tools += turn.ToolCount
+				errs += turn.ErrorCount
+			}
+			total := func(stats []model.ToolStat) int {
+				n := 0
+				for _, s := range stats {
+					n += s.Count
+				}
+				return n
+			}
+			if got := total(sess.Meta.Tools); got != tools {
+				t.Errorf("Meta.Tools sums to %d, the turns to %d", got, tools)
+			}
+			// ErrorCount counts every top-level call that errored, and a refused
+			// call errors too, so the turns' figure is the failures and the denials
+			// together. Meta keeps them apart because they ask for different things.
+			denied := 0
+			for _, d := range sess.Meta.Denials {
+				denied += d.Count
+			}
+			if got := total(sess.Meta.Failures) + denied; got != errs {
+				t.Errorf("Meta.Failures+Denials sums to %d, the turns' ErrorCount to %d", got, errs)
+			}
+		})
+	}
+}
+
+// TestLoadNumbersEveryTurn pins that a turn carries its own place in the session.
+// Its index in Turns says the same thing only while the whole session is present,
+// and a selected slice restarts that index — so an unnumbered turn is
+// unidentifiable in exactly the output a caller asked to narrow.
+func TestLoadNumbersEveryTurn(t *testing.T) {
+	sess, err := Load(filepath.Join("testdata", "sample.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Turns) == 0 {
+		t.Fatal("fixture holds no turns")
+	}
+	for i, turn := range sess.Turns {
+		if turn.Number != i+1 {
+			t.Errorf("turn at index %d is numbered %d, want %d", i, turn.Number, i+1)
+		}
+	}
+}
+
+// TestTypedCommandOnASystemEntryBecomesItsOwnTurn pins the second shape a typed
+// command reaches the log in: the line the caller typed recorded on a
+// local_command system entry rather than as their prompt, with some commands then
+// writing their report into the conversation as an entry of Claude Code's own.
+//
+// Read as prompts, both halves land wrong. The command renders nowhere, and its
+// report becomes a turn nobody took — which is how a session came to be listed
+// under the first line of a context report.
+//
+// The fixture carries both kinds: /context, which writes a report, and /model,
+// which writes none and is followed by a prompt somebody typed. The second is
+// what holds the window shut. Claiming "the next user entry" for a command would
+// take that prompt for the command's output and lose the turn.
+func TestTypedCommandOnASystemEntryBecomesItsOwnTurn(t *testing.T) {
+	path := filepath.Join("testdata", "typed-command-entry.jsonl")
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prompts := make([]string, 0, len(sess.Turns))
+	for _, tn := range sess.Turns {
+		prompts = append(prompts, tn.Prompt)
+	}
+	want := []string{"/context", "now trim the skills", "/model", "thanks"}
+	if !slices.Equal(prompts, want) {
+		t.Fatalf("prompts = %q, want %q", prompts, want)
+	}
+
+	texts := eventTexts(sess.Turns[0].Events)
+	if len(texts) != 2 {
+		t.Fatalf("the command's turn holds %d texts, want what it printed and the report it wrote: %q", len(texts), texts)
+	}
+	if !strings.Contains(texts[0], "45.5k/1m tokens") {
+		t.Errorf("first text = %q, want what the command printed to the terminal", texts[0])
+	}
+	if !strings.Contains(texts[1], "| Skills | 6.6k |") {
+		t.Errorf("second text = %q, want the report the command wrote into the conversation", texts[1])
+	}
+
+	if sess.Meta.Title != "/context" {
+		t.Errorf("title = %q, want the command the session opened with", sess.Meta.Title)
+	}
+
+	// The report is the only entry in that turn carrying a prompt id, and a forked
+	// command is charged to its turn through that id, so the turn takes it over.
+	entries, err := loadEntries(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id := splitTurns(entries)[0].promptID; id != "p_context" {
+		t.Errorf("the command's turn carries prompt id %q, want the one its report arrived under", id)
+	}
+}
+
+// TestEveryCallCarriesItsPositionInTheTurn pins the numbering both a render and
+// a search read: everything in a turn a reader can be sent to gets its position
+// in that turn, counted in the order a reader scrolls through them — a call
+// before the stream it spawned. Calls and prose blocks count separately, a
+// locator already saying which of the two it names.
+//
+// One pass assigns it because two surfaces numbering separately would drift, and
+// the drift is invisible: a search naming the third call while a render numbered
+// a different one sends a reader to the wrong call with both outputs looking
+// correct.
+func TestEveryCallCarriesItsPositionInTheTurn(t *testing.T) {
+	t.Run("depth first, a call before the stream it spawned", func(t *testing.T) {
+		call := func(name string, nested ...model.Event) model.Event {
+			return model.Event{Kind: model.EventTool, Tool: &model.Tool{Name: name, Subagent: nested}}
+		}
+		events := []model.Event{
+			call("Read"),
+			model.Event{Kind: model.EventThinking, Text: "first reasoning"},
+			call("Agent",
+				call("Grep"),
+				model.Event{Kind: model.EventText, Text: "prose inside the delegated stream"},
+				call("Write"),
+			),
+			model.Event{Kind: model.EventText, Text: "the reply"},
+			call("Bash"),
+		}
+		numberEvents(events)
+
+		got := map[string]int{}
+		var walk func([]model.Event)
+		walk = func(stream []model.Event) {
+			for _, e := range stream {
+				if e.Kind != model.EventTool {
+					continue
+				}
+				got[e.Tool.Name] = e.Tool.Call
+				walk(e.Tool.Subagent)
+			}
+		}
+		walk(events)
+
+		want := map[string]int{"Read": 1, "Agent": 2, "Grep": 3, "Write": 4, "Bash": 5}
+		for name, n := range want {
+			if got[name] != n {
+				t.Errorf("%s is call %d, want %d (all: %v)", name, got[name], n, got)
+			}
+		}
+
+		// Prose runs on its own sequence, and a block inside a delegated stream
+		// takes its place in that sequence: the reader scrolls past it in the
+		// expanded stream before reaching what follows the call.
+		blocks := map[string]int{}
+		var walkProse func([]model.Event)
+		walkProse = func(stream []model.Event) {
+			for _, e := range stream {
+				switch e.Kind {
+				case model.EventText, model.EventThinking:
+					blocks[e.Text] = e.Block
+				case model.EventTool:
+					walkProse(e.Tool.Subagent)
+				}
+			}
+		}
+		walkProse(events)
+		wantBlocks := map[string]int{
+			"first reasoning":                   1,
+			"prose inside the delegated stream": 2,
+			"the reply":                         3,
+		}
+		for text, n := range wantBlocks {
+			if blocks[text] != n {
+				t.Errorf("%q is block %d, want %d (all: %v)", text, blocks[text], n, wantBlocks)
+			}
+		}
+	})
+
+	t.Run("a parsed session's calls are numbered", func(t *testing.T) {
+		sess, err := Load(filepath.Join("testdata", "typed-fork.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fork := sess.Turns[1].Events[0]
+		if fork.Kind != model.EventTool {
+			t.Fatalf("first event = %+v, want the fork's call", fork)
+		}
+		if fork.Tool.Call != 1 {
+			t.Errorf("the turn's first call is numbered %d, want 1", fork.Tool.Call)
+		}
+		// The call inside the expansion follows the call that spawned it, which is
+		// the order the render prints the two in.
+		nested := fork.Tool.Subagent[0]
+		if nested.Tool.Call != 2 {
+			t.Errorf("the call inside the expansion is numbered %d, want 2", nested.Tool.Call)
+		}
+		// The turn's own reply is its first prose block, the fork's call carrying
+		// none of its own.
+		reply := sess.Turns[1].Events[1]
+		if reply.Kind != model.EventText {
+			t.Fatalf("second event = %+v, want the turn's printed reply", reply)
+		}
+		if reply.Block != 1 {
+			t.Errorf("the turn's only prose block is numbered %d, want 1", reply.Block)
+		}
+	})
 }

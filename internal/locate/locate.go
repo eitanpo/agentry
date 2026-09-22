@@ -107,10 +107,19 @@ func ProjectDir(cwd string) (string, error) {
 // ran in. With an empty id it picks the most recent session in that scope by
 // modification time (which may be one still in progress).
 //
-// cwd's own project is tried first and alone, because it answers nearly every
-// call and the subtree scan opens a file per project folder to read its recorded
-// cwd. It also settles a duplicate id in favor of the directory the caller is
-// standing in; ids are UUIDs, so that is a tie that does not arise in practice.
+// An id widens in three steps, each tried only when the one before it missed:
+// cwd's own project, then every project nested under it, then every project under
+// the root. The first answers nearly every call and pays nothing for the wider
+// reach, since only a miss opens a file per project folder to read its recorded
+// cwd. The last is what makes an id read off `--all-projects` usable, and it is
+// the only step that reaches a session whose recorded directory has since been
+// deleted: the log is still on disk and no directory maps to its project folder
+// any more, so nothing narrower can find it. A listing that can show a session
+// and a render that cannot open it would be two scopes wearing one id.
+//
+// The narrower step wins where both could answer, which settles a duplicate id in
+// favor of the directory the caller is standing in; ids are UUIDs, so that is a
+// tie that does not arise in practice.
 func Session(cwd, id string) (string, error) {
 	if id == "" {
 		paths, err := SessionsByRecency(cwd)
@@ -125,21 +134,45 @@ func Session(cwd, id string) (string, error) {
 			return path, nil
 		}
 	}
-	paths, err := SessionsUnder(cwd)
-	if err != nil {
-		return "", err // ErrNoProject when nothing sits at or under cwd
+	local, localErr := SessionsUnder(cwd)
+	if localErr == nil {
+		path, err := matchID(local, id)
+		if err == nil {
+			return path, nil
+		}
+		// Ambiguous inside a step is an error rather than a reason to widen: the
+		// step already holds several sessions the caller might have meant, and
+		// adding more cannot decide between them.
+		var ambiguous *AmbiguousIDError
+		if errors.As(err, &ambiguous) {
+			return "", err
+		}
 	}
+	all, allErr := SessionsAll()
+	if allErr != nil {
+		// cwd having no project at all is the more useful thing to report, since a
+		// caller standing in the wrong directory is the likelier cause than a
+		// machine holding no sessions.
+		if localErr != nil {
+			return "", localErr
+		}
+		return "", allErr
+	}
+	return matchID(all, id)
+}
+
+// matchID picks the session paths refers to by exact id, falling back to a
+// prefix — the rule git applies to object names. The exact match is checked
+// first and wins, so a full id can never be reported ambiguous. Several prefix
+// matches are an error rather than a pick: resolving one silently would render a
+// session the caller did not name and give no sign of it.
+func matchID(paths []string, id string) (string, error) {
 	want := id + ".jsonl"
 	for _, p := range paths {
 		if filepath.Base(p) == want {
 			return p, nil
 		}
 	}
-	// No exact match: treat the id as a prefix, the rule git applies to object
-	// names. An exact match is checked first and wins, so a full id can never be
-	// reported ambiguous. Several matches are an error rather than a pick —
-	// resolving one of them silently would render a session the caller did not
-	// name and give no sign of it.
 	var hits []string
 	for _, p := range paths {
 		base := strings.TrimSuffix(filepath.Base(p), ".jsonl")
@@ -149,7 +182,10 @@ func Session(cwd, id string) (string, error) {
 	}
 	switch len(hits) {
 	case 0:
-		return "", ErrNoSession
+		// Named, because the id is not always something the caller typed as one: a
+		// mistyped noun in front of a pattern arrives here as an id, and "session
+		// not found" alone sends them looking for a session instead of at the word.
+		return "", fmt.Errorf("no session id starts with %q: %w", id, ErrNoSession)
 	case 1:
 		return hits[0], nil
 	}

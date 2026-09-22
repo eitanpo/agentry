@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -42,7 +45,7 @@ var levels = map[string]render.Channels{
 
 // Candidate sets for nearest(): valid verbs, --level values, --include channels.
 var (
-	verbNames    = []string{"view", "list", "cost", "config"}
+	verbNames    = []string{"view", "search", "list", "cost", "config", "schema"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
 	includeNames = []string{"prompts", "tools", "files", "model", "cost", "outputs", "last-reply", "all"}
 	formatNames  = []string{"json", "jsonl", "text"}
@@ -50,6 +53,103 @@ var (
 	// entry: a mistyped number is arithmetic, not a near-miss on a name.
 	limitNames = []string{"all"}
 )
+
+// compilePattern turns a caller's pattern into the matcher agentry searches
+// with. Shared by the listing's --reply-matches and by `agentry search`, so one
+// pattern means one thing wherever it is typed rather than two flags drifting
+// apart. The error names the pattern as the caller wrote it, since cobra reports
+// only the flag and the compiled form may carry a prefix they never typed.
+//
+// literal is what -F asks for: the pattern's own punctuation is escaped before
+// compiling, so a caller searching for a call or an index expression is not
+// writing a regular expression by accident. The flag chooses how the pattern is
+// read and not how it is compared, so the case rule below reads the text the
+// caller typed rather than the escaped form.
+func compilePattern(pattern string, literal bool) (*regexp.Regexp, error) {
+	expr := pattern
+	if literal {
+		expr = regexp.QuoteMeta(pattern)
+	}
+	if ignoresCase(pattern, literal) {
+		// Prefixed rather than set through a compile option, so that it covers every
+		// branch of a top-level alternation and so that a caller's own (?-i)
+		// countermands it by sitting after it.
+		expr = "(?i)" + expr
+	}
+	re, err := regexp.Compile(expr)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a valid regular expression: %w", pattern, err)
+	}
+	return re, nil
+}
+
+// ignoresCase reports whether the pattern asks to be matched without regard to
+// case, which it does by carrying no upper-case letter. Reading the pattern's own
+// text is what every tool that ignores case by default does, and it is the rule a
+// caller can predict from what they typed; forcing insensitivity on every pattern
+// leaves the caller who meant the capital with nothing to say.
+//
+// Two conditions, and the first is not redundant: a pattern with no literals at
+// all is matched as written, because folding case over `[[:upper:]]` would make
+// it match the very characters it was written to exclude.
+func ignoresCase(pattern string, literal bool) bool {
+	runes := patternLiterals(pattern, literal)
+	if len(runes) == 0 {
+		return false
+	}
+	for _, r := range runes {
+		if unicode.IsUpper(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// patternLiterals returns the characters the pattern matches literally, which is
+// the only part of it the case rule may read: the letters inside a character
+// class or an escape name a set rather than a spelling the caller chose.
+//
+// A pattern that does not parse yields none, which reads as case-sensitive and
+// leaves the compile below to report the fault — answering it here would replace
+// the parser's message, which names what is wrong, with a silent difference in
+// how the pattern matches.
+func patternLiterals(pattern string, literal bool) []rune {
+	if literal {
+		return []rune(pattern)
+	}
+	parsed, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return nil
+	}
+	return appendLiterals(nil, parsed)
+}
+
+func appendLiterals(out []rune, parsed *syntax.Regexp) []rune {
+	if parsed.Op == syntax.OpLiteral {
+		out = append(out, parsed.Rune...)
+	}
+	for _, sub := range parsed.Sub {
+		out = appendLiterals(out, sub)
+	}
+	return out
+}
+
+// fixedStringsFlag is the literal-pattern switch, registered on the two commands
+// that take a pattern. -F is the spelling six other searchers give it, and it is
+// agentry's only short flag: a caller who wants a literal search types it from
+// muscle memory, where every other flag here is one they read off help first.
+const fixedStringsFlag = "fixed-strings"
+
+func addFixedStringsFlag(cmd *cobra.Command) {
+	cmd.Flags().BoolP(fixedStringsFlag, "F", false, "read the pattern as text, not as a regular expression")
+}
+
+// literalPattern reports whether the caller asked for the pattern to be read as
+// text. Read by value rather than by Changed, so a settings file can set it.
+func literalPattern(cmd *cobra.Command) bool {
+	v, _ := cmd.Flags().GetBool(fixedStringsFlag)
+	return v
+}
 
 // effortLevels are the levels `claude --effort` accepts, offered as completion
 // for --effort. They are suggestions only: the filter never validates against
@@ -106,7 +206,11 @@ const defaultFormat = "text"
 // the two cannot disagree. It names no default: pflag prints the flag's own,
 // which is the one a caller actually gets, file or no file.
 func formatHelp() string {
-	return "output format: " + strings.Join(formatNames[:len(formatNames)-1], ", ") + " or " + formatNames[len(formatNames)-1]
+	return "output format: " + strings.Join(formatNames[:len(formatNames)-1], ", ") + " or " +
+		// No backticks: pflag reads the first back-quoted word in a flag's help as
+		// the value placeholder, so "`agentry schema`" rendered as
+		// "--format agentry schema" in the usage line.
+		formatNames[len(formatNames)-1] + " (run: agentry schema, for their shape)"
 }
 
 // parseFrom validates the --from selector, shared by the listing and by the

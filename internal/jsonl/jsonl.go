@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"io"
 	"time"
+
+	"github.com/eitanpo/agentry/internal/schema"
 )
 
 // Tool names the agent whose sessions these records describe. It rides every
@@ -41,6 +43,15 @@ type envelope struct {
 	Time    *time.Time `json:"time,omitempty"`
 	Schema  int        `json:"schema,omitempty"`
 	Payload any        `json:"payload"`
+}
+
+// EnvelopeFields describes the wrapper every record rides in, for `agentry
+// schema`. It lives here because the envelope type is unexported and this is the
+// only package that can read it: described anywhere else, the keys would be a
+// second hand-written copy, and a key added below would leave that copy stale
+// with nothing to catch it.
+func EnvelopeFields() []schema.Field {
+	return schema.Fields(envelope{})
 }
 
 // Encoder writes one stream. Its zero value is not usable; call New.

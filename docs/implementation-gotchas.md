@@ -27,6 +27,32 @@ matches itself by name, so naive recursive expansion infinite-loops (stack overf
 
 ## Rendering and dependencies
 
+**Backticks in a flag's help string become the value placeholder.** pflag's `UnquoteUsage`
+reads the first back-quoted word as the name of the flag's argument, so a help string
+mentioning another command in backticks rendered as `--format agentry schema` in the usage
+line. Write flag help in plain prose; the backtick is reserved there, unlike everywhere else
+in this repo's writing. It surfaces only in rendered `--help` output, so a review of the
+string alone will not catch it.
+
+**Any figure computed by walking `Session.Turns` silently becomes the slice's the
+moment a selector exists.** Adding `--turn` narrowed `Turns` and left the header counting
+turns and tools out of it, so a one-turn render read "1 turn" beside the whole session's
+tokens and dollars — one turn appearing to cost the lot. `Meta` is the session and `Turns` is
+what the caller asked to render; read session-level figures off `Meta`, which a selector does
+not touch. The two sources agree exactly on a whole session because the tallies are the
+per-turn counts grouped rather than recounted, and a test pins that agreement, since nothing
+else would catch them drifting. A hand-built test session must now fill both, and a fixture
+whose `Meta` tally disagrees with its turns describes no real session.
+
+**A cap that counts display lines cannot name its remainder in source lines.**
+Subtracting one from the other reported `… -6 more lines` on a truncated tool result,
+and `… 0 more lines` at other widths — wrong in a direction that reads as a complete
+body. It only shows once lines wrap, so it is invisible at a wide terminal and present
+on every long body at a narrow one. Track the two counts apart: fill the cap in display
+lines, count the remainder in source lines not printed whole, and never derive one from
+the length of the other. Assert the exact count in a test, since a non-negative check
+passes on zero.
+
 **`termenv.Ascii` is `3`, not `0`.** Passing a literal `0` to
 `lipgloss.SetColorProfile` selects `TrueColor` (color on) — the opposite of intent. Use
 the named `termenv.Ascii` constant to strip ANSI, and verify "no color" by counting ESC
@@ -199,3 +225,14 @@ answering: the refusal lives in the hook rather than in an early exit from `Exec
 cuts the other way — a hook is the wrong place for anything help output depends on. Flag
 defaults are the case in point: help is rendered from `DefValue`, so the settings file has to
 be planted on the flags while the tree is being built, not in a hook that help never runs.
+
+## A parsed pattern's character class does not list its members
+
+**`syntax.Regexp.Rune` holds range pairs for an `OpCharClass` and literal runes for an
+`OpLiteral`, so one slice means two different things by op.** A membership test written
+against it reads correctly and answers a different question: `slices.Contains(re.Rune, '\n')`
+on `\s` is true because a range *boundary* is a newline, not because the caller asked for one.
+That matters for any rule about what a pattern requires — `agentry search` refuses a pattern
+that needs a line break, and refusing `\s` instead would reject the commonest way to write
+"any whitespace". The check inspects `OpLiteral` only: a class that *may* match a break is not
+a pattern that *needs* one, and only the second can never match a line.

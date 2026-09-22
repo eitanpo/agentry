@@ -235,13 +235,13 @@ func configTargets(section string, tree verbs) []*cobra.Command {
 	case "cost":
 		return []*cobra.Command{tree.cost}
 	}
-	return []*cobra.Command{tree.root, tree.view, tree.list, tree.cost}
+	return []*cobra.Command{tree.root, tree.view, tree.search, tree.list, tree.cost}
 }
 
 // verbs is the assembled command tree, held together so the config layer can
 // reach each verb's flag set by name rather than by walking and guessing.
 type verbs struct {
-	root, view, list, cost *cobra.Command
+	root, view, search, list, cost *cobra.Command
 }
 
 // builtinDefaults records what each setting defaults to with no file, read off

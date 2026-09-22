@@ -275,10 +275,27 @@ func TestSessionResolvesNestedID(t *testing.T) {
 		}
 	})
 
-	t.Run("an id outside the subtree is ErrNoSession", func(t *testing.T) {
-		// The scope has to stop somewhere, and it stops where the listing's does:
-		// a session from an unrelated project is not reachable by id from here.
-		if _, err := Session("/w/repo", "outside"); !errors.Is(err, ErrNoSession) {
+	t.Run("an id in an unrelated project resolves at the widest step", func(t *testing.T) {
+		// The listing's --all-projects prints this id, so the id has to open the
+		// session: a listing that can show a session and a render that cannot open
+		// it are two scopes wearing one handle. The fixture's recorded cwd exists
+		// nowhere on this machine, which is also the shape of a session whose
+		// directory was deleted — the log is still on disk and no narrower step
+		// can reach it.
+		got, err := Session("/w/repo", "outside")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(root, ProjectDirName("/elsewhere/other"), "outside.jsonl")
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("an id in no project at all is still ErrNoSession", func(t *testing.T) {
+		// Widening to every project is not the same as answering for an id that
+		// does not exist, which stays the distinct error a caller can act on.
+		if _, err := Session("/w/repo", "nosuchsession"); !errors.Is(err, ErrNoSession) {
 			t.Errorf("got %v, want ErrNoSession", err)
 		}
 	})
@@ -297,6 +314,28 @@ func TestSessionResolvesNestedID(t *testing.T) {
 			t.Errorf("got %q, want the nested project's newer session %q", got, nested)
 		}
 	})
+}
+
+// TestSessionPrefersTheNarrowerStep pins that widening to every project did not
+// cost "the directory you are standing in" its meaning: a prefix both steps hold
+// resolves to the local one, or an id read off a local listing could open an
+// unrelated project's session.
+func TestSessionPrefersTheNarrowerStep(t *testing.T) {
+	root := t.TempDir()
+	old := ProjectsRoot
+	ProjectsRoot = root
+	t.Cleanup(func() { ProjectsRoot = old })
+
+	local := writeSession(t, root, "/w/repo", "dupe-local")
+	writeSession(t, root, "/elsewhere/other", "dupe-remote")
+
+	got, err := Session("/w/repo", "dupe-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != local {
+		t.Errorf("got %q, want the local project's %q", got, local)
+	}
 }
 
 func TestSession(t *testing.T) {

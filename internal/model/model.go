@@ -50,6 +50,13 @@ type Meta struct {
 	LinesAdded   *int `json:"linesAdded,omitempty"`
 	LinesRemoved *int `json:"linesRemoved,omitempty"`
 	NumSubagents int  `json:"numSubagents"`
+	// NumTurns is how many turns the session holds, which is not the length of
+	// Turns whenever a caller selected a slice of them. It mirrors the Summary
+	// field of the same name, so a count read off a listing and one read off a
+	// render agree. Carried on Meta rather than inferred, because inferring it
+	// from Turns is exactly what a slice makes wrong, and a consumer reading three
+	// turns has no other way to learn there were thirty-one.
+	NumTurns int `json:"numTurns"`
 	// Entrypoint and Entrypoints mirror the Summary fields of the same names,
 	// resolved identically, so the render path and the listing never disagree
 	// about where one session ran.
@@ -387,6 +394,12 @@ type DailyActivity struct {
 
 // Turn is one user prompt and the assistant activity that followed it.
 type Turn struct {
+	// Number is the turn's 1-based place in the session, which its index in Turns
+	// gives only while the whole session is present. A selected slice restarts
+	// that index at zero, so a turn that did not carry its own number would be
+	// unidentifiable in exactly the output a caller asked to narrow — and the
+	// numbers a search prints would name nothing.
+	Number     int       `json:"turn"`
 	Prompt     string    `json:"prompt"`
 	Start      time.Time `json:"start"`
 	End        time.Time `json:"end"`
@@ -431,6 +444,14 @@ type Event struct {
 	Kind EventKind `json:"kind"`
 	Text string    `json:"text,omitempty"` // body for EventText and EventThinking
 	Tool *Tool     `json:"tool,omitempty"` // set for EventTool
+	// Block is a prose event's position among the turn's prose — its reply and
+	// reasoning blocks in one sequence, counted in the order they print. Zero on a
+	// tool event, whose own position is Tool.Call.
+	//
+	// It is what tells two blocks of the same kind apart. A turn can hold fifty
+	// reasoning blocks and each numbers its own lines from one, so a hit reported
+	// at line three named every one of them.
+	Block int `json:"block,omitempty"`
 }
 
 // Tool is a single tool call and its result.
@@ -447,13 +468,54 @@ type Tool struct {
 	// empty means the subagent ran on the session's own model, which is why it is
 	// not defaulted to Meta.Model — "inherited" and "chosen" are different facts.
 	Model string `json:"model,omitempty"`
+	// Prompt is the instruction a delegated call was given, whole. Only Agent
+	// carries one, and it is taken from the input for the reason Model is: Args
+	// holds that call's description instead, which is a label of a few words and
+	// says nothing about what the subagent was asked to do. Without this field a
+	// session whose substance is its delegations carries none of that substance,
+	// since the delegated log records what the subagent did and never the terms
+	// it was handed.
+	Prompt string `json:"prompt,omitempty"`
 	// Denial is why this call was refused rather than run, the log's own
 	// toolDenialKind. Empty for every call that ran, including one that ran and
 	// failed — IsError is true either way, so this is what tells the two apart.
-	Denial   string    `json:"denial,omitempty"`
+	Denial string `json:"denial,omitempty"`
+	// Call is this call's position in its turn, counted in the order a render
+	// prints the turn and a search walks it — depth first, a call before the
+	// stream it spawned. It is the only thing that tells two calls of the same
+	// tool apart: a turn that ran grep four times gave every one of them the same
+	// address, so a search naming one of them named all four.
+	Call     int       `json:"call,omitempty"`
 	Result   string    `json:"result,omitempty"`
 	IsError  bool      `json:"isError,omitempty"`
 	Start    time.Time `json:"start"`
 	End      time.Time `json:"end"`
 	Subagent []Event   `json:"subagent,omitempty"` // nested event stream when this call spawned a subagent
+}
+
+// TurnRange is an inclusive span of a session's turns, by the numbers Turn.Number
+// carries. Both bounds are 1-based, the numbering a render prints and a search
+// reports, so a caller copies a number out of one and into the other.
+type TurnRange struct {
+	From int
+	To   int
+}
+
+// Select returns the session narrowed to one span of its turns. Meta is carried
+// whole and unchanged: it describes the session, not the span, and recomputing it
+// over three turns of thirty-one would report a different session under the same
+// id. NumTurns and each turn's Number are what let a reader of the result tell
+// which session and which turns they are holding.
+//
+// The session is copied rather than edited in place, because a caller that asked
+// to render part of a session did not ask for its parsed model to lose the rest.
+func Select(s *Session, r TurnRange) *Session {
+	out := *s
+	out.Turns = []Turn{}
+	for _, t := range s.Turns {
+		if t.Number >= r.From && t.Number <= r.To {
+			out.Turns = append(out.Turns, t)
+		}
+	}
+	return &out
 }

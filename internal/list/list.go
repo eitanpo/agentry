@@ -22,7 +22,9 @@ import (
 	"github.com/eitanpo/agentry/internal/jsonl"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/render"
+	"github.com/eitanpo/agentry/internal/schema"
 	"github.com/eitanpo/agentry/internal/spend"
+	"github.com/eitanpo/agentry/internal/theme"
 	"github.com/eitanpo/agentry/internal/trail"
 	"github.com/muesli/termenv"
 )
@@ -47,9 +49,6 @@ type Options struct {
 
 // Prompt blocks reuse the renderer's turn chrome: a left rail closed by a rule.
 const (
-	railIndent  = "  "
-	railGlyph   = "│"
-	railClose   = "╰─"
 	promptGlyph = "❯"
 	// Budgeted against the widest prefix a detail line can take, "  ╰─ ❯ ": a
 	// one-line block draws the closing rule in place of the rail glyph, which is
@@ -59,12 +58,7 @@ const (
 
 // activity is the time a session is ordered and filtered by: its last entry,
 // falling back to its first when only one timestamp is known.
-func activity(s model.Summary) time.Time {
-	if !s.End.IsZero() {
-		return s.End
-	}
-	return s.Start
-}
+func activity(s model.Summary) time.Time { return Activity(s.Start, s.End) }
 
 // Select orders summaries most-recent first by activity time, drops any outside
 // [since, until] (a zero bound is open), and caps to limit (limit <= 0 = no
@@ -651,8 +645,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	if !opts.Color {
 		lipgloss.SetColorProfile(termenv.Ascii) // strips ANSI from styles
 	}
-	meta := lipgloss.NewStyle().Foreground(lipgloss.Color("250")) // time/duration/id: light gray, legible
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))    // turns: secondary
+	meta, dim := theme.Meta(), theme.Dim()
 
 	width := opts.Width
 	if width <= 0 {
@@ -682,12 +675,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	// one needs more than one project and the other exactly one, so the title
 	// never pays for two path columns. A project label is a path suffix and keeps
 	// its tail; a worktree name keeps its head, which is the part someone chose.
-	labels := projectLabels(sums)
-	keepTail := true
-	if labels == nil {
-		labels = worktreeLabels(sums)
-		keepTail = false
-	}
+	labels, keepTail := RowLabels(sums)
 	projW := 0
 	for _, l := range labels {
 		if n := utf8.RuneCountInString(l); n > projW {
@@ -706,18 +694,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	// name starves the title — at 100 columns a 21-character repo name leaves the
 	// title at its 10-column floor, which is the column the row is actually read
 	// by. The same cap serves the worktree column, which fills the same slot.
-	if projW > 0 {
-		avail := width - (whenW + durW + turnsW + idW + fromW + gaps*2)
-		if cap := avail / 3; projW > cap {
-			projW = cap
-		}
-		if projW > projMaxW {
-			projW = projMaxW
-		}
-		if projW < 8 {
-			projW = 8
-		}
-	}
+	projW = render.LabelColumn(projW, width-(whenW+durW+turnsW+idW+fromW+gaps*2))
 	titleW := width - (whenW + durW + turnsW + idW + fromW + projW + gaps*2)
 	if titleW < 10 {
 		titleW = 10
@@ -747,9 +724,9 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		}
 		// A fork's title is indented under its family's original; the marker eats
 		// into the title column so the when/turns/id columns stay aligned.
-		title := truncate(oneLine(s.Title), titleW)
+		title := truncate(render.OneLine(s.Title), titleW)
 		if r.fork {
-			title = forkGlyph + truncate(oneLine(s.Title), titleW-forkGlyphW)
+			title = forkGlyph + truncate(render.OneLine(s.Title), titleW-forkGlyphW)
 		}
 		from := ""
 		if fromW > 0 {
@@ -766,7 +743,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			from,
 			proj,
 			pad(title, titleW),
-			renderID(s.ID, uniqueW, meta, dim))
+			render.SessionID(s.ID, uniqueW))
 		// The block's lines are collected before any is written, because how many
 		// there are decides whether the closing rule carries the only one or stands
 		// on a line of its own.
@@ -788,7 +765,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		}
 		if opts.Prompts {
 			for _, p := range s.Prompts {
-				detail = append(detail, dim.Render(promptGlyph)+" "+truncate(oneLine(p), promptW))
+				detail = append(detail, dim.Render(promptGlyph)+" "+truncate(render.OneLine(p), promptW))
 			}
 		}
 		// The conversation's far end, so it sits with the prompts rather than among
@@ -839,15 +816,8 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		// A block every selected channel left empty prints nothing at all: a bare
 		// rule here would cost a line bounding no content, and would read as a
 		// channel that ran and found nothing rather than one with nothing to find.
-		switch {
-		case len(detail) == 1:
-			fmt.Fprintf(&b, "%s%s %s\n", railIndent, dim.Render(railClose), detail[0])
-		case len(detail) > 1:
-			rail := railIndent + dim.Render(railGlyph) + " "
-			for _, line := range detail {
-				fmt.Fprintf(&b, "%s%s\n", rail, line)
-			}
-			fmt.Fprintf(&b, "%s%s\n", railIndent, dim.Render(railClose))
+		for _, line := range render.Rail(detail, dim) {
+			fmt.Fprintf(&b, "%s\n", line)
 		}
 	}
 	_, err := io.WriteString(w, b.String())
@@ -938,6 +908,36 @@ func worktreeName(cwd string) string {
 //
 // Labels are computed over projectRoot, not over the cwd, so several worktrees
 // of one repo share one label and count as one project.
+// RowLabels is the label a row draws in its path column, keyed by session cwd:
+// the project where the set spans more than one, the worktree where the set sits
+// inside one project, and none where neither tells the rows apart. The second
+// return says which end of a label survives truncation — a project label is a
+// path suffix and keeps its tail, a worktree name keeps the head somebody chose.
+//
+// Exported, and the only chooser: `agentry search`'s session rows label a
+// session exactly as a listing row does, where one session labelled two ways
+// reads as two sessions. Reading only the project half is what left a search
+// across one repository's worktrees with no label on any row.
+func RowLabels(sums []model.Summary) (map[string]string, bool) {
+	if labels := projectLabels(sums); labels != nil {
+		return labels, true
+	}
+	return worktreeLabels(sums), false
+}
+
+// Activity is the time a row shows and the time the rows are ordered by: the
+// last activity of a session running from start to end, falling back to the
+// start where the log records no later moment. It takes the pair rather than a
+// summary so the one caller holding a parsed session instead of a summary reaches
+// the same rule; exported because printing one time while sorting by another
+// reads as no order at all.
+func Activity(start, end time.Time) time.Time {
+	if !end.IsZero() {
+		return end
+	}
+	return start
+}
+
 func projectLabels(sums []model.Summary) map[string]string {
 	roots := map[string]bool{}
 	byCwd := map[string]string{}
@@ -1079,45 +1079,16 @@ func sharedRun(group []string, keepTail bool) int {
 	return longest
 }
 
-// idFloor is the shortest id a listing prints. The floor is not about today's
-// collisions but about tomorrow's: a listing of three rows would otherwise
-// print 1-character ids that stop resolving as the machine fills up, since an
-// id is copied out of one listing and passed back later.
-const idFloor = 8
-
-// idWidth is the shortest prefix length that tells these sessions apart, floored
-// at idFloor and never longer than the ids themselves. This is git's rule for
-// abbreviated object names, computed over the rows in hand.
-//
-// The check is a pairwise scan over one listing — small by construction, 10
-// rows by default — so the trie that makes shortest-unique-prefix O(n·L)
-// instead of O(n²·L) would buy nothing here beyond code to read.
+// idWidth is the shortest prefix length that tells these sessions apart, read
+// off the one owner of that rule so a row here and a search row emphasize the
+// same characters. It stays as a named step because what a listing holds is
+// summaries and what the rule needs is ids.
 func idWidth(sums []model.Summary) int {
-	longest := 0
+	ids := make([]string, 0, len(sums))
 	for _, s := range sums {
-		if n := len(s.ID); n > longest {
-			longest = n
-		}
+		ids = append(ids, s.ID)
 	}
-	if longest <= idFloor {
-		return longest // every id is already shorter than the floor
-	}
-	for n := idFloor; n < longest; n++ {
-		seen := make(map[string]bool, len(sums))
-		clash := false
-		for _, s := range sums {
-			p := abbrevID(s.ID, n)
-			if seen[p] {
-				clash = true
-				break
-			}
-			seen[p] = true
-		}
-		if !clash {
-			return n
-		}
-	}
-	return longest
+	return render.UniqueIDPrefix(ids)
 }
 
 // idColumnW is the width the id column takes, every id being printed whole.
@@ -1129,27 +1100,6 @@ func idColumnW(sums []model.Summary) int {
 		}
 	}
 	return w
-}
-
-// renderID draws the id whole, the prefix that tells these rows apart in the id's
-// own color and the rest of it a shade down. Weight rather than presence is what
-// separates the two jobs the value does: the prefix is what a reader scans the
-// column by and hands back to agentry, and the whole string is what `claude
-// --resume` requires. A caller with color off gets the same characters, since
-// dropping half of a value a reader copies would be the worse degradation.
-func renderID(id string, uniqueW int, bright, faint lipgloss.Style) string {
-	if len(id) <= uniqueW {
-		return bright.Render(id)
-	}
-	return bright.Render(id[:uniqueW]) + faint.Render(id[uniqueW:])
-}
-
-// abbrevID cuts an id to n characters, or returns it whole when it is shorter.
-func abbrevID(id string, n int) string {
-	if len(id) <= n {
-		return id
-	}
-	return id[:n]
 }
 
 // pad right-fills s with spaces to width display columns (rune count). s is
@@ -1191,13 +1141,6 @@ func fmtDur(secs int) string {
 	return fmt.Sprintf("%dm", m)
 }
 
-func oneLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	return strings.TrimSpace(s)
-}
-
 func truncate(s string, limit int) string {
 	r := []rune(s)
 	if len(r) <= limit {
@@ -1215,4 +1158,14 @@ func truncateLeft(s string, limit int) string {
 		return s
 	}
 	return "…" + string(r[len(r)-(limit-1):])
+}
+
+// Shapes describes what a listing writes in its machine-readable forms. Each
+// entry names the value the emitter passes, so the description cannot drift from
+// what a caller actually receives.
+func Shapes() []schema.Shape {
+	return []schema.Shape{
+		schema.Document("list", "agentry list --format json", []model.Summary{}),
+		schema.Record("list", "session", model.Summary{}),
+	}
 }

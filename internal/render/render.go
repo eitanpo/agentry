@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,14 +26,24 @@ import (
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/price"
 	"github.com/eitanpo/agentry/internal/spend"
+	"github.com/eitanpo/agentry/internal/theme"
 	"github.com/eitanpo/agentry/internal/trail"
 	"github.com/muesli/termenv"
 )
 
 const (
-	fallbackWidth    = 100 // used when stdout is not a TTY
+	fallbackWidth = 100 // used when stdout is not a TTY
+	// toolBodyMaxLines bounds a result body of an unselected turn, which is machine output nothing
+	// limits: one file read can run longer than every reply in its turn put
+	// together, so uncapped bodies bury the transcript in the output of the work.
+	// The overflow is named rather than dropped silently, which is what keeps this
+	// a cap and not a deletion. PRODUCT.md's Verbosity section owns the rule and
+	// the number; an instruction delegated to a subagent is deliberately outside
+	// it — see toolPrompt.
 	toolBodyMaxLines = 10
 	assistantIndent  = "  " // left pad before the assistant turn's rail (│ … ╰─)
+	railGlyph        = "│"  // the rail a bounded block hangs off
+	railClose        = "╰─" // the rule that closes one
 	glyphUser        = "❯"
 	glyphClaude      = "◆"
 	glyphTool        = "●"
@@ -67,6 +79,13 @@ type Options struct {
 	Width    int
 	Color    bool
 	Channels Channels
+	// Selected is the span of turns the caller narrowed the transcript to, nil
+	// for a whole session. The turns are already filtered when this is set; the
+	// span is carried so the render can say which it is showing. Without that
+	// line a slice is a whole session as far as the page shows: the header still
+	// counts thirty-one turns, three follow it, and nothing says whether the rest
+	// were excluded or failed.
+	Selected *model.TurnRange
 }
 
 type renderer struct {
@@ -81,6 +100,12 @@ type renderer struct {
 	ok      lipgloss.Style
 	bad     lipgloss.Style
 	body    lipgloss.Style
+	// meta and plain are the listing's two roles, held here because the search
+	// row is the listing's row and has to be drawn from the listing's palette.
+	meta    lipgloss.Style
+	plain   lipgloss.Style
+	match   lipgloss.Style
+	brief   lipgloss.Style
 	args    lipgloss.Style
 	link    lipgloss.Style
 	dim     lipgloss.Style
@@ -156,8 +181,8 @@ func SessionJSONL(w io.Writer, s *model.Session) error {
 	if err := enc.Emit("meta", id, s.Meta.Start, s.Meta); err != nil {
 		return err
 	}
-	for i, t := range s.Turns {
-		n := i + 1
+	for _, t := range s.Turns {
+		n := t.Number
 		rec := turnRecord{
 			Turn: n, Prompt: t.Prompt, Start: t.Start, End: t.End,
 			Usage: t.Usage, ToolCount: t.ToolCount, ErrorCount: t.ErrorCount,
@@ -211,6 +236,9 @@ func Session(w io.Writer, s *model.Session, opts Options) error {
 
 	var b strings.Builder
 	b.WriteString(r.header(s))
+	if line := r.selection(s); line != "" {
+		b.WriteString(line)
+	}
 	for _, t := range s.Turns {
 		b.WriteString("\n")
 		b.WriteString(r.turn(t))
@@ -222,7 +250,7 @@ func Session(w io.Writer, s *model.Session, opts Options) error {
 	// section's own cap instead. PRODUCT.md's Output section owns the rule.
 	//
 	// Outcomes lead, so a reader who stops after two sections still has them. The
-	// three aggregates leave together on --no-metrics, which is why they sit last.
+	// four aggregates leave together on --no-metrics, which is why they sit last.
 	footer := []string{r.files(s), r.outputs(s)}
 	if opts.Channels.Metrics {
 		footer = append(footer, r.identities(s), r.cost(s), r.summary(s), r.dayByDay(s))
@@ -241,28 +269,31 @@ func Session(w io.Writer, s *model.Session, opts Options) error {
 	return err
 }
 
+// initStyles takes the renderer's styles from the theme package, which owns
+// every color agentry prints. The fields stay because the render path reads them
+// on every line; what changed is that none of them names a color here, so a
+// rendered session and a listing cannot drift apart.
 func (r *renderer) initStyles() {
-	c := func(code string) lipgloss.Color { return lipgloss.Color(code) }
-	userBg := c("237")                                                            // prompt-row highlight
-	r.user = lipgloss.NewStyle().Foreground(c("6")).Bold(true).Background(userBg) // cyan ❯ on highlight
-	r.userRow = lipgloss.NewStyle().Background(userBg)
-	r.claude = lipgloss.NewStyle().Foreground(c("5")).Bold(true)    // magenta
-	r.tool = lipgloss.NewStyle().Foreground(c("3")).Bold(true)      // yellow
-	r.subnt = lipgloss.NewStyle().Foreground(c("4")).Bold(true)     // blue
-	r.think = lipgloss.NewStyle().Foreground(c("243")).Italic(true) // medium gray, readable but secondary
-	r.ok = lipgloss.NewStyle().Foreground(c("2")).Bold(true)        // green
-	r.bad = lipgloss.NewStyle().Foreground(c("1")).Bold(true)       // red
-	r.body = lipgloss.NewStyle().Foreground(c("15"))                // tool result body: bright white
-	r.args = lipgloss.NewStyle().Foreground(c("248"))               // tool args parenthetical: light gray
-	r.link = lipgloss.NewStyle().Foreground(c("80"))                // hyperlink text: sky cyan, distinct from glamour's heading blue (39) (underline omitted — lipgloss renders it per-rune)
-	r.dim = lipgloss.NewStyle().Foreground(c("8"))
-	r.border = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(c("7")).
-		Padding(0, 1)
+	r.user = theme.Prompt()
+	r.userRow = theme.PromptRow()
+	r.claude = theme.Assistant()
+	r.tool = theme.Tool()
+	r.subnt = theme.Subagent()
+	r.think = theme.Thinking()
+	r.ok = theme.OK()
+	r.bad = theme.Bad()
+	r.body = theme.Body()
+	r.meta = theme.Meta()
+	r.plain = theme.Plain()
+	r.match = theme.Match()
+	r.brief = theme.Instruction()
+	r.args = theme.Args()
+	r.link = theme.Link()
+	r.dim = theme.Dim()
+	r.border = theme.Border()
 	r.userBox = r.border // prompt box: border + padding sit on the highlight
 	if r.opts.Color {    // guard: BorderBackground emits empty ANSI under the Ascii profile
-		r.userBox = r.border.Background(userBg).BorderBackground(userBg)
+		r.userBox = r.border.Background(theme.PromptBackground()).BorderBackground(theme.PromptBackground())
 	}
 }
 
@@ -291,12 +322,41 @@ func (r *renderer) header(s *model.Session) string {
 // countParts is the session's size, as the header's third line and the closing
 // card both print it. One helper because two surfaces counting one session
 // differently is the failure a reader cannot detect — both look like counts.
-func (r *renderer) countParts(s *model.Session) []string {
-	tools := 0
-	for _, t := range s.Turns {
-		tools += t.ToolCount
+// selection names the span a narrowed transcript is showing, directly beneath
+// the header that counts the whole session, which is where the two would
+// otherwise contradict each other. Empty for a whole session, which needs no
+// line: a render that shows everything saying so would put chrome on every
+// session to describe the ordinary case.
+//
+// It goes on stdout rather than stderr, unlike the listing's cap note. That note
+// sits among line-oriented rows a caller reads a field off; a render is prose
+// and a reader who pipes one, pastes one, or reads one back later needs it to
+// say what it holds.
+func (r *renderer) selection(s *model.Session) string {
+	sel := r.opts.Selected
+	if sel == nil {
+		return ""
 	}
-	parts := []string{plural(len(s.Turns), "turn"), plural(tools, "tool")}
+	span := fmt.Sprintf("turn %d", sel.From)
+	if sel.To != sel.From {
+		// A plain hyphen rather than an en dash, so the span reads back as the
+		// flag value that produced it: a reader who copies "10-12" out of this
+		// line can pass it straight to --turn, where a dash they cannot type
+		// would make the line decorative.
+		span = fmt.Sprintf("turns %d-%d", sel.From, sel.To)
+	}
+	return r.dim.Render(fmt.Sprintf("%sshowing %s of %s", assistantIndent, span, plural(s.Meta.NumTurns, "turn"))) + "\n"
+}
+
+// Every figure comes off Meta rather than out of Turns, because Turns holds
+// what a caller asked to render and Meta holds the session. A narrowed
+// transcript counted from Turns reported "1 turn" beside the whole session's
+// tokens and dollars, which reads as one turn having cost the lot. The two
+// sources agree exactly on a whole session — the session tallies are the
+// per-turn counts grouped, not recounted — so this is one source rather than a
+// second answer.
+func (r *renderer) countParts(s *model.Session) []string {
+	parts := []string{plural(s.Meta.NumTurns, "turn"), plural(totalOf(s.Meta.Tools), "tool")}
 	if s.Meta.NumSubagents > 0 {
 		parts = append(parts, plural(s.Meta.NumSubagents, "subagent"))
 	}
@@ -304,7 +364,7 @@ func (r *renderer) countParts(s *model.Session) []string {
 	// different things — a failure is something to go fix, a refusal is a boundary
 	// that held — so they are counted apart rather than summed into "errors".
 	// Each is dropped when it is zero, the rule every optional figure here follows.
-	failed, denied := failedAndDenied(s)
+	failed, denied := totalOf(s.Meta.Failures), deniedTotal(s.Meta.Denials)
 	if failed > 0 {
 		parts = append(parts, r.bad.Render(fmt.Sprintf("%d failed", failed)))
 	}
@@ -346,6 +406,29 @@ func when(m model.Meta) string {
 		line += " · " + active
 	}
 	return line
+}
+
+// totalOf sums a tool tally's counts. The tallies are top-level calls grouped by
+// tool and identity, so the sum is the session's own call count — the figure the
+// header prints beside its turn count.
+func totalOf(stats []model.ToolStat) int {
+	n := 0
+	for _, s := range stats {
+		n += s.Count
+	}
+	return n
+}
+
+// deniedTotal sums the refusals. A separate function because a denial is
+// counted by a different row type: the same call can appear among the tools it
+// ran as and among the refusals it was stopped as, which is why the two are not
+// one list.
+func deniedTotal(stats []model.DenialStat) int {
+	n := 0
+	for _, s := range stats {
+		n += s.Count
+	}
+	return n
 }
 
 // ranOnParts is what the session ran on — the model, the effort it was run at,
@@ -413,13 +496,53 @@ func (r *renderer) box(content string) string {
 	return r.border.Width(w).Render(content) + "\n"
 }
 
+// Rail bounds a block of lines the way a turn's reply is bounded: a left rail
+// down the block and a rule closing it. It is the shape for every multi-line
+// block printed under a header, so one shape means one thing wherever a reader
+// meets it, and it lives here because the turn's reply is where it comes from.
+//
+// One line hangs off the closing rule instead, because chrome must never cost
+// more lines than the content it bounds. Two or more keep the rail: content on
+// the rule there would give the last line different chrome from its siblings
+// while saying nothing different about it. No content prints nothing — a bare
+// rule bounds nothing, and reads as a header that found nothing rather than one
+// with nothing to find.
+func Rail(lines []string, dim lipgloss.Style) []string {
+	switch len(lines) {
+	case 0:
+		return nil
+	case 1:
+		return []string{assistantIndent + dim.Render(railClose) + " " + lines[0]}
+	}
+	out := make([]string, 0, len(lines)+1)
+	for _, line := range lines {
+		out = append(out, assistantIndent+dim.Render(railGlyph)+" "+line)
+	}
+	return append(out, assistantIndent+dim.Render(railClose))
+}
+
+// RailWidth is the columns Rail's own prefix takes, which a caller sizing its
+// content to a terminal has to subtract before it lays that content out.
+//
+// It reports the wider of the two prefixes Rail writes: the closing rule a lone
+// line hangs off is one column wider than the rail its siblings hang off. The
+// caller sizes its rows before it knows how many there will be, so a budget
+// taken from the narrower prefix puts a one-line block past the terminal, where
+// it wraps onto a line carrying no chrome at all.
+func RailWidth() int {
+	return max(
+		lipgloss.Width(assistantIndent+railGlyph+" "),
+		lipgloss.Width(assistantIndent+railClose+" "),
+	)
+}
+
 // ── Turns ────────────────────────────────────────────────────────────────
 
 func (r *renderer) turn(t model.Turn) string {
 	var b strings.Builder
 	b.WriteString(r.userPrompt(t.Prompt))
 
-	bar := assistantIndent + r.dim.Render("│") + " "
+	bar := assistantIndent + r.dim.Render(railGlyph) + " "
 	b.WriteString(assistantIndent + r.claude.Render(glyphClaude) + "\n")
 	for _, line := range r.events(t.Events, bar, 0) {
 		b.WriteString(line + "\n")
@@ -470,7 +593,7 @@ func (r *renderer) turnClose(t model.Turn) string {
 		parts = append(parts, r.dim.Render(fmt.Sprintf("%d denied", denied)))
 	}
 	parts = append(parts, r.turnSpend(t)...)
-	return assistantIndent + r.dim.Render("╰─ ") + strings.Join(parts, " · ")
+	return assistantIndent + r.dim.Render(railClose+" ") + strings.Join(parts, " · ")
 }
 
 // turnSpend is what the turn's tokens came to, phrased the way the header
@@ -514,6 +637,16 @@ func (r *renderer) events(events []model.Event, prefix string, depth int) []stri
 	var out []string
 	avail := r.opts.Width - lipgloss.Width(prefix)
 	for _, e := range events {
+		// A prose block's number, which is the field a reader arrives with from a
+		// search: a turn can hold fifty reasoning blocks and each numbers its own
+		// lines from one, so the block is what says which of them a finding sat in.
+		// It goes on a line of its own — prose is markdown, and a number prefixed
+		// to a heading or a list item would be read as part of it. Reasoning takes
+		// its marker only where reasoning is shown, a number standing over nothing
+		// being worse than none.
+		if e.Block > 0 && (e.Kind == model.EventText || (e.Kind == model.EventThinking && r.opts.Channels.Thinking)) {
+			out = append(out, prefix+r.dim.Render(fmt.Sprintf("block %d", e.Block)))
+		}
 		switch e.Kind {
 		case model.EventText:
 			for _, line := range r.markdown(e.Text, avail) {
@@ -580,23 +713,142 @@ func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 		dur = r.bad.Render("denied: " + t.Denial)
 	}
 
-	head := fmt.Sprintf("%s%s %s%s %s %s",
-		prefix, r.dim.Render("╭─"), style.Render(glyph+" "+t.Name+delegation(t)),
-		r.args.Render("("+truncate(oneLine(t.Args), 60)+")"), status, dur)
+	// The call's number, which is the field a reader arrives with from a search:
+	// the tool's name says what the call was and only the number says which of the
+	// turn's calls it is. It leads the line so a reader scans one column for it
+	// rather than reading every line to its end.
+	called := ""
+	if t.Call > 0 {
+		called = r.dim.Render(fmt.Sprintf("call %d", t.Call)) + hitSeparator
+	}
+	head := fmt.Sprintf("%s%s %s%s%s %s %s",
+		prefix, r.dim.Render("╭─"), called, style.Render(glyph+" "+t.Name+delegation(t)),
+		r.args.Render("("+argsSummary(t.Args)+")"), status, dur)
 	out := []string{strings.TrimRight(head, " ")}
+	bodyPrefix := prefix + r.dim.Render("│") + " "
+
+	// The whole argument text, where the parenthetical above left something out
+	// and the caller has narrowed to this turn. Above the instruction and the
+	// result because it is what the call was asked to do, and those are what came
+	// back.
+	if r.opts.Selected != nil && r.opts.Channels.ToolResults && argsElided(t.Args) {
+		out = append(out, r.toolArgs(t.Args, bodyPrefix)...)
+	}
+
+	// The instruction a delegated call was handed, above whatever the call went on
+	// to produce. It rides ToolResults rather than a channel of its own because it
+	// is this call's body, and the activation line has already flattened it to a
+	// description of a few words.
+	if t.Prompt != "" && r.opts.Channels.ToolResults {
+		out = append(out, r.toolPrompt(t.Prompt, bodyPrefix)...)
+	}
 
 	if t.Subagent != nil && r.opts.Channels.Subagents {
-		nested := prefix + r.dim.Render("│") + " "
-		return append(out, r.events(t.Subagent, nested, depth+1)...)
+		return append(out, r.events(t.Subagent, bodyPrefix, depth+1)...)
 	}
 	// Otherwise show the (possibly truncated) result body, if enabled. With
 	// ToolResults off the activation line stands alone — the notion that the
 	// tool fired, without its output.
 	if r.opts.Channels.ToolResults {
-		bodyPrefix := prefix + r.dim.Render("│") + " "
 		return append(out, r.toolBody(t.Result, bodyPrefix)...)
 	}
 	return out
+}
+
+// toolArgsInlineMax bounds the activation line's parenthetical. Sixty characters
+// because the line already carries the call's name, status and duration, and the
+// summary is there to say which call this is rather than what it did.
+const toolArgsInlineMax = 60
+
+// argsSummary is the activation line's parenthetical: the call's arguments
+// joined onto one line and cut to a width, ending in "…" where the cut fired.
+// The cut is named because a summary showing none of its elision reads as the
+// whole argument — which is how a script passed to a shell came to look like a
+// one-line call.
+func argsSummary(args string) string {
+	return truncate(OneLine(args), toolArgsInlineMax)
+}
+
+// argsElided reports whether the parenthetical leaves anything out: characters
+// past the width, which is all it can lose now that the lines are joined rather
+// than ended at the first. A short multi-line argument is shown whole, and the
+// caller that used to be told otherwise printed the arguments twice.
+func argsElided(args string) bool {
+	joined := OneLine(args)
+	return truncate(joined, toolArgsInlineMax) != joined
+}
+
+// toolArgs lays a call's whole argument text beneath its activation line, for a
+// render the caller narrowed to one turn. The parenthetical above is a summary,
+// so a search hit reported at `args:65` named a line no render would show, and
+// the search-then-read pair in PRODUCT.md's User flows turns on this block.
+//
+// Labelled with a word rather than marked with a glyph, and the word is the one
+// `agentry search` prints for that part, so a hit's location and the block
+// holding it read alike. The result body beneath needs no label of its own,
+// being the only other body a call can carry.
+//
+// Uncapped, because it is only reached on a selected turn, where toolBody's cap
+// has already lifted.
+func (r *renderer) toolArgs(text, prefix string) []string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return append([]string{prefix + r.dim.Render("args")}, r.toolBody(text, prefix)...)
+}
+
+// toolPrompt lays out a delegated call's instruction beneath its activation
+// line: the ❯ glyph a typed prompt carries, then the text at the rail's width,
+// continuation lines hang-indented two columns so they align under the first
+// character the way a turn's own prompt block aligns them.
+//
+// No line cap, where toolBody caps a result at toolBodyMaxLines. A result is
+// machine output whose size nothing bounds, so a cap there is what keeps one
+// file read from burying the turn that made it; an instruction is text somebody
+// wrote, and the first ten lines of a fifty-line brief answer nothing a reader
+// came for. Measured on a real session rather than assumed — the commit that
+// added this records the count.
+func (r *renderer) toolPrompt(text, prefix string) []string {
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return nil
+	}
+	const hangIndent = "  " // the width of "❯ ", so wrapped lines align under the text
+	width := r.opts.Width - lipgloss.Width(prefix) - len(hangIndent)
+	var out []string
+	for _, raw := range strings.Split(text, "\n") {
+		for _, w := range wrapPlain(raw, width) {
+			lead := hangIndent
+			if len(out) == 0 {
+				lead = r.brief.Render(glyphUser) + " "
+			}
+			out = append(out, strings.TrimRight(prefix+lead+r.body.Render(w), " "))
+		}
+	}
+	return out
+}
+
+// gutterWidth is the columns a numbered body spends on its numbers: the digits
+// plus the space separating them from the text, and nothing where the body is
+// one line and carries no number.
+func (r *renderer) gutterWidth(numberW int) int {
+	if numberW == 0 {
+		return 0
+	}
+	return numberW + 1
+}
+
+// lineNumber is the gutter one display line carries: the source line's number on
+// the first display line it takes, and blanks on the lines it wrapped onto, so a
+// continuation is not read as a line of its own.
+func (r *renderer) lineNumber(number, wrapped, numberW int) string {
+	if numberW == 0 {
+		return ""
+	}
+	if wrapped > 0 {
+		return strings.Repeat(" ", r.gutterWidth(numberW))
+	}
+	return r.dim.Render(fmt.Sprintf("%*d", numberW, number)) + " "
 }
 
 func (r *renderer) toolBody(text, prefix string) []string {
@@ -604,23 +856,62 @@ func (r *renderer) toolBody(text, prefix string) []string {
 	if text == "" {
 		return nil
 	}
-	width := r.opts.Width - lipgloss.Width(prefix)
 	lines := strings.Split(text, "\n")
+	// A body of more than one line is numbered from 1, because that is what a
+	// search hit counts from: a hit reported at result:66 located nothing while
+	// the body it named printed unnumbered, leaving the reader to count by eye.
+	// One line needs no number, being the only one a hit could have named.
+	numberW := 0
+	if len(lines) > 1 {
+		numberW = len(strconv.Itoa(len(lines)))
+	}
+	width := r.opts.Width - lipgloss.Width(prefix) - r.gutterWidth(numberW)
 	var out []string
-	for _, raw := range lines {
-		if len(out) >= toolBodyMaxLines {
-			extra := len(lines) - len(out)
-			out = append(out, prefix+r.dim.Render(fmt.Sprintf("… %s", plural(extra, "more line"))))
+	limit := r.bodyCap()
+	// The cap counts display lines and the remainder counts source lines, so the
+	// two are tracked apart. Subtracting one from the other reported a negative
+	// remainder on any body whose lines wrapped, which is every long body at a
+	// narrow width — a cap that names what it left out cannot name "-6 more
+	// lines". PRODUCT.md's Verbosity section owns the rule this restores.
+	whole := 0 // source lines printed entire
+	for i, raw := range lines {
+		room := limit - len(out)
+		if room <= 0 {
 			break
 		}
-		for _, w := range wrapPlain(raw, width) {
-			out = append(out, prefix+r.body.Render(w))
-			if len(out) >= toolBodyMaxLines {
-				break
+		wrapped := wrapPlain(raw, width)
+		if len(wrapped) > room {
+			// A line too long for the room left shows its head rather than being
+			// dropped, so a body that is one very long line is not blank. It stays
+			// outside whole, which is what makes the remainder name it.
+			for j, w := range wrapped[:room] {
+				out = append(out, prefix+r.lineNumber(i+1, j, numberW)+r.body.Render(w))
 			}
+			break
 		}
+		for j, w := range wrapped {
+			out = append(out, prefix+r.lineNumber(i+1, j, numberW)+r.body.Render(w))
+		}
+		whole++
+	}
+	if whole < len(lines) {
+		out = append(out, prefix+r.dim.Render(fmt.Sprintf("… %s", plural(len(lines)-whole, "more line"))))
 	}
 	return out
+}
+
+// bodyCap is how many display lines a result body may print. The cap answers a
+// whole session's worth of bodies burying the transcript inside the output of the
+// work; a caller who named one turn has already narrowed, so it lifts there.
+//
+// Without that, a search hit could name a line inside a body that no render would
+// ever show — the flow in PRODUCT.md's User flows section turns on the second
+// command being able to display every hit the first one reported.
+func (r *renderer) bodyCap() int {
+	if r.opts.Selected != nil {
+		return math.MaxInt
+	}
+	return toolBodyMaxLines
 }
 
 // Reply lays out one assistant reply the way a rendered turn lays out its own:
@@ -879,6 +1170,25 @@ func (r *renderer) glamourFor(width int) *glamour.TermRenderer {
 
 // ── Outputs ────────────────────────────────────────────────────────────────
 
+// railHeaded bounds a footer section's rows with the rail every block under a
+// header hangs off. The first line is the header and the rest are the block: each
+// already carries sectionIndent, which the rail's own prefix replaces, so a
+// section goes on writing its rows and the chrome is applied in one place.
+//
+// A section with no rows is returned untouched, since a rule bounding nothing
+// reads as a section that found nothing rather than one with nothing to find.
+func (r *renderer) railHeaded(section string) string {
+	lines := strings.Split(strings.TrimRight(section, "\n"), "\n")
+	if len(lines) < 2 {
+		return section
+	}
+	rows := make([]string, 0, len(lines)-1)
+	for _, line := range lines[1:] {
+		rows = append(rows, strings.TrimPrefix(line, sectionIndent))
+	}
+	return strings.Join(append(lines[:1], Rail(rows, r.dim)...), "\n") + "\n"
+}
+
 // outputs lists what the session produced beyond its own transcript: the pull
 // requests it opened, then the artifacts it published. Empty when it produced
 // neither, which is the signal not to draw the section at all.
@@ -916,7 +1226,7 @@ func (r *renderer) outputs(s *model.Session) string {
 		}
 		b.WriteString(indent + r.maybeLink(truncate(text, width), href) + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // files lists what the session modified, from Claude Code's own file-history
@@ -932,7 +1242,7 @@ func (r *renderer) files(s *model.Session) string {
 	if len(paths) == 0 {
 		return ""
 	}
-	width := max(r.opts.Width-len(sectionIndent), minContentWidth)
+	width := max(r.opts.Width-RailWidth(), minContentWidth)
 
 	var b strings.Builder
 	b.WriteString(r.dim.Render("── Files ──") + "\n")
@@ -948,7 +1258,7 @@ func (r *renderer) files(s *model.Session) string {
 	if rest := len(paths) - len(shown); rest > 0 {
 		b.WriteString(r.dim.Render(fmt.Sprintf("%s…  (%s)", sectionIndent, plural(rest, "more file"))) + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // identities tallies which skills, agents and commands ran, through the same
@@ -962,14 +1272,14 @@ func (r *renderer) identities(s *model.Session) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	width := max(r.opts.Width-len(sectionIndent), minContentWidth)
+	width := max(r.opts.Width-RailWidth(), minContentWidth)
 
 	var b strings.Builder
 	b.WriteString(r.dim.Render("── Tools (by identity) ──") + "\n")
 	for _, line := range lines {
 		b.WriteString(sectionIndent + truncate(line, width) + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // dayByDay splits the session's turns and active time across the days it ran on.
@@ -997,7 +1307,7 @@ func (r *renderer) dayByDay(s *model.Session) string {
 		}
 		b.WriteString(line + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // turnNoun is the bare noun plural() would attach to a count, for a column that
@@ -1033,7 +1343,7 @@ func (r *renderer) card(s *model.Session) string {
 	if m.ID == "" {
 		return ""
 	}
-	width := max(r.opts.Width-len(sectionIndent)-cardLabelWidth, minContentWidth)
+	width := max(r.opts.Width-RailWidth()-cardLabelWidth, minContentWidth)
 
 	var b strings.Builder
 	b.WriteString(r.dim.Render("── Session ──") + "\n")
@@ -1049,7 +1359,7 @@ func (r *renderer) card(s *model.Session) string {
 		b.WriteString(sectionIndent + r.dim.Render(fmt.Sprintf("%-*s", cardLabelWidth, label)) + value + "\n")
 	}
 	row("id", m.ID, false)
-	row("title", oneLine(m.Title), false)
+	row("title", OneLine(m.Title), false)
 	// The directory is cut from the left, like every other path here: what names
 	// one repository against another is the tail.
 	row("project", m.Cwd, true)
@@ -1068,7 +1378,7 @@ func (r *renderer) card(s *model.Session) string {
 	// none of them, so a prefix printed here could name two sessions.
 	row("render", "agentry "+m.ID, false)
 	row("resume", "claude --resume "+m.ID, false)
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // spent is one axis's share of what the session's tokens are worth: a model, a
@@ -1163,7 +1473,7 @@ func (r *renderer) cost(s *model.Session) string {
 	if m.CostUSD == nil && total == 0 {
 		return ""
 	}
-	width := max(r.opts.Width-len(sectionIndent)-cardLabelWidth, minContentWidth)
+	width := max(r.opts.Width-RailWidth()-cardLabelWidth, minContentWidth)
 
 	var b strings.Builder
 	b.WriteString(r.dim.Render("── Cost ──") + "\n")
@@ -1199,7 +1509,7 @@ func (r *renderer) cost(s *model.Session) string {
 	if len(unpriced) > 0 {
 		row("unpriced", strings.Join(unpriced, ", ")+r.dim.Render("   no list price held for this model"))
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // truncateLeft cuts s to limit runes from the left, keeping the tail. Paths are
@@ -1248,7 +1558,7 @@ func (r *renderer) summary(s *model.Session) string {
 	for i, t := range s.Turns {
 		tok := t.Usage.Input + t.Usage.Output
 		total += tok
-		rows = append(rows, row{i + 1, tok, t.ToolCount, oneLine(t.Prompt)})
+		rows = append(rows, row{i + 1, tok, t.ToolCount, OneLine(t.Prompt)})
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].tok > rows[j].tok })
 
@@ -1261,13 +1571,20 @@ func (r *renderer) summary(s *model.Session) string {
 		if total > 0 {
 			pct = float64(rw.tok) / float64(total) * 100
 		}
-		b.WriteString(fmt.Sprintf("  %5.1f%%  %8s  %5d  %d. %s\n",
-			pct, spend.Tokens(rw.tok), rw.tools, rw.n, truncate(rw.label, max(r.opts.Width-30, 20))))
+		// The label's budget is measured off the chrome actually written beside it
+		// — the rail the section hangs off, the three figure columns, and the turn
+		// number, which is as wide as the number is. A budget stated as its own
+		// number drifted from those columns and put the row past the terminal,
+		// where it wrapped onto a line carrying none of the section's rail.
+		figures := fmt.Sprintf("%5.1f%%  %8s  %5d  ", pct, spend.Tokens(rw.tok), rw.tools)
+		step := fmt.Sprintf("%d. ", rw.n)
+		label := truncate(rw.label, max(r.opts.Width-RailWidth()-lipgloss.Width(figures)-lipgloss.Width(step), minContentWidth))
+		b.WriteString(sectionIndent + figures + step + label + "\n")
 	}
 	if rest := len(rows) - limit; rest > 0 {
 		b.WriteString(r.dim.Render(fmt.Sprintf("  …  (%s)", plural(rest, "more step"))) + "\n")
 	}
-	return b.String()
+	return r.railHeaded(b.String())
 }
 
 // ── Formatting helpers ──────────────────────────────────────────────────────
@@ -1323,19 +1640,34 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-func oneLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	return strings.TrimSpace(s)
+// OneLine puts text on one line by joining its lines, not by ending at the
+// first. Ending there deleted every line after it with nothing to mark that they
+// went: a session titled by a multi-line prompt listed under its opening words
+// and read as a session about them. Joined, whatever will not fit is cut by the
+// column the caller applies next, and that cut ends in an ellipsis.
+//
+// Runs of whitespace collapse with the line breaks, since a title or a prompt
+// laid out for reading — an indented list, a table's padding — becomes a row of
+// gaps once its lines are joined.
+//
+// Exported because the listing draws the same titles and prompts into columns of
+// its own. How a title reaches one line is one rule on both surfaces, and a
+// second copy of it can only come to differ from the first.
+func OneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
+// truncate cuts s to limit runes, the ellipsis counted among them. Counting it
+// is what makes the limit a width a caller can budget against: spending one more
+// column than it was given puts a row one past the terminal, where it wraps onto
+// a line carrying none of its block's chrome. The listing's own copy and
+// truncateLeft below already count it this way.
 func truncate(s string, limit int) string {
 	r := []rune(s)
 	if len(r) <= limit {
 		return s
 	}
-	return string(r[:limit]) + "…"
+	return string(r[:limit-1]) + "…"
 }
 
 // wrapPlain soft-wraps plain text (no ANSI) to maxWidth runes per line.
