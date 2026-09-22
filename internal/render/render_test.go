@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/model"
 )
 
@@ -426,8 +428,14 @@ func TestMarkdownBareURLEndToEnd(t *testing.T) {
 }
 
 func TestTruncateAndOneLine(t *testing.T) {
-	if got := truncate("abcdef", 3); got != "abc…" {
-		t.Errorf("truncate = %q, want abc…", got)
+	// The ellipsis is counted among the limit's columns. Spending one more than
+	// the caller budgeted put a footer row one column past the terminal, where it
+	// wrapped onto a line carrying none of its section's rail.
+	if got := truncate("abcdef", 3); got != "ab…" {
+		t.Errorf("truncate = %q, want ab…", got)
+	}
+	if got := utf8.RuneCountInString(truncate("abcdef", 3)); got != 3 {
+		t.Errorf("truncate spent %d columns of a 3-column budget", got)
 	}
 	if got := truncate("ab", 3); got != "ab" {
 		t.Errorf("truncate short = %q, want ab", got)
@@ -2321,5 +2329,32 @@ func TestFooterSectionsHangOffTheRail(t *testing.T) {
 	r.initStyles()
 	if got := r.railHeaded(""); got != "" {
 		t.Errorf("an empty section rendered as %q, want nothing", got)
+	}
+}
+
+// TestFooterRowsFitTheTerminal pins that no footer row spends more columns than
+// the terminal has. A row one column over wraps, and the wrapped remainder
+// carries none of the section's rail — so the chrome that says where a section
+// ends stops saying it, on exactly the rows that were too long to read already.
+//
+// Two budgets were wrong at once when the rail went on. truncate spent one
+// column more than the caller gave it, and the summary table stated its label's
+// budget as a number rather than measuring the columns printed beside it.
+func TestFooterRowsFitTheTerminal(t *testing.T) {
+	sess := footerSession()
+	sess.Meta.Files = []string{"/" + strings.Repeat("a-long-directory-name/", 12) + "render.go"}
+	sess.Meta.Tools = []model.ToolStat{{Tool: "Bash", Identity: strings.Repeat("grep-with-a-long-identity ", 8), Count: 3}}
+	sess.Turns[0].Prompt = strings.Repeat("a long prompt that keeps going ", 8)
+
+	for _, width := range []int{60, 80, 100} {
+		r := &renderer{opts: Options{Width: width}}
+		r.initStyles()
+		footer := r.outputs(sess) + r.files(sess) + r.identities(sess) +
+			r.dayByDay(sess) + r.card(sess) + r.cost(sess) + r.summary(sess)
+		for _, line := range strings.Split(strings.TrimRight(footer, "\n"), "\n") {
+			if got := lipgloss.Width(line); got > width {
+				t.Errorf("at width %d a footer row spends %d columns: %q", width, got, line)
+			}
+		}
 	}
 }

@@ -515,7 +515,18 @@ func Rail(lines []string, dim lipgloss.Style) []string {
 
 // RailWidth is the columns Rail's own prefix takes, which a caller sizing its
 // content to a terminal has to subtract before it lays that content out.
-func RailWidth() int { return lipgloss.Width(assistantIndent + railGlyph + " ") }
+//
+// It reports the wider of the two prefixes Rail writes: the closing rule a lone
+// line hangs off is one column wider than the rail its siblings hang off. The
+// caller sizes its rows before it knows how many there will be, so a budget
+// taken from the narrower prefix puts a one-line block past the terminal, where
+// it wraps onto a line carrying no chrome at all.
+func RailWidth() int {
+	return max(
+		lipgloss.Width(assistantIndent+railGlyph+" "),
+		lipgloss.Width(assistantIndent+railClose+" "),
+	)
+}
 
 // ── Turns ────────────────────────────────────────────────────────────────
 
@@ -1534,8 +1545,15 @@ func (r *renderer) summary(s *model.Session) string {
 		if total > 0 {
 			pct = float64(rw.tok) / float64(total) * 100
 		}
-		b.WriteString(fmt.Sprintf("  %5.1f%%  %8s  %5d  %d. %s\n",
-			pct, spend.Tokens(rw.tok), rw.tools, rw.n, truncate(rw.label, max(r.opts.Width-30, 20))))
+		// The label's budget is measured off the chrome actually written beside it
+		// — the rail the section hangs off, the three figure columns, and the turn
+		// number, which is as wide as the number is. A budget stated as its own
+		// number drifted from those columns and put the row past the terminal,
+		// where it wrapped onto a line carrying none of the section's rail.
+		figures := fmt.Sprintf("%5.1f%%  %8s  %5d  ", pct, spend.Tokens(rw.tok), rw.tools)
+		step := fmt.Sprintf("%d. ", rw.n)
+		label := truncate(rw.label, max(r.opts.Width-RailWidth()-lipgloss.Width(figures)-lipgloss.Width(step), minContentWidth))
+		b.WriteString(sectionIndent + figures + step + label + "\n")
 	}
 	if rest := len(rows) - limit; rest > 0 {
 		b.WriteString(r.dim.Render(fmt.Sprintf("  …  (%s)", plural(rest, "more step"))) + "\n")
@@ -1613,12 +1631,17 @@ func OneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// truncate cuts s to limit runes, the ellipsis counted among them. Counting it
+// is what makes the limit a width a caller can budget against: spending one more
+// column than it was given puts a row one past the terminal, where it wraps onto
+// a line carrying none of its block's chrome. The listing's own copy and
+// truncateLeft below already count it this way.
 func truncate(s string, limit int) string {
 	r := []rune(s)
 	if len(r) <= limit {
 		return s
 	}
-	return string(r[:limit]) + "…"
+	return string(r[:limit-1]) + "…"
 }
 
 // wrapPlain soft-wraps plain text (no ANSI) to maxWidth runes per line.
