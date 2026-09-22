@@ -43,7 +43,7 @@ var levels = map[string]render.Channels{
 
 // Candidate sets for nearest(): valid verbs, --level values, --include channels.
 var (
-	verbNames    = []string{"view", "search", "list", "cost", "config"}
+	verbNames    = []string{"view", "search", "list", "cost", "config", "schema"}
 	levelNames   = []string{"minimal", "standard", "detailed", "full"}
 	includeNames = []string{"prompts", "tools", "files", "model", "cost", "outputs", "last-reply", "all"}
 	formatNames  = []string{"json", "jsonl", "text"}
@@ -122,7 +122,11 @@ const defaultFormat = "text"
 // the two cannot disagree. It names no default: pflag prints the flag's own,
 // which is the one a caller actually gets, file or no file.
 func formatHelp() string {
-	return "output format: " + strings.Join(formatNames[:len(formatNames)-1], ", ") + " or " + formatNames[len(formatNames)-1]
+	return "output format: " + strings.Join(formatNames[:len(formatNames)-1], ", ") + " or " +
+		// No backticks: pflag reads the first back-quoted word in a flag's help as
+		// the value placeholder, so "`agentry schema`" rendered as
+		// "--format agentry schema" in the usage line.
+		formatNames[len(formatNames)-1] + " (run: agentry schema, for their shape)"
 }
 
 // parseFrom validates the --from selector, shared by the listing and by the

@@ -26,6 +26,11 @@ var parseTestdata = func() string {
 // directory and returns its session id. It takes the log to use, where
 // fixtureProject fixes one: the delegation log is what puts an Agent
 // instruction in reach, and that part is the whole reason this verb matters.
+//
+// A log with a subagent sidecar beside it brings the sidecar too, under the name
+// the parser derives from the log it is written beside. Without it a fixture's
+// delegated turns load as tool calls with nothing beneath them, and anything
+// about a nested stream reads as absent rather than as untested.
 func searchFixture(t *testing.T, logFile, id string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(parseTestdata, logFile))
@@ -48,6 +53,22 @@ func searchFixture(t *testing.T, logFile, id string) string {
 	}
 	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+	sidecars := filepath.Join(parseTestdata, strings.TrimSuffix(logFile, ".jsonl"), "subagents")
+	if entries, err := os.ReadDir(sidecars); err == nil {
+		into := filepath.Join(dir, id, "subagents")
+		if err := os.MkdirAll(into, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			sidecar, err := os.ReadFile(filepath.Join(sidecars, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(into, entry.Name()), sidecar, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	return id
 }

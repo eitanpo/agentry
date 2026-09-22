@@ -12,6 +12,8 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/eitanpo/agentry/internal/jsonl"
+	"github.com/eitanpo/agentry/internal/model"
+	"github.com/eitanpo/agentry/internal/schema"
 	"github.com/eitanpo/agentry/internal/search"
 )
 
@@ -136,4 +138,22 @@ func HitsJSONL(w io.Writer, hits []search.Hit, session string) error {
 		}
 	}
 	return nil
+}
+
+// Shapes describes what the render path and the search verb write in their
+// machine-readable forms. Named here rather than written down a second time: each
+// entry names the very value an emitter passes, so a field added to one of these
+// types is described without anyone remembering to say so.
+func Shapes() []schema.Shape {
+	return []schema.Shape{
+		schema.Document("view", "agentry view --format json", model.Session{}),
+		schema.Record("view", "meta", model.Meta{}),
+		schema.Record("view", "turn", turnRecord{}),
+		// The stream's event record carries the tool object without its nested
+		// subagent stream, which the emitter clears and which follows as records
+		// of its own. The type permits the key; no line ever holds it.
+		schema.Record("view", "event", eventRecord{}, schema.Omit("tool.subagent")),
+		schema.Document("search", "agentry search --format json", []search.Hit{}),
+		schema.Record("search", "hit", search.Hit{}),
+	}
 }

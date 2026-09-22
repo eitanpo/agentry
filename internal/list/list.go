@@ -22,6 +22,7 @@ import (
 	"github.com/eitanpo/agentry/internal/jsonl"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/render"
+	"github.com/eitanpo/agentry/internal/schema"
 	"github.com/eitanpo/agentry/internal/spend"
 	"github.com/eitanpo/agentry/internal/trail"
 	"github.com/muesli/termenv"
@@ -1215,4 +1216,14 @@ func truncateLeft(s string, limit int) string {
 		return s
 	}
 	return "…" + string(r[len(r)-(limit-1):])
+}
+
+// Shapes describes what a listing writes in its machine-readable forms. Each
+// entry names the value the emitter passes, so the description cannot drift from
+// what a caller actually receives.
+func Shapes() []schema.Shape {
+	return []schema.Shape{
+		schema.Document("list", "agentry list --format json", []model.Summary{}),
+		schema.Record("list", "session", model.Summary{}),
+	}
 }

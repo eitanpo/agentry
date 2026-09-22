@@ -21,6 +21,7 @@ import (
 	"github.com/eitanpo/agentry/internal/jsonl"
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/price"
+	"github.com/eitanpo/agentry/internal/schema"
 	"github.com/eitanpo/agentry/internal/spend"
 	"github.com/muesli/termenv"
 )
@@ -1309,4 +1310,23 @@ func machineScope(o Overview) Scope {
 		}
 	}
 	return Scope{}
+}
+
+// Shapes describes what a roll-up writes in its machine-readable forms. The two
+// header records carry the document-level fields of the report and of the
+// three-scope summary, their rows following as records of their own.
+func Shapes() []schema.Shape {
+	return []schema.Shape{
+		// Named by the invocation that writes each, which differ: bucketing the
+		// window writes the report, and the bare roll-up writes the three scopes.
+		schema.Document("cost", "agentry cost --by month --format json", Report{}),
+		schema.Document("cost", "agentry cost --format json", Overview{}),
+		schema.Record("cost", "report", reportHeader{}),
+		schema.Record("cost", "bucket", Bucket{}),
+		// The total is a bucket like any row, which is what lets a consumer read
+		// the whole-window figure with the same code it reads a row with.
+		schema.Record("cost", "total", Bucket{}),
+		schema.Record("cost", "overview", overviewHeader{}),
+		schema.Record("cost", "scope", Scope{}),
+	}
 }

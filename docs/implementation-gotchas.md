@@ -27,6 +27,13 @@ matches itself by name, so naive recursive expansion infinite-loops (stack overf
 
 ## Rendering and dependencies
 
+**Backticks in a flag's help string become the value placeholder.** pflag's `UnquoteUsage`
+reads the first back-quoted word as the name of the flag's argument, so a help string
+mentioning another command in backticks rendered as `--format agentry schema` in the usage
+line. Write flag help in plain prose; the backtick is reserved there, unlike everywhere else
+in this repo's writing. It surfaces only in rendered `--help` output, so a review of the
+string alone will not catch it.
+
 **Any figure computed by walking `Session.Turns` silently becomes the slice's the
 moment a selector exists.** Adding `--turn` narrowed `Turns` and left the header counting
 turns and tools out of it, so a one-turn render read "1 turn" beside the whole session's

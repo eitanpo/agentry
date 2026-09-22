@@ -48,7 +48,8 @@ func newRootCmd(version string, settings *config.Settings) *cobra.Command {
 			"  agentry search \"a phrase\"    where that phrase sits in a session\n" +
 			"  agentry <uuid> --turn 11     render one turn of it, not the whole log\n" +
 			"  agentry list --since 7d      list sessions from the last 7 days\n" +
-			"  agentry cost --by month      what each month cost",
+			"  agentry cost --by month      what each month cost\n" +
+			"  agentry schema               the shape of the machine-readable output",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// No id lists; a full id renders. renderSession handles the
 			// verb-vs-id did-you-mean for a non-id first token.
@@ -86,7 +87,7 @@ func newRootCmd(version string, settings *config.Settings) *cobra.Command {
 		list:   newListCmd(&noColor),
 		cost:   newCostCmd(&noColor),
 	}
-	root.AddCommand(tree.view, tree.search, tree.list, tree.cost)
+	root.AddCommand(tree.view, tree.search, tree.list, tree.cost, newSchemaCmd())
 	// Read before applying, since applying overwrites the very values `agentry
 	// config` reports as the built-in ones.
 	defaults := builtinDefaults(tree)
