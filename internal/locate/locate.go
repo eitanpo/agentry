@@ -182,7 +182,10 @@ func matchID(paths []string, id string) (string, error) {
 	}
 	switch len(hits) {
 	case 0:
-		return "", ErrNoSession
+		// Named, because the id is not always something the caller typed as one: a
+		// mistyped noun in front of a pattern arrives here as an id, and "session
+		// not found" alone sends them looking for a session instead of at the word.
+		return "", fmt.Errorf("no session id starts with %q: %w", id, ErrNoSession)
 	case 1:
 		return hits[0], nil
 	}

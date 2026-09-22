@@ -418,6 +418,58 @@ func TestSearchHelpNamesTheCaseRuleAndItsOverrides(t *testing.T) {
 	}
 }
 
+// TestSearchReadsAPluralNounAsItsUnit pins the spoken form: "search sessions"
+// and "search turns" report the same units their singulars do.
+//
+// Read as a pattern instead, the plural takes the word after it as a session id,
+// so the run fails over a session nobody named — the failure this pins against,
+// because its message points at the wrong half of the command line and says
+// nothing about the noun the word nearly was.
+func TestSearchReadsAPluralNounAsItsUnit(t *testing.T) {
+	const id = "ba6b3ded-475b-4c3a-96fe-99698a557d14"
+
+	searchFixture(t, "sample.jsonl", id)
+	code, plural, errOut := exec("search", "sessions", "prompt")
+	if code != 0 {
+		t.Fatalf("`search sessions` exits %d, want 0 (stderr %q)", code, errOut)
+	}
+	searchFixture(t, "sample.jsonl", id)
+	_, singular, _ := exec("search", "session", "prompt")
+	if plural != singular {
+		t.Errorf("the plural noun reports differently:\n plural   %q\n singular %q", plural, singular)
+	}
+
+	searchFixture(t, "sample.jsonl", id)
+	code, plural, errOut = exec("search", "turns", "prompt")
+	if code != 0 {
+		t.Fatalf("`search turns` exits %d, want 0 (stderr %q)", code, errOut)
+	}
+	searchFixture(t, "sample.jsonl", id)
+	_, singular, _ = exec("search", "turn", "prompt")
+	if plural != singular {
+		t.Errorf("the plural noun reports differently:\n plural   %q\n singular %q", plural, singular)
+	}
+
+	// The end-of-options form still reaches the word itself, the plural being a
+	// noun now and so needing the same escape the singular needs.
+	searchFixture(t, "sample.jsonl", id)
+	code, _, errOut = exec("search", "--", "sessions")
+	if code != 0 {
+		t.Errorf("`search -- sessions` exits %d, want 0 (stderr %q)", code, errOut)
+	}
+
+	// An id that resolves to nothing names the id, so a caller who typed a word
+	// the parser took for one reads which word it was.
+	searchFixture(t, "sample.jsonl", id)
+	code, _, errOut = exec("search", "prompt", "nosuchsession")
+	if code == 0 {
+		t.Fatalf("a missing session exits 0")
+	}
+	if !strings.Contains(errOut, `"nosuchsession"`) {
+		t.Errorf("the error does not name the id it looked for: %q", errOut)
+	}
+}
+
 // TestSearchNounDispatch pins how the positionals are read. A first positional
 // naming a unit is that unit — the rule agentry already applies a level up,
 // where a first token naming a verb is the verb and not a session id — so the

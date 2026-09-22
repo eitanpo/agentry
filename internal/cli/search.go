@@ -38,8 +38,9 @@ func newSearchCmd(noColor *bool) *cobra.Command {
 			"With no unit, searches the session `view` would render, or the one whose id\n" +
 			"you name. `search turn` reports matching turns across the sessions the\n" +
 			"selectors choose; `search session` reports those sessions and how many of\n" +
-			"their turns matched. A first positional of turn or session is the unit, so\n" +
-			"search for those words with `agentry search -- turn`.\n\n" +
+			"their turns matched. A first positional naming a unit is that unit, in the\n" +
+			"singular or the plural, so search for one of those four words with\n" +
+			"`agentry search -- turn`.\n\n" +
 			"PATTERN is a regular expression. Case comes from the pattern itself: all\n" +
 			"lower case matches any casing, and one upper-case letter makes case matter.\n" +
 			"Write (?i) or (?-i) at its start to override either way, or pass -F to search\n" +
@@ -68,10 +69,21 @@ func newSearchCmd(noColor *bool) *cobra.Command {
 	return cmd
 }
 
-// searchNouns are the units a search can report. A first positional naming one
-// is that noun rather than a pattern — the rule agentry already applies a level
-// up, where a first token naming a verb is the verb and not a session id.
-var searchNouns = []string{"turn", "session"}
+// searchNouns are the units a search can report, keyed by every word that names
+// one and valued by the unit itself. A first positional naming one is that noun
+// rather than a pattern — the rule agentry already applies a level up, where a
+// first token naming a verb is the verb and not a session id.
+//
+// The plural names the same unit: "search sessions" is how the question is
+// spoken, and a caller typing it means the unit. Read as a pattern, it takes the
+// word after it as a session id, so the run fails over a session nobody named
+// and says nothing about the noun it nearly was.
+var searchNouns = map[string]string{
+	"turn":     "turn",
+	"turns":    "turn",
+	"session":  "session",
+	"sessions": "session",
+}
 
 // searchArgs is what the positionals said: which unit to report, the pattern,
 // and the one session to search where the caller named one.
@@ -91,11 +103,11 @@ type searchArgs struct {
 // answer to a question nobody asked.
 func parseSearchArgs(cmd *cobra.Command, args []string) (searchArgs, error) {
 	literalFirst := cmd.ArgsLenAtDash() == 0
-	if !literalFirst && slices.Contains(searchNouns, args[0]) {
+	if noun, named := searchNouns[args[0]]; named && !literalFirst {
 		if len(args) < 2 {
 			return searchArgs{}, usageErr("agentry search %s: no pattern given — write `agentry search %s <pattern>`, or `agentry search -- %s` to search for that word", args[0], args[0], args[0])
 		}
-		out := searchArgs{noun: args[0], pattern: args[1]}
+		out := searchArgs{noun: noun, pattern: args[1]}
 		if len(args) == 3 {
 			out.id = args[2]
 		}
