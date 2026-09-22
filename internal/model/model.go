@@ -471,7 +471,13 @@ type Tool struct {
 	// Denial is why this call was refused rather than run, the log's own
 	// toolDenialKind. Empty for every call that ran, including one that ran and
 	// failed — IsError is true either way, so this is what tells the two apart.
-	Denial   string    `json:"denial,omitempty"`
+	Denial string `json:"denial,omitempty"`
+	// Call is this call's position in its turn, counted in the order a render
+	// prints the turn and a search walks it — depth first, a call before the
+	// stream it spawned. It is the only thing that tells two calls of the same
+	// tool apart: a turn that ran grep four times gave every one of them the same
+	// address, so a search naming one of them named all four.
+	Call     int       `json:"call,omitempty"`
 	Result   string    `json:"result,omitempty"`
 	IsError  bool      `json:"isError,omitempty"`
 	Start    time.Time `json:"start"`

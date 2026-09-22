@@ -58,6 +58,15 @@ type Hit struct {
 	Tool     string `json:"tool,omitempty"`
 	Identity string `json:"identity,omitempty"`
 	Model    string `json:"model,omitempty"`
+	// Call is the position in the turn of the call this hit sits in, as the parsed
+	// model numbers it — the innermost call the locator names, which for a hit in a
+	// delegated stream's own prose is the call that spawned that stream. Zero for a
+	// hit in the turn's prompt or in the main thread's prose, which sit in no call.
+	//
+	// Without it a turn that ran one tool repeatedly gave every one of those calls
+	// the same address, and a reader sent to the second of four had nothing to tell
+	// it from the other three.
+	Call int `json:"call,omitempty"`
 	// Line is 1-based within the matched body, so a hit deep in a long result body
 	// can be told from one at its head. The text render omits it: a body's own
 	// line number locates nothing a reader can navigate to, where the turn does.
@@ -116,22 +125,24 @@ func In(s *model.Session, re *regexp.Regexp) []Hit {
 	for i, t := range s.Turns {
 		turn := i + 1
 		hits = append(hits, linesIn(re, Hit{Turn: turn, Part: PartPrompt}, t.Prompt)...)
-		hits = append(hits, inEvents(re, t.Events, turn, nil)...)
+		hits = append(hits, inEvents(re, t.Events, turn, nil, 0)...)
 	}
 	return hits
 }
 
 // inEvents walks one event stream. delegation is the chain of calls that led
 // here, carried by value into each recursion so sibling streams cannot see each
-// other's path.
-func inEvents(re *regexp.Regexp, events []model.Event, turn int, delegation []string) []Hit {
+// other's path, and call is the call that spawned this stream — zero at the main
+// thread, which sits in no call. A delegated stream's own prose is addressed by
+// that spawning call, there being no nearer one to name.
+func inEvents(re *regexp.Regexp, events []model.Event, turn int, delegation []string, call int) []Hit {
 	var hits []Hit
 	for _, e := range events {
 		switch e.Kind {
 		case model.EventText:
-			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Part: PartText}, e.Text)...)
+			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Call: call, Part: PartText}, e.Text)...)
 		case model.EventThinking:
-			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Part: PartThinking}, e.Text)...)
+			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Call: call, Part: PartThinking}, e.Text)...)
 		case model.EventTool:
 			if e.Tool == nil {
 				continue
@@ -146,7 +157,7 @@ func inEvents(re *regexp.Regexp, events []model.Event, turn int, delegation []st
 // order is the order a render prints them, so a hit list and a rendered session
 // walk the session the same way.
 func inTool(re *regexp.Regexp, t *model.Tool, turn int, delegation []string) []Hit {
-	at := Hit{Turn: turn, Delegation: delegation, Tool: t.Name, Identity: t.Identity, Model: t.Model}
+	at := Hit{Turn: turn, Delegation: delegation, Call: t.Call, Tool: t.Name, Identity: t.Identity, Model: t.Model}
 	var hits []Hit
 	for _, body := range []struct {
 		part Part
@@ -161,7 +172,7 @@ func inTool(re *regexp.Regexp, t *model.Tool, turn int, delegation []string) []H
 		hits = append(hits, linesIn(re, here, body.text)...)
 	}
 	if len(t.Subagent) > 0 {
-		hits = append(hits, inEvents(re, t.Subagent, turn, append(delegation, Label(t.Name, t.Identity, t.Model)))...)
+		hits = append(hits, inEvents(re, t.Subagent, turn, append(delegation, Label(t.Name, t.Identity, t.Model)), t.Call)...)
 	}
 	return hits
 }

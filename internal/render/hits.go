@@ -18,10 +18,11 @@ import (
 	"github.com/eitanpo/agentry/internal/search"
 )
 
-// hitSeparator divides a hit line's three fields. It is the separator the
-// header and the closing card already use, and it cannot occur in a turn
-// number or a part name, so a consumer splitting on it reaches the matched text
-// in one cut however many separators that text holds itself.
+// hitSeparator divides the fields of a turn's row and of a locator. It is the
+// separator the header and the closing card already use, and it cannot occur in
+// a turn number, a call number or a part name, so a consumer splitting on it
+// reaches the last field in one cut however many separators that field holds
+// itself.
 const hitSeparator = " · "
 
 // findingIndent is how far a finding's text sits under its locator. Two columns:
@@ -352,7 +353,17 @@ func hitLocation(h search.Hit) string {
 		where = search.Label(h.Tool, h.Identity, h.Model) + " " + where
 	}
 	parts = append(parts, where)
-	return strings.Join(parts, " › ")
+	located := strings.Join(parts, " › ")
+	// The call's own number leads, because it is the field a reader carries to the
+	// rendered turn: the tool's name and the chain say what the call was, and only
+	// the number says which of the turn's calls it is. A turn that ran one tool
+	// repeatedly gave all of those calls one address without it. It names the
+	// innermost call the rest of the locator reaches, which is the delegating call
+	// where the hit sits in a delegated stream's own prose.
+	if h.Call > 0 {
+		located = fmt.Sprintf("call %d", h.Call) + hitSeparator + located
+	}
+	return located
 }
 
 // highlight emphasizes every match inside one line. With color off it returns

@@ -360,3 +360,38 @@ func TestATurnShowsASampleOfItsLines(t *testing.T) {
 		t.Errorf("turn 1 is named %d times, want once:\n%s", n, out)
 	}
 }
+
+// TestALocatorNamesWhichCall pins that two calls of one tool are told apart. A
+// turn that ran the same command repeatedly gave every one of those calls the
+// same name, the same part and often the same line number, so a finding in the
+// fourth was addressed exactly like a finding in the first and a reader had
+// nothing to pick it out by.
+//
+// The number a locator prints is the number the rendered turn prints beside that
+// call, from the same value, so it is looked up rather than counted to.
+func TestALocatorNamesWhichCall(t *testing.T) {
+	hits := []search.Hit{
+		{Turn: 1, Call: 2, Part: search.PartResult, Tool: "Bash", Identity: "grep", Line: 1, Text: "first grep tally"},
+		{Turn: 1, Call: 5, Part: search.PartResult, Tool: "Bash", Identity: "grep", Line: 1, Text: "fifth grep tally"},
+		// A hit in the turn's own prompt sits in no call, so it carries no number.
+		{Turn: 1, Part: search.PartPrompt, Line: 1, Text: "tally the calls"},
+	}
+	var b strings.Builder
+	if err := Hits(&b, hits, regexp.MustCompile("tally"), false, 0); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	for _, want := range []string{
+		"  call 2 · Bash result:1",
+		"  call 5 · Bash result:1",
+		"  prompt:1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "call 0") {
+		t.Errorf("a hit in no call was numbered anyway:\n%s", out)
+	}
+}

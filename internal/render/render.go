@@ -695,8 +695,16 @@ func (r *renderer) toolLines(t *model.Tool, prefix string, depth int) []string {
 		dur = r.bad.Render("denied: " + t.Denial)
 	}
 
-	head := fmt.Sprintf("%s%s %s%s %s %s",
-		prefix, r.dim.Render("╭─"), style.Render(glyph+" "+t.Name+delegation(t)),
+	// The call's number, which is the field a reader arrives with from a search:
+	// the tool's name says what the call was and only the number says which of the
+	// turn's calls it is. It leads the line so a reader scans one column for it
+	// rather than reading every line to its end.
+	called := ""
+	if t.Call > 0 {
+		called = r.dim.Render(fmt.Sprintf("call %d", t.Call)) + hitSeparator
+	}
+	head := fmt.Sprintf("%s%s %s%s%s %s %s",
+		prefix, r.dim.Render("╭─"), called, style.Render(glyph+" "+t.Name+delegation(t)),
 		r.args.Render("("+argsSummary(t.Args)+")"), status, dur)
 	out := []string{strings.TrimRight(head, " ")}
 	bodyPrefix := prefix + r.dim.Render("│") + " "

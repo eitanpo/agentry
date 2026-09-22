@@ -138,7 +138,9 @@ Each matching turn is one block, headed by the turn number and how many of its l
 three of those lines beneath it and `…  (N more lines)` where it holds more — a turn can match on
 hundreds of lines, and reading them all is reading the turn rather than choosing it. Run
 `agentry view --turn <n>` on the session to read one whole. Each line shown is two rows: a locator
-saying where inside the turn it sits, then the matching text indented beneath it; one row would not fit,
+saying where inside the turn it sits, then the matching text indented beneath it. A locator opens with
+the call's number in the turn — the field that tells two calls of one tool apart — and the rendered turn
+prints that same number beside each call, so `call 7` is a number you look up rather than count to; one row would not fit,
 since 72% of findings run past 80 columns when the two share a line. `--format json` is uncapped and
 ungrouped, carrying every matching line. Results spanning more than one session are grouped under
 a session heading, with the findings hanging off a rail beneath it, and that heading is exactly what

@@ -2358,3 +2358,47 @@ func TestFooterRowsFitTheTerminal(t *testing.T) {
 		}
 	}
 }
+
+// TestActivationLineNamesItsCall pins the number a rendered call carries. It is
+// what a search hands a reader — a locator naming call 7 is useless if the turn
+// it points into numbers nothing — and it is the only field that separates two
+// calls of one tool, whose name, status and duration can all be identical.
+func TestActivationLineNamesItsCall(t *testing.T) {
+	tool := func(call int, args string) model.Event {
+		return model.Event{Kind: model.EventTool, Tool: &model.Tool{
+			Name: "Bash", Identity: "grep", Call: call, Args: args, Result: "nothing",
+		}}
+	}
+	sess := &model.Session{
+		Meta: model.Meta{ID: "aaaa1111", NumTurns: 1},
+		Turns: []model.Turn{{Number: 1, Prompt: "go", ToolCount: 2, Events: []model.Event{
+			tool(1, "grep -rn first ."),
+			tool(2, "grep -rn second ."),
+		}}},
+	}
+	var b strings.Builder
+	if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{Tools: true}}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	for _, want := range []string{
+		"call 1 · ● Bash(grep -rn first .)",
+		"call 2 · ● Bash(grep -rn second .)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+
+	// A call the parser did not number prints no number rather than "call 0",
+	// which would name a call that cannot exist.
+	sess.Turns[0].Events = []model.Event{tool(0, "grep -rn third .")}
+	var unnumbered strings.Builder
+	if err := Session(&unnumbered, sess, Options{Width: 100, Color: false, Channels: Channels{Tools: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(unnumbered.String(), "call 0") {
+		t.Errorf("an unnumbered call printed a number:\n%s", unnumbered.String())
+	}
+}

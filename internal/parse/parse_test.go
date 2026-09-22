@@ -2152,3 +2152,69 @@ func TestTypedCommandOnASystemEntryBecomesItsOwnTurn(t *testing.T) {
 		t.Errorf("the command's turn carries prompt id %q, want the one its report arrived under", id)
 	}
 }
+
+// TestEveryCallCarriesItsPositionInTheTurn pins the numbering both a render and
+// a search read: every call in a turn gets its position in that turn, counted in
+// the order a reader scrolls through them — a call before the stream it spawned.
+//
+// One pass assigns it because two surfaces numbering separately would drift, and
+// the drift is invisible: a search naming the third call while a render numbered
+// a different one sends a reader to the wrong call with both outputs looking
+// correct.
+func TestEveryCallCarriesItsPositionInTheTurn(t *testing.T) {
+	t.Run("depth first, a call before the stream it spawned", func(t *testing.T) {
+		call := func(name string, nested ...model.Event) model.Event {
+			return model.Event{Kind: model.EventTool, Tool: &model.Tool{Name: name, Subagent: nested}}
+		}
+		events := []model.Event{
+			call("Read"),
+			call("Agent",
+				call("Grep"),
+				model.Event{Kind: model.EventText, Text: "not a call"},
+				call("Write"),
+			),
+			call("Bash"),
+		}
+		numberCalls(events)
+
+		got := map[string]int{}
+		var walk func([]model.Event)
+		walk = func(stream []model.Event) {
+			for _, e := range stream {
+				if e.Kind != model.EventTool {
+					continue
+				}
+				got[e.Tool.Name] = e.Tool.Call
+				walk(e.Tool.Subagent)
+			}
+		}
+		walk(events)
+
+		want := map[string]int{"Read": 1, "Agent": 2, "Grep": 3, "Write": 4, "Bash": 5}
+		for name, n := range want {
+			if got[name] != n {
+				t.Errorf("%s is call %d, want %d (all: %v)", name, got[name], n, got)
+			}
+		}
+	})
+
+	t.Run("a parsed session's calls are numbered", func(t *testing.T) {
+		sess, err := Load(filepath.Join("testdata", "typed-fork.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fork := sess.Turns[1].Events[0]
+		if fork.Kind != model.EventTool {
+			t.Fatalf("first event = %+v, want the fork's call", fork)
+		}
+		if fork.Tool.Call != 1 {
+			t.Errorf("the turn's first call is numbered %d, want 1", fork.Tool.Call)
+		}
+		// The call inside the expansion follows the call that spawned it, which is
+		// the order the render prints the two in.
+		nested := fork.Tool.Subagent[0]
+		if nested.Tool.Call != 2 {
+			t.Errorf("the call inside the expansion is numbered %d, want 2", nested.Tool.Call)
+		}
+	})
+}
