@@ -464,7 +464,9 @@ func TestSearchNounDispatch(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
 	}
-	if !strings.Contains(out, id) || !strings.Contains(out, "matched") {
+	// The count reads "matched/total": the fixture's three turns, two of them
+	// holding the word.
+	if !strings.Contains(out, id) || !strings.Contains(out, "2/3t") {
 		t.Errorf("the session row names neither the session nor its count: %q", out)
 	}
 	if strings.Contains(out, "second prompt") {

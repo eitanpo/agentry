@@ -60,12 +60,7 @@ const (
 
 // activity is the time a session is ordered and filtered by: its last entry,
 // falling back to its first when only one timestamp is known.
-func activity(s model.Summary) time.Time {
-	if !s.End.IsZero() {
-		return s.End
-	}
-	return s.Start
-}
+func activity(s model.Summary) time.Time { return Activity(s.Start, s.End) }
 
 // Select orders summaries most-recent first by activity time, drops any outside
 // [since, until] (a zero bound is open), and caps to limit (limit <= 0 = no
@@ -683,12 +678,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	// one needs more than one project and the other exactly one, so the title
 	// never pays for two path columns. A project label is a path suffix and keeps
 	// its tail; a worktree name keeps its head, which is the part someone chose.
-	labels := projectLabels(sums)
-	keepTail := true
-	if labels == nil {
-		labels = worktreeLabels(sums)
-		keepTail = false
-	}
+	labels, keepTail := RowLabels(sums)
 	projW := 0
 	for _, l := range labels {
 		if n := utf8.RuneCountInString(l); n > projW {
@@ -939,13 +929,35 @@ func worktreeName(cwd string) string {
 //
 // Labels are computed over projectRoot, not over the cwd, so several worktrees
 // of one repo share one label and count as one project.
-// ProjectLabels labels each session's working directory with the shortest name
-// that tells its project apart from the others in the set, keyed by cwd, and nil
-// where every session shares one project and a label would say nothing.
+// RowLabels is the label a row draws in its path column, keyed by session cwd:
+// the project where the set spans more than one, the worktree where the set sits
+// inside one project, and none where neither tells the rows apart. The second
+// return says which end of a label survives truncation — a project label is a
+// path suffix and keeps its tail, a worktree name keeps the head somebody chose.
 //
-// Exported so `agentry search`'s session headings name a project exactly as a
-// listing row does: one session labelled two ways reads as two sessions.
-func ProjectLabels(sums []model.Summary) map[string]string { return projectLabels(sums) }
+// Exported, and the only chooser: `agentry search`'s session rows label a
+// session exactly as a listing row does, where one session labelled two ways
+// reads as two sessions. Reading only the project half is what left a search
+// across one repository's worktrees with no label on any row.
+func RowLabels(sums []model.Summary) (map[string]string, bool) {
+	if labels := projectLabels(sums); labels != nil {
+		return labels, true
+	}
+	return worktreeLabels(sums), false
+}
+
+// Activity is the time a row shows and the time the rows are ordered by: the
+// last activity of a session running from start to end, falling back to the
+// start where the log records no later moment. It takes the pair rather than a
+// summary so the one caller holding a parsed session instead of a summary reaches
+// the same rule; exported because printing one time while sorting by another
+// reads as no order at all.
+func Activity(start, end time.Time) time.Time {
+	if !end.IsZero() {
+		return end
+	}
+	return start
+}
 
 func projectLabels(sums []model.Summary) map[string]string {
 	roots := map[string]bool{}

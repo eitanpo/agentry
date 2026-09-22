@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -28,6 +29,14 @@ const hitSeparator = " · "
 // which is why no blank line separates them — a blank line would restate the
 // boundary at a quarter more height again.
 const findingIndent = "  "
+
+// matchGap divides the session row's columns, and whenFormat is the time its
+// first column holds. Two spaces and this layout are the listing's, so a reader
+// moving between the two surfaces reads one row shape.
+const (
+	matchGap   = "  "
+	whenFormat = "2006-01-02 15:04"
+)
 
 // Hits writes one finding per hit as two rows: a locator naming the turn and
 // where inside it the line sits, then the matching line indented beneath. One
@@ -61,13 +70,18 @@ func Findings(w io.Writer, groups []search.Group, re *regexp.Regexp, color bool)
 	r.initStyles()
 	var b strings.Builder
 	heading := len(groups) > 1 || (len(groups) == 1 && groups[0].Match.Session != "")
-	for i, g := range groups {
+	matches := make([]search.Match, 0, len(groups))
+	for _, g := range groups {
+		matches = append(matches, g.Match)
+	}
+	layout := layOutMatches(matches)
+	for i, g := range inDisplayOrder(groups) {
 		indent := ""
 		if heading {
 			if i > 0 {
 				b.WriteString("\n")
 			}
-			b.WriteString(r.matchRow(g.Match))
+			b.WriteString(r.matchRow(g.Match, layout))
 			b.WriteString("\n\n")
 			indent = findingIndent
 		}
@@ -95,34 +109,106 @@ func Matches(w io.Writer, matches []search.Match, color bool) error {
 	}
 	r := &renderer{opts: Options{Color: color}}
 	r.initStyles()
+	layout := layOutMatches(matches)
 	var b strings.Builder
-	for _, m := range matches {
-		b.WriteString(r.matchRow(m))
+	for _, m := range inDisplayOrder(matches) {
+		b.WriteString(r.matchRow(m, layout))
 		b.WriteString("\n")
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
 }
 
-// matchRow is the session row: when it ran, which project, its id, its title,
-// and how many of its turns matched. The fields and their order are the
-// listing's, so a caller who has read a listing finds the id where their eye
-// already looks; the match count is the one field a listing has no place for and
-// the one a caller chooses between sessions on.
-func (r *renderer) matchRow(m search.Match) string {
-	var parts []string
-	if !m.Start.IsZero() {
-		parts = append(parts, r.dim.Render(m.Start.Local().Format("2006-01-02 15:04")))
+// inDisplayOrder reverses a run for printing. Selection hands these over
+// most-recent first, which is how the rows are chosen; printed oldest-to-newest
+// the most recent lands at the bottom, nearest the prompt, which is where the
+// terminal leaves the reader — the ls -ltr / shell-history convention the
+// listing already follows for unpaged output. Selection and display order are
+// separate on purpose: the order does not turn on whether stdout is a terminal,
+// so a piped run reads the same as one on screen.
+func inDisplayOrder[T any](run []T) []T {
+	out := make([]T, len(run))
+	for i, v := range run {
+		out[len(run)-1-i] = v
 	}
-	if m.Project != "" {
-		parts = append(parts, r.tool.Render(m.Project))
+	return out
+}
+
+// matchLayout is the width of each fixed column across a run of session rows.
+// Computed over the whole run before any row is written, because a column is
+// only a column if every row agrees on its width.
+type matchLayout struct{ count, label int }
+
+func layOutMatches(matches []search.Match) matchLayout {
+	var l matchLayout
+	for _, m := range matches {
+		if n := utf8.RuneCountInString(matchCount(m)); n > l.count {
+			l.count = n
+		}
+		if n := utf8.RuneCountInString(m.Project); n > l.label {
+			l.label = n
+		}
 	}
-	parts = append(parts, r.body.Render(m.Session))
-	if m.Title != "" {
-		parts = append(parts, r.body.Render(m.Title))
+	return l
+}
+
+// matchCount is how many of a session's turns matched over how many it holds,
+// in the turns column's own form. Both halves, because the share is what a
+// caller reads: three of four turns matching is a different prospect from three
+// of two hundred, and the bare count cannot tell them apart.
+func matchCount(m search.Match) string {
+	return fmt.Sprintf("%d/%dt", m.Matched, m.Turns)
+}
+
+// flattenTitle puts a title carrying line breaks on one line. It joins rather
+// than ending at the first break: a title is a session's first prompt where
+// nothing better was recorded, and a prompt can run to many lines, so cutting at
+// the break deletes the rest of it with nothing to mark that it went. Joined,
+// the row wraps and the reader keeps the whole of it.
+func flattenTitle(title string) string {
+	return strings.Join(strings.Fields(title), " ")
+}
+
+// padRight is the listing's own padding, by rune count: a label column here is a
+// path or a worktree name, which is what that measure already serves there.
+func padRight(s string, width int) string {
+	if n := width - utf8.RuneCountInString(s); n > 0 {
+		return s + strings.Repeat(" ", n)
 	}
-	parts = append(parts, r.dim.Render(plural(m.Turns, "turn")+" matched"))
-	return strings.Join(parts, hitSeparator)
+	return s
+}
+
+// matchRow is the session row: the session's last activity, how many of its
+// turns matched, its project or worktree, its id, and its title. Every field is
+// a fixed-width column but the title, which comes last and is never cut.
+//
+// The count has to read down a column, being what a caller chooses between
+// sessions on, and it cannot while it sits at the end of a line whose length
+// varies with the title beside it. Keeping the title whole is what puts it last:
+// any column after an uncut title would be ragged instead.
+func (r *renderer) matchRow(m search.Match, l matchLayout) string {
+	var b strings.Builder
+	// A summary always carries a start, so a zero time here is a row that cannot
+	// occur rather than a case to label. It pays for its column in spaces, which
+	// keeps the rest of the row aligned without spelling "unknown" a second way.
+	when := strings.Repeat(" ", len(whenFormat))
+	if !m.Activity.IsZero() {
+		when = m.Activity.Local().Format(whenFormat)
+	}
+	b.WriteString(r.dim.Render(when))
+	b.WriteString(matchGap)
+	b.WriteString(r.body.Render(fmt.Sprintf("%*s", l.count, matchCount(m))))
+	if l.label > 0 {
+		b.WriteString(matchGap)
+		b.WriteString(r.tool.Render(padRight(m.Project, l.label)))
+	}
+	b.WriteString(matchGap)
+	b.WriteString(r.body.Render(m.Session))
+	if title := flattenTitle(m.Title); title != "" {
+		b.WriteString(matchGap)
+		b.WriteString(r.body.Render(title))
+	}
+	return b.String()
 }
 
 // hitLocation names where inside the turn the line sits: the calls delegated
@@ -238,7 +324,7 @@ func MatchesJSON(w io.Writer, matches []search.Match) error {
 func MatchesJSONL(w io.Writer, matches []search.Match) error {
 	enc := jsonl.New(w)
 	for _, m := range matches {
-		if err := enc.Emit("sessionMatch", m.Session, m.Start, m); err != nil {
+		if err := enc.Emit("sessionMatch", m.Session, m.Activity, m); err != nil {
 			return err
 		}
 	}

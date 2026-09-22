@@ -232,8 +232,8 @@ func searchOne(cmd *cobra.Command, spec searchArgs, re *regexp.Regexp, from, for
 		var matches []search.Match
 		if len(hits) > 0 {
 			matches = []search.Match{{
-				Session: sess.Meta.ID, Start: sess.Meta.Start,
-				Title: sess.Meta.Title, Turns: search.TurnsIn(hits),
+				Session: sess.Meta.ID, Activity: list.Activity(sess.Meta.Start, sess.Meta.End),
+				Title: sess.Meta.Title, Matched: search.TurnsIn(hits), Turns: len(sess.Turns),
 			}}
 		}
 		return emitMatches(cmd, matches, format, noColor)
@@ -296,7 +296,7 @@ func searchSessions(cmd *cobra.Command, noun string, re *regexp.Regexp, format s
 	for _, p := range paths {
 		byID[strings.TrimSuffix(filepath.Base(p), ".jsonl")] = p
 	}
-	labels := list.ProjectLabels(selected)
+	labels, _ := list.RowLabels(selected)
 
 	groups := searchEach(selected, byID, labels, re)
 
@@ -379,8 +379,9 @@ func searchEach(selected []model.Summary, byID map[string]string, labels map[str
 				}
 				found[i] = &search.Group{
 					Match: search.Match{
-						Session: sum.ID, Start: sum.Start, Project: labels[sum.Cwd],
-						Title: sum.Title, Turns: search.TurnsIn(hits),
+						Session: sum.ID, Activity: list.Activity(sum.Start, sum.End),
+						Project: labels[sum.Cwd], Title: sum.Title,
+						Matched: search.TurnsIn(hits), Turns: sum.NumTurns,
 					},
 					Hits: hits,
 				}

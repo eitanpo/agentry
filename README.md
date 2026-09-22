@@ -137,7 +137,11 @@ count; an end past it clamps, so `--turn 29-99` means "from 29 to the end".
 Each finding is two rows: a locator, then the matching line indented beneath it. The locator carries the
 turn to go read and where inside that turn the line sits; one row would not fit, since 72% of findings
 run past 80 columns when the two share a line. Results spanning more than one session are grouped under
-a session heading, and that heading is exactly what `search session` prints on its own.
+a session heading, and that heading is exactly what `search session` prints on its own. That row
+carries the session's last activity, how many of its turns matched out of how many it has, its
+project or worktree, its id in full and its title — the listing's own facts, in fixed columns so the
+match count reads down one edge, with the title last and never cut. Rows print oldest-to-newest, so
+the most recent match is the one next to your prompt.
 
 The locator names the calls delegated through to reach the line and then which piece matched —
 `prompt`, `text`, `thinking`, `args`, `instruction` (the brief an `Agent` call handed a subagent) or

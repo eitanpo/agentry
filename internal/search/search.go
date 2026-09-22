@@ -74,11 +74,18 @@ type Hit struct {
 // plus the count of distinct turns that matched, which is the thing a caller
 // chooses between sessions on.
 type Match struct {
-	Session string    `json:"session"`
-	Start   time.Time `json:"start"`
-	Project string    `json:"project,omitempty"`
-	Title   string    `json:"title,omitempty"`
-	Turns   int       `json:"turns"`
+	Session string `json:"session"`
+	// Activity is the one time this row carries: the session's last activity,
+	// which is what a listing row shows and what these rows are ordered by. A
+	// second time would let the column disagree with the order.
+	Activity time.Time `json:"activity"`
+	Project  string    `json:"project,omitempty"`
+	Title    string    `json:"title,omitempty"`
+	// Matched counts the distinct turns holding a finding, and Turns is how many
+	// the session has. Both, because the share is what a caller reads: three of
+	// four turns matching is a different prospect from three of two hundred.
+	Matched int `json:"turnsMatched"`
+	Turns   int `json:"numTurns"`
 }
 
 // Group pairs a session with its findings, for the text render. The machine

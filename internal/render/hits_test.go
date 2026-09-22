@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eitanpo/agentry/internal/search"
 )
@@ -63,15 +64,23 @@ func TestHitsFindingShape(t *testing.T) {
 // carrying the fields a caller chooses between sessions on. A run confined to one
 // session prints no heading at all — the caller already knows which session they
 // searched, and a heading would indent every finding to tell them.
+//
+// It also pins the three properties the row's layout exists for: the rows print
+// oldest-to-newest although selection hands them over newest-first, every field
+// but the title is a column of one width, and a title carrying a line break is
+// joined rather than ended at the break.
 func TestFindingsHeadsEachSessionOnce(t *testing.T) {
+	newer := time.Date(2026, 5, 2, 11, 0, 0, 0, time.Local)
+	older := time.Date(2026, 5, 1, 10, 0, 0, 0, time.Local)
+	// Newest first, the order selection hands over.
 	groups := []search.Group{
 		{
-			Match: search.Match{Session: "aaaa1111", Project: "dotfiles", Title: "first", Turns: 1},
-			Hits:  []search.Hit{{Session: "aaaa1111", Turn: 3, Part: search.PartPrompt, Line: 1, Text: "find every caller"}},
+			Match: search.Match{Session: "bbbb2222", Activity: newer, Project: "agentry", Title: "second\nand a second line", Matched: 2, Turns: 30},
+			Hits:  []search.Hit{{Session: "bbbb2222", Turn: 9, Part: search.PartText, Line: 2, Text: "the tally helper"}},
 		},
 		{
-			Match: search.Match{Session: "bbbb2222", Project: "agentry", Title: "second", Turns: 1},
-			Hits:  []search.Hit{{Session: "bbbb2222", Turn: 9, Part: search.PartText, Line: 2, Text: "the tally helper"}},
+			Match: search.Match{Session: "aaaa1111", Activity: older, Project: "dotfiles", Title: "first", Matched: 1, Turns: 4},
+			Hits:  []search.Hit{{Session: "aaaa1111", Turn: 3, Part: search.PartPrompt, Line: 1, Text: "find every caller"}},
 		},
 	}
 	var b strings.Builder
@@ -79,9 +88,15 @@ func TestFindingsHeadsEachSessionOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := b.String()
+
+	// Exact rows, because every space in them is doing work: the count is
+	// right-aligned to the widest, the label padded to the widest, and the title
+	// last and whole.
+	wantOlder := "2026-05-01 10:00   1/4t  dotfiles  aaaa1111  first"
+	wantNewer := "2026-05-02 11:00  2/30t  agentry   bbbb2222  second and a second line"
 	for _, want := range []string{
-		"aaaa1111 · first · 1 turn matched",
-		"bbbb2222 · second · 1 turn matched",
+		wantOlder,
+		wantNewer,
 		"  turn 3 · prompt:1",
 		"    find every caller",
 	} {
@@ -89,14 +104,35 @@ func TestFindingsHeadsEachSessionOnce(t *testing.T) {
 			t.Errorf("want %q in:\n%s", want, out)
 		}
 	}
+
+	// Oldest first, so the most recent match lands nearest the prompt.
+	if i, j := strings.Index(out, wantOlder), strings.Index(out, wantNewer); i < 0 || j < 0 || i > j {
+		t.Errorf("rows print newest-first: older at %d, newer at %d", i, j)
+	}
+
+	// The id starts at the same column in both rows, which is the whole point of
+	// padding the fields before it: a ragged edge is what a reader cannot scan.
+	if i, j := strings.Index(wantOlder, "aaaa1111"), strings.Index(wantNewer, "bbbb2222"); i != j {
+		t.Errorf("the id column starts at %d in one row and %d in the other", i, j)
+	}
+
 	// The heading is the session row, so `search session` and a `search turn`
-	// heading describe one session one way.
+	// heading describe one session one way — laid out over the same run, since a
+	// column's width is a property of the run and not of one row.
 	var rows strings.Builder
-	if err := Matches(&rows, []search.Match{groups[0].Match}, false); err != nil {
+	if err := Matches(&rows, []search.Match{groups[0].Match, groups[1].Match}, false); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, strings.TrimRight(rows.String(), "\n")) {
-		t.Errorf("the heading and the session row differ:\n heading in %q\n row %q", out, rows.String())
+	for _, row := range strings.Split(strings.TrimRight(rows.String(), "\n"), "\n") {
+		if !strings.Contains(out, row) {
+			t.Errorf("a session row and the heading for it differ:\n row %q\n headings %q", row, out)
+		}
+	}
+	// And `search session` on its own orders them the same way. Asserted against
+	// its own output rather than inferred from the headings: the two write the run
+	// through different loops, and only one of them was reversed at first.
+	if i, j := strings.Index(rows.String(), wantOlder), strings.Index(rows.String(), wantNewer); i < 0 || j < 0 || i > j {
+		t.Errorf("session rows print newest-first: older at %d, newer at %d", i, j)
 	}
 
 	var one strings.Builder
