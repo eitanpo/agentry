@@ -2402,3 +2402,50 @@ func TestActivationLineNamesItsCall(t *testing.T) {
 		t.Errorf("an unnumbered call printed a number:\n%s", unnumbered.String())
 	}
 }
+
+// TestAProseBlockNamesItsNumber pins the marker a rendered prose block carries.
+// It is what a search hands a reader — a locator naming block 7 is useless if the
+// turn it points into numbers nothing — and prose is the one body whose lines a
+// render cannot number, being reflowed to the terminal, so the block is the
+// finest address a reader can be given.
+//
+// The marker sits on a line of its own because prose is markdown: a number
+// prefixed to a heading or a list item is read as part of it.
+func TestAProseBlockNamesItsNumber(t *testing.T) {
+	sess := &model.Session{
+		Meta: model.Meta{ID: "aaaa1111", NumTurns: 1},
+		Turns: []model.Turn{{Number: 1, Prompt: "go", Events: []model.Event{
+			{Kind: model.EventThinking, Text: "first reasoning", Block: 1},
+			{Kind: model.EventText, Text: "## A heading", Block: 2},
+			{Kind: model.EventText, Text: "the reply", Block: 3},
+		}}},
+	}
+	var b strings.Builder
+	if err := Session(&b, sess, Options{Width: 100, Color: false, Channels: Channels{Thinking: true}}); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	for _, want := range []string{"block 1", "block 2", "block 3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+	// On its own line, ahead of the block it names, rather than inside the
+	// markdown it would otherwise be read as part of.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "block 2") && strings.Contains(line, "A heading") {
+			t.Errorf("the marker was written into the block's own first line: %q", line)
+		}
+	}
+
+	// Reasoning takes a marker only where reasoning is shown: a number standing
+	// over nothing is worse than no number.
+	var quiet strings.Builder
+	if err := Session(&quiet, sess, Options{Width: 100, Color: false}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(quiet.String(), "block 1") {
+		t.Errorf("a hidden reasoning block still printed its number:\n%s", quiet.String())
+	}
+}

@@ -444,6 +444,14 @@ type Event struct {
 	Kind EventKind `json:"kind"`
 	Text string    `json:"text,omitempty"` // body for EventText and EventThinking
 	Tool *Tool     `json:"tool,omitempty"` // set for EventTool
+	// Block is a prose event's position among the turn's prose — its reply and
+	// reasoning blocks in one sequence, counted in the order they print. Zero on a
+	// tool event, whose own position is Tool.Call.
+	//
+	// It is what tells two blocks of the same kind apart. A turn can hold fifty
+	// reasoning blocks and each numbers its own lines from one, so a hit reported
+	// at line three named every one of them.
+	Block int `json:"block,omitempty"`
 }
 
 // Tool is a single tool call and its result.

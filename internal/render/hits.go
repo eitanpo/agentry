@@ -513,6 +513,12 @@ func hitLocation(h search.Hit) string {
 	if h.Call > 0 {
 		located = fmt.Sprintf("call %d", h.Call) + hitSeparator + located
 	}
+	// A prose block's number leads for the same reason a call's does, and both can
+	// appear: a hit in a delegated stream's own prose sits in that stream's block
+	// and under the call that spawned it, which are two different things to find.
+	if h.Block > 0 {
+		located = fmt.Sprintf("block %d", h.Block) + hitSeparator + located
+	}
 	return located
 }
 

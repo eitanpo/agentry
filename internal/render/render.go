@@ -637,6 +637,16 @@ func (r *renderer) events(events []model.Event, prefix string, depth int) []stri
 	var out []string
 	avail := r.opts.Width - lipgloss.Width(prefix)
 	for _, e := range events {
+		// A prose block's number, which is the field a reader arrives with from a
+		// search: a turn can hold fifty reasoning blocks and each numbers its own
+		// lines from one, so the block is what says which of them a finding sat in.
+		// It goes on a line of its own — prose is markdown, and a number prefixed
+		// to a heading or a list item would be read as part of it. Reasoning takes
+		// its marker only where reasoning is shown, a number standing over nothing
+		// being worse than none.
+		if e.Block > 0 && (e.Kind == model.EventText || (e.Kind == model.EventThinking && r.opts.Channels.Thinking)) {
+			out = append(out, prefix+r.dim.Render(fmt.Sprintf("block %d", e.Block)))
+		}
 		switch e.Kind {
 		case model.EventText:
 			for _, line := range r.markdown(e.Text, avail) {

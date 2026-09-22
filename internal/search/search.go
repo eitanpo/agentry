@@ -67,6 +67,13 @@ type Hit struct {
 	// the same address, and a reader sent to the second of four had nothing to tell
 	// it from the other three.
 	Call int `json:"call,omitempty"`
+	// Block is the position among the turn's prose of the reply or reasoning block
+	// this hit sits in, as the parsed model numbers it. Zero for a hit in a call's
+	// own body or in the turn's prompt, neither of which is a prose block.
+	//
+	// Without it a turn holding fifty reasoning blocks addressed a hit in any of
+	// them the same way, each block numbering its own lines from one.
+	Block int `json:"block,omitempty"`
 	// Line is 1-based within the matched body, so a hit deep in a long result body
 	// can be told from one at its head. The text render omits it: a body's own
 	// line number locates nothing a reader can navigate to, where the turn does.
@@ -140,9 +147,9 @@ func inEvents(re *regexp.Regexp, events []model.Event, turn int, delegation []st
 	for _, e := range events {
 		switch e.Kind {
 		case model.EventText:
-			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Call: call, Part: PartText}, e.Text)...)
+			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Call: call, Block: e.Block, Part: PartText}, e.Text)...)
 		case model.EventThinking:
-			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Call: call, Part: PartThinking}, e.Text)...)
+			hits = append(hits, linesIn(re, Hit{Turn: turn, Delegation: delegation, Call: call, Block: e.Block, Part: PartThinking}, e.Text)...)
 		case model.EventTool:
 			if e.Tool == nil {
 				continue

@@ -115,7 +115,7 @@ func Load(jsonlPath string) (*model.Session, error) {
 		// The fork leads the turn and the printed reply follows it, the order a
 		// turn that called a tool and then answered already reads in.
 		turn.Events = append(forkEvents(typedPerTurn[i], subs, nameLinks, localCommandOutputs(t.entries)), turn.Events...)
-		numberCalls(turn.Events)
+		numberEvents(turn.Events)
 		tm := turnMetrics(t, subs, nameLinks, forksPerTurn[i], len(typedPerTurn[i]))
 		turn.Usage, turn.ToolCount, turn.ErrorCount, turn.CostUSD = tm.usage, tm.tools, tm.errors, tm.costUSD
 		sess.Turns = append(sess.Turns, turn)
@@ -123,26 +123,35 @@ func Load(jsonlPath string) (*model.Session, error) {
 	return sess, nil
 }
 
-// numberCalls gives every call in a turn its position in that turn, counted in
-// the order a render prints the turn and a search walks it: depth first, a call
-// before the stream it spawned. It runs once the turn's events are final,
-// forks included, because the number has to match the order a reader will scroll
-// through.
+// numberEvents gives everything in a turn a reader can be sent to its position
+// in that turn, counted in the order a render prints the turn and a search walks
+// it: depth first, a call before the stream it spawned. Calls and prose are
+// counted separately, because a locator already says which of the two it names
+// and one sequence over both would make a reader count past the kind they are
+// looking for. It runs once the turn's events are final, forks included, since
+// the number has to match the order a reader will scroll through.
 //
-// One pass assigns it so no two surfaces can disagree. A search that named the
+// One pass assigns both so no two surfaces can disagree. A search that named the
 // third call while a render numbered a different one would send a reader to the
-// wrong call, and nothing on either surface would look wrong.
-func numberCalls(events []model.Event) {
-	n := 0
+// wrong place, and nothing on either surface would look wrong.
+func numberEvents(events []model.Event) {
+	calls, blocks := 0, 0
 	var walk func([]model.Event)
 	walk = func(stream []model.Event) {
-		for _, e := range stream {
-			if e.Kind != model.EventTool || e.Tool == nil {
-				continue
+		for i := range stream {
+			e := &stream[i]
+			switch e.Kind {
+			case model.EventText, model.EventThinking:
+				blocks++
+				e.Block = blocks
+			case model.EventTool:
+				if e.Tool == nil {
+					continue
+				}
+				calls++
+				e.Tool.Call = calls
+				walk(e.Tool.Subagent)
 			}
-			n++
-			e.Tool.Call = n
-			walk(e.Tool.Subagent)
 		}
 	}
 	walk(events)

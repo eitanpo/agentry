@@ -2154,8 +2154,10 @@ func TestTypedCommandOnASystemEntryBecomesItsOwnTurn(t *testing.T) {
 }
 
 // TestEveryCallCarriesItsPositionInTheTurn pins the numbering both a render and
-// a search read: every call in a turn gets its position in that turn, counted in
-// the order a reader scrolls through them — a call before the stream it spawned.
+// a search read: everything in a turn a reader can be sent to gets its position
+// in that turn, counted in the order a reader scrolls through them — a call
+// before the stream it spawned. Calls and prose blocks count separately, a
+// locator already saying which of the two it names.
 //
 // One pass assigns it because two surfaces numbering separately would drift, and
 // the drift is invisible: a search naming the third call while a render numbered
@@ -2168,14 +2170,16 @@ func TestEveryCallCarriesItsPositionInTheTurn(t *testing.T) {
 		}
 		events := []model.Event{
 			call("Read"),
+			model.Event{Kind: model.EventThinking, Text: "first reasoning"},
 			call("Agent",
 				call("Grep"),
-				model.Event{Kind: model.EventText, Text: "not a call"},
+				model.Event{Kind: model.EventText, Text: "prose inside the delegated stream"},
 				call("Write"),
 			),
+			model.Event{Kind: model.EventText, Text: "the reply"},
 			call("Bash"),
 		}
-		numberCalls(events)
+		numberEvents(events)
 
 		got := map[string]int{}
 		var walk func([]model.Event)
@@ -2194,6 +2198,33 @@ func TestEveryCallCarriesItsPositionInTheTurn(t *testing.T) {
 		for name, n := range want {
 			if got[name] != n {
 				t.Errorf("%s is call %d, want %d (all: %v)", name, got[name], n, got)
+			}
+		}
+
+		// Prose runs on its own sequence, and a block inside a delegated stream
+		// takes its place in that sequence: the reader scrolls past it in the
+		// expanded stream before reaching what follows the call.
+		blocks := map[string]int{}
+		var walkProse func([]model.Event)
+		walkProse = func(stream []model.Event) {
+			for _, e := range stream {
+				switch e.Kind {
+				case model.EventText, model.EventThinking:
+					blocks[e.Text] = e.Block
+				case model.EventTool:
+					walkProse(e.Tool.Subagent)
+				}
+			}
+		}
+		walkProse(events)
+		wantBlocks := map[string]int{
+			"first reasoning":                   1,
+			"prose inside the delegated stream": 2,
+			"the reply":                         3,
+		}
+		for text, n := range wantBlocks {
+			if blocks[text] != n {
+				t.Errorf("%q is block %d, want %d (all: %v)", text, blocks[text], n, wantBlocks)
 			}
 		}
 	})
@@ -2215,6 +2246,15 @@ func TestEveryCallCarriesItsPositionInTheTurn(t *testing.T) {
 		nested := fork.Tool.Subagent[0]
 		if nested.Tool.Call != 2 {
 			t.Errorf("the call inside the expansion is numbered %d, want 2", nested.Tool.Call)
+		}
+		// The turn's own reply is its first prose block, the fork's call carrying
+		// none of its own.
+		reply := sess.Turns[1].Events[1]
+		if reply.Kind != model.EventText {
+			t.Fatalf("second event = %+v, want the turn's printed reply", reply)
+		}
+		if reply.Block != 1 {
+			t.Errorf("the turn's only prose block is numbered %d, want 1", reply.Block)
 		}
 	})
 }

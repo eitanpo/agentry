@@ -498,3 +498,36 @@ func TestALongLabelDoesNotStarveTheTitle(t *testing.T) {
 		}
 	}
 }
+
+// TestALocatorNamesWhichProseBlock pins that two reasoning blocks in one turn are
+// told apart. Each block numbers its own lines from one, so a hit reported at
+// line three addressed every block in the turn — and a turn can hold fifty.
+//
+// The number a locator prints is the number the rendered turn prints above that
+// block, from the same value, so it is looked up rather than counted to.
+func TestALocatorNamesWhichProseBlock(t *testing.T) {
+	hits := []search.Hit{
+		{Turn: 1, Block: 2, Part: search.PartThinking, Line: 3, Text: "first tally"},
+		{Turn: 1, Block: 7, Part: search.PartThinking, Line: 3, Text: "seventh tally"},
+		// A call's own body is not a prose block and carries no block number.
+		{Turn: 1, Call: 4, Part: search.PartResult, Tool: "Bash", Line: 3, Text: "a tally in a result"},
+	}
+	var b strings.Builder
+	if err := Hits(&b, hits, regexp.MustCompile("tally"), false, 0); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+
+	for _, want := range []string{
+		"  block 2 · thinking:3",
+		"  block 7 · thinking:3",
+		"  call 4 · Bash result:3",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "block 0") {
+		t.Errorf("a hit in no prose block was numbered anyway:\n%s", out)
+	}
+}
