@@ -1,0 +1,8 @@
+{"type":"system","subtype":"local_command","timestamp":"2026-09-21T10:00:00Z","content":"<command-name>/context</command-name>\n            <command-message>context</command-message>\n            <command-args></command-args>"}
+{"type":"system","subtype":"local_command","timestamp":"2026-09-21T10:00:01Z","content":"<local-command-stdout>Context Usage\n45.5k/1m tokens (5%)</local-command-stdout>"}
+{"type":"user","isMeta":true,"promptId":"p_context","timestamp":"2026-09-21T10:00:02Z","message":{"role":"user","content":"## Context Usage\n\n| Category | Tokens |\n|---|---|\n| Skills | 6.6k |"}}
+{"type":"user","timestamp":"2026-09-21T10:01:00Z","message":{"role":"user","content":"now trim the skills"}}
+{"type":"assistant","requestId":"req_trim","timestamp":"2026-09-21T10:01:02Z","message":{"role":"assistant","model":"claude-opus-4-7","usage":{"input_tokens":3,"output_tokens":40},"content":[{"type":"text","text":"Trimmed."}]}}
+{"type":"system","subtype":"local_command","timestamp":"2026-09-21T10:02:00Z","content":"<command-name>/model</command-name>\n            <command-args></command-args>"}
+{"type":"system","subtype":"local_command","timestamp":"2026-09-21T10:02:01Z","content":"<local-command-stdout>Kept model as Opus 5</local-command-stdout>"}
+{"type":"user","timestamp":"2026-09-21T10:03:00Z","message":{"role":"user","content":"thanks"}}

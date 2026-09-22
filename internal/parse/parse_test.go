@@ -2097,3 +2097,58 @@ func TestLoadNumbersEveryTurn(t *testing.T) {
 		}
 	}
 }
+
+// TestTypedCommandOnASystemEntryBecomesItsOwnTurn pins the second shape a typed
+// command reaches the log in: the line the caller typed recorded on a
+// local_command system entry rather than as their prompt, with some commands then
+// writing their report into the conversation as an entry of Claude Code's own.
+//
+// Read as prompts, both halves land wrong. The command renders nowhere, and its
+// report becomes a turn nobody took — which is how a session came to be listed
+// under the first line of a context report.
+//
+// The fixture carries both kinds: /context, which writes a report, and /model,
+// which writes none and is followed by a prompt somebody typed. The second is
+// what holds the window shut. Claiming "the next user entry" for a command would
+// take that prompt for the command's output and lose the turn.
+func TestTypedCommandOnASystemEntryBecomesItsOwnTurn(t *testing.T) {
+	path := filepath.Join("testdata", "typed-command-entry.jsonl")
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prompts := make([]string, 0, len(sess.Turns))
+	for _, tn := range sess.Turns {
+		prompts = append(prompts, tn.Prompt)
+	}
+	want := []string{"/context", "now trim the skills", "/model", "thanks"}
+	if !slices.Equal(prompts, want) {
+		t.Fatalf("prompts = %q, want %q", prompts, want)
+	}
+
+	texts := eventTexts(sess.Turns[0].Events)
+	if len(texts) != 2 {
+		t.Fatalf("the command's turn holds %d texts, want what it printed and the report it wrote: %q", len(texts), texts)
+	}
+	if !strings.Contains(texts[0], "45.5k/1m tokens") {
+		t.Errorf("first text = %q, want what the command printed to the terminal", texts[0])
+	}
+	if !strings.Contains(texts[1], "| Skills | 6.6k |") {
+		t.Errorf("second text = %q, want the report the command wrote into the conversation", texts[1])
+	}
+
+	if sess.Meta.Title != "/context" {
+		t.Errorf("title = %q, want the command the session opened with", sess.Meta.Title)
+	}
+
+	// The report is the only entry in that turn carrying a prompt id, and a forked
+	// command is charged to its turn through that id, so the turn takes it over.
+	entries, err := loadEntries(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id := splitTurns(entries)[0].promptID; id != "p_context" {
+		t.Errorf("the command's turn carries prompt id %q, want the one its report arrived under", id)
+	}
+}
