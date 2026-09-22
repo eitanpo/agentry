@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"path"
 	"regexp"
@@ -30,7 +31,7 @@ import (
 
 const (
 	fallbackWidth = 100 // used when stdout is not a TTY
-	// toolBodyMaxLines bounds a result body, which is machine output nothing
+	// toolBodyMaxLines bounds a result body of an unselected turn, which is machine output nothing
 	// limits: one file read can run longer than every reply in its turn put
 	// together, so uncapped bodies bury the transcript in the output of the work.
 	// The overflow is named rather than dropped silently, which is what keeps this
@@ -717,6 +718,7 @@ func (r *renderer) toolBody(text, prefix string) []string {
 	width := r.opts.Width - lipgloss.Width(prefix)
 	lines := strings.Split(text, "\n")
 	var out []string
+	limit := r.bodyCap()
 	// The cap counts display lines and the remainder counts source lines, so the
 	// two are tracked apart. Subtracting one from the other reported a negative
 	// remainder on any body whose lines wrapped, which is every long body at a
@@ -724,7 +726,7 @@ func (r *renderer) toolBody(text, prefix string) []string {
 	// lines". PRODUCT.md's Verbosity section owns the rule this restores.
 	whole := 0 // source lines printed entire
 	for _, raw := range lines {
-		room := toolBodyMaxLines - len(out)
+		room := limit - len(out)
 		if room <= 0 {
 			break
 		}
@@ -747,6 +749,20 @@ func (r *renderer) toolBody(text, prefix string) []string {
 		out = append(out, prefix+r.dim.Render(fmt.Sprintf("… %s", plural(len(lines)-whole, "more line"))))
 	}
 	return out
+}
+
+// bodyCap is how many display lines a result body may print. The cap answers a
+// whole session's worth of bodies burying the transcript inside the output of the
+// work; a caller who named one turn has already narrowed, so it lifts there.
+//
+// Without that, a search hit could name a line inside a body that no render would
+// ever show — the flow in PRODUCT.md's User flows section turns on the second
+// command being able to display every hit the first one reported.
+func (r *renderer) bodyCap() int {
+	if r.opts.Selected != nil {
+		return math.MaxInt
+	}
+	return toolBodyMaxLines
 }
 
 // Reply lays out one assistant reply the way a rendered turn lays out its own:

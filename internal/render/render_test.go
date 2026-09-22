@@ -2074,3 +2074,56 @@ func TestTurnRuleCarriesSpend(t *testing.T) {
 		})
 	}
 }
+
+// TestSelectedTurnPrintsBodiesWhole pins the second half of the search-then-read
+// flow: a hit the search reports by its line number inside a result body has to
+// be visible in the render of the turn it names. The cap that keeps a
+// whole-session render scannable would otherwise hide any hit past its tenth
+// line, leaving the caller told the text exists with no way to reach it.
+func TestSelectedTurnPrintsBodiesWhole(t *testing.T) {
+	lines := make([]string, 0, toolBodyMaxLines*3)
+	for i := 0; i < toolBodyMaxLines*3; i++ {
+		lines = append(lines, fmt.Sprintf("row%02d", i))
+	}
+	body := strings.Join(lines, "\n")
+	deep := lines[len(lines)-1]
+
+	sess := &model.Session{
+		Meta: model.Meta{NumTurns: 2},
+		Turns: []model.Turn{
+			{Number: 1, Prompt: "one", Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: body}}}},
+			{Number: 2, Prompt: "two", Events: []model.Event{{Kind: model.EventTool, Tool: &model.Tool{Name: "Read", Result: body}}}},
+		},
+	}
+	render := func(t *testing.T, selected *model.TurnRange) string {
+		t.Helper()
+		var b strings.Builder
+		opts := Options{Width: 120, Color: false, Channels: Channels{Tools: true, ToolResults: true}, Selected: selected}
+		shown := sess
+		if selected != nil {
+			shown = model.Select(sess, *selected)
+		}
+		if err := Session(&b, shown, opts); err != nil {
+			t.Fatal(err)
+		}
+		return b.String()
+	}
+
+	whole := render(t, &model.TurnRange{From: 2, To: 2})
+	if !strings.Contains(whole, deep) {
+		t.Errorf("a selected turn hid the body's last line (%q): %q", deep, whole)
+	}
+	if strings.Contains(whole, "more lines") {
+		t.Errorf("a selected turn still named a remainder: %q", whole)
+	}
+
+	// The cap is what makes a whole-session render scannable, so selecting one
+	// turn must not be the same as turning it off everywhere.
+	capped := render(t, nil)
+	if strings.Contains(capped, deep) {
+		t.Errorf("a whole-session render printed a capped body whole: %q", capped)
+	}
+	if !strings.Contains(capped, fmt.Sprintf("… %d more lines", toolBodyMaxLines*2)) {
+		t.Errorf("a whole-session render stopped naming its remainder: %q", capped)
+	}
+}
