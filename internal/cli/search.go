@@ -29,9 +29,10 @@ func newSearchCmd(noColor *bool) *cobra.Command {
 		Use:   "search <pattern> [session-id]",
 		Short: "find where inside a session a pattern appears",
 		Long: "Find where inside one session a pattern appears.\n\n" +
-			"PATTERN is a regular expression and is matched without regard to case.\n" +
-			"Write (?-i) at its start to make case matter, or pass -F to search for the\n" +
-			"pattern as text rather than as an expression.\n\n" +
+			"PATTERN is a regular expression. Case comes from the pattern itself: all\n" +
+			"lower case matches any casing, and one upper-case letter makes case matter.\n" +
+			"Write (?i) or (?-i) at its start to override either way, or pass -F to search\n" +
+			"for the pattern as text rather than as an expression.\n\n" +
 			"Patterns are compiled by Go's regexp package, whose syntax is RE2. Look-around\n" +
 			"((?=…), (?<=…)) and backreferences (\\1) are not part of it and are reported as a\n" +
 			"parse error; no flag here makes them available.",

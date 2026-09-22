@@ -127,17 +127,54 @@ func TestSearchMatchingNothingExitsZero(t *testing.T) {
 	}
 }
 
-// TestSearchIsCaseInsensitive pins the pattern semantics shared with the
-// listing's --reply-matches, both compiled by one function so a pattern typed at
-// either means one thing.
-func TestSearchIsCaseInsensitive(t *testing.T) {
-	searchFixture(t, "sample.jsonl", "ba6b3ded-475b-4c3a-96fe-99698a557d14")
-	if _, out, _ := exec("search", "SECOND PROMPT"); !strings.Contains(out, "second prompt") {
-		t.Errorf("an upper-case pattern missed a lower-case line: %q", out)
+// TestSearchReadsCaseFromThePattern pins the case rule, which the listing's
+// --reply-matches shares through the same compiler so a pattern typed at either
+// means one thing. Four readings, because the rule is only useful if a caller can
+// predict all four from what they typed.
+func TestSearchReadsCaseFromThePattern(t *testing.T) {
+	// A log carrying mixed-case text, which the all-lower-case fixture cannot
+	// pin: on it an insensitive match and a sensitive one look the same.
+	const (
+		log = "stitch.jsonl"
+		id  = "7c1f9a02-3d4e-4b55-8a61-0c2d9e5f4a13"
+	)
+
+	searchFixture(t, log, id)
+	if _, out, _ := exec("search", "launching skill"); !strings.Contains(out, "Launching skill") {
+		t.Errorf("an all-lower-case pattern missed a capitalised line: %q", out)
 	}
+
+	searchFixture(t, log, id)
+	if _, out, _ := exec("search", "Launching skill"); !strings.Contains(out, "Launching skill") {
+		t.Errorf("a pattern matching the text's own casing found nothing: %q", out)
+	}
+
+	searchFixture(t, log, id)
+	if _, out, _ := exec("search", "LAUNCHING SKILL"); out != "" {
+		t.Errorf("an upper-case pattern still ignored case: %q", out)
+	}
+
+	// Both inline overrides, since the rule now cuts both ways: a capital no
+	// longer implies sensitive if the caller says otherwise.
+	searchFixture(t, log, id)
+	if _, out, _ := exec("search", "(?i)LAUNCHING SKILL"); !strings.Contains(out, "Launching skill") {
+		t.Errorf("(?i) did not override the capital: %q", out)
+	}
+	searchFixture(t, log, id)
+	if _, out, _ := exec("search", "(?-i)launching skill"); out != "" {
+		t.Errorf("(?-i) did not override the all-lower-case reading: %q", out)
+	}
+
+	// A pattern with no literal character is matched as written. Pinned against
+	// the all-lower-case log, where folding case would turn a class that selects
+	// capitals into one that matches every letter on every line.
 	searchFixture(t, "sample.jsonl", "ba6b3ded-475b-4c3a-96fe-99698a557d14")
-	if _, out, _ := exec("search", "(?-i)SECOND PROMPT"); out != "" {
-		t.Errorf("(?-i) did not restore case sensitivity: %q", out)
+	if _, out, _ := exec("search", "[[:upper:]]"); out != "" {
+		t.Errorf("an upper-case class was folded and matched lower-case text: %q", out)
+	}
+	searchFixture(t, log, id)
+	if _, out, _ := exec("search", "[[:upper:]]"); out == "" {
+		t.Error("an upper-case class found no capital in a log that has them")
 	}
 }
 
@@ -274,9 +311,15 @@ func TestSearchLiteralPatternReadsTheTextItWasGiven(t *testing.T) {
 		t.Errorf("-F did not find text that is really there: %q", out)
 	}
 
+	// -F chooses how the pattern is read, not how it is compared, so the case rule
+	// reads the text the caller typed: all lower case still matches any casing.
 	searchFixture(t, "sample.jsonl", id)
-	if _, out, _ = exec("search", "-F", "LS -LA"); !strings.Contains(out, "ls -la") {
-		t.Errorf("-F started caring about case: %q", out)
+	if _, out, _ = exec("search", "-F", "ls -LA"); out != "" {
+		t.Errorf("-F ignored a capital in the pattern: %q", out)
+	}
+	searchFixture(t, "sample.jsonl", id)
+	if _, out, _ = exec("search", "-F", "ls -la"); !strings.Contains(out, "ls -la") {
+		t.Errorf("-F stopped matching its own text: %q", out)
 	}
 
 	// The errand the flag exists for: punctuation that is not a pattern at all.
@@ -356,11 +399,11 @@ func TestListFixedStringsNeedsAPatternToRead(t *testing.T) {
 	}
 }
 
-// TestSearchHelpNamesTheCaseDefaultAndItsEscape pins the sentence the flag help
-// owes a caller. Matching insensitively is not what someone arriving from grep
-// expects, and a default whose escape is written only in the spec is one they
-// cannot get out of from the terminal they are in.
-func TestSearchHelpNamesTheCaseDefaultAndItsEscape(t *testing.T) {
+// TestSearchHelpNamesTheCaseRuleAndItsOverrides pins the sentences the help owes
+// a caller. A case rule read off the pattern is predictable only once they know
+// it is being read, and a rule written down in the spec alone is not in the
+// terminal they are typing in.
+func TestSearchHelpNamesTheCaseRuleAndItsOverrides(t *testing.T) {
 	code, out, errOut := exec("search", "--help")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
@@ -368,7 +411,7 @@ func TestSearchHelpNamesTheCaseDefaultAndItsEscape(t *testing.T) {
 	// The engine is named because two constructs a caller reaches for are not in
 	// it, and no flag here can supply them: found by tripping over it, that reads
 	// as a defect in the search rather than a property of the engine.
-	for _, want := range []string{"without regard to case", "(?-i)", "-F", "RE2", "Look-around", "backreferences"} {
+	for _, want := range []string{"all", "lower case matches any casing", "(?i)", "(?-i)", "-F", "RE2", "Look-around", "backreferences"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the help does not mention %q: %q", want, out)
 		}

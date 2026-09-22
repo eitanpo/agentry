@@ -133,7 +133,7 @@ var usageFilters = []struct {
 	{"used", "used this as a skill, agent, or command", func(c *list.Criteria, v string, _ bool) error { c.Any = v; return nil }},
 	{"opened-pr", "opened a matching pull request, by repository, number, or url", func(c *list.Criteria, v string, _ bool) error { c.PR = v; return nil }},
 	{"published-artifact", "published a matching artifact, by title, url, or local path", func(c *list.Criteria, v string, _ bool) error { c.Artifact = v; return nil }},
-	{"reply-matches", "wrote a reply matching this pattern (case-insensitive regexp; -F reads it as text)", func(c *list.Criteria, v string, literal bool) error {
+	{"reply-matches", "wrote a reply matching this pattern (regexp, smart case; -F reads it as text)", func(c *list.Criteria, v string, literal bool) error {
 		if v == "" {
 			return nil // unset flag: no constraint, and "" would match every reply
 		}

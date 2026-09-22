@@ -1198,9 +1198,14 @@ func TestReplyMatchesFlag(t *testing.T) {
 	if n := count(t, "--reply-matches", "let me think"); n != 0 {
 		t.Errorf("--reply-matches matched a thinking block in %d sessions, want 0", n)
 	}
-	// Case-insensitive, like the rest of the filter family.
-	if n := count(t, "--reply-matches", "HERE IS AN ANSWER"); n != 1 {
-		t.Errorf("--reply-matches is case-sensitive: matched %d sessions, want 1", n)
+	// Case comes from the pattern: all lower case matches any casing, and a
+	// capital asks for that casing. The compiler is shared with `agentry search`,
+	// whose own test pins all four readings.
+	if n := count(t, "--reply-matches", "here is an answer"); n != 1 {
+		t.Errorf("--reply-matches on an all-lower-case pattern matched %d sessions, want 1", n)
+	}
+	if n := count(t, "--reply-matches", "HERE IS AN ANSWER"); n != 0 {
+		t.Errorf("--reply-matches ignored a pattern's capitals: matched %d sessions, want 0", n)
 	}
 	// The negation drops exactly what the positive kept, and keeps what it missed.
 	if n := count(t, "--not-reply-matches", "here is an answer"); n != 0 {
