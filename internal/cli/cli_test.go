@@ -519,12 +519,20 @@ func TestRenderResolvesNestedID(t *testing.T) {
 		}
 	})
 
-	t.Run("an id outside the subtree is still not found", func(t *testing.T) {
-		// The widening stops where the listing's does. An unrelated project's
-		// session was never listed here, so resolving it would be a surprise, not
-		// a convenience.
+	t.Run("an id outside the subtree resolves too", func(t *testing.T) {
+		// `list --all-projects` prints this id, and a row ending in a handle the
+		// render refuses is the defect this widening closes. It is also the only
+		// step that reaches a session whose recorded directory has been deleted.
 		nestedFixture(t)
-		code, _, _ := exec(outsideID, "--format", "json")
+		code, _, errOut := exec(outsideID, "--format", "json")
+		if code != 0 {
+			t.Errorf("exit = %d, want 0; stderr %q", code, errOut)
+		}
+	})
+
+	t.Run("an id in no project at all is still not found", func(t *testing.T) {
+		nestedFixture(t)
+		code, _, _ := exec("deadbeef-0000-0000-0000-000000000000", "--format", "json")
 		if code != exNoInput {
 			t.Errorf("exit = %d, want %d (exNoInput)", code, exNoInput)
 		}
