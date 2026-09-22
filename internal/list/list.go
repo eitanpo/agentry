@@ -24,6 +24,7 @@ import (
 	"github.com/eitanpo/agentry/internal/render"
 	"github.com/eitanpo/agentry/internal/schema"
 	"github.com/eitanpo/agentry/internal/spend"
+	"github.com/eitanpo/agentry/internal/theme"
 	"github.com/eitanpo/agentry/internal/trail"
 	"github.com/muesli/termenv"
 )
@@ -644,8 +645,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	if !opts.Color {
 		lipgloss.SetColorProfile(termenv.Ascii) // strips ANSI from styles
 	}
-	meta := lipgloss.NewStyle().Foreground(lipgloss.Color("250")) // time/duration/id: light gray, legible
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))    // turns: secondary
+	meta, dim := theme.Meta(), theme.Dim()
 
 	width := opts.Width
 	if width <= 0 {
@@ -754,7 +754,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 			from,
 			proj,
 			pad(title, titleW),
-			renderID(s.ID, uniqueW, meta, dim))
+			render.SessionID(s.ID, uniqueW))
 		// The block's lines are collected before any is written, because how many
 		// there are decides whether the closing rule carries the only one or stands
 		// on a line of its own.
@@ -1090,45 +1090,16 @@ func sharedRun(group []string, keepTail bool) int {
 	return longest
 }
 
-// idFloor is the shortest id a listing prints. The floor is not about today's
-// collisions but about tomorrow's: a listing of three rows would otherwise
-// print 1-character ids that stop resolving as the machine fills up, since an
-// id is copied out of one listing and passed back later.
-const idFloor = 8
-
-// idWidth is the shortest prefix length that tells these sessions apart, floored
-// at idFloor and never longer than the ids themselves. This is git's rule for
-// abbreviated object names, computed over the rows in hand.
-//
-// The check is a pairwise scan over one listing — small by construction, 10
-// rows by default — so the trie that makes shortest-unique-prefix O(n·L)
-// instead of O(n²·L) would buy nothing here beyond code to read.
+// idWidth is the shortest prefix length that tells these sessions apart, read
+// off the one owner of that rule so a row here and a search row emphasize the
+// same characters. It stays as a named step because what a listing holds is
+// summaries and what the rule needs is ids.
 func idWidth(sums []model.Summary) int {
-	longest := 0
+	ids := make([]string, 0, len(sums))
 	for _, s := range sums {
-		if n := len(s.ID); n > longest {
-			longest = n
-		}
+		ids = append(ids, s.ID)
 	}
-	if longest <= idFloor {
-		return longest // every id is already shorter than the floor
-	}
-	for n := idFloor; n < longest; n++ {
-		seen := make(map[string]bool, len(sums))
-		clash := false
-		for _, s := range sums {
-			p := abbrevID(s.ID, n)
-			if seen[p] {
-				clash = true
-				break
-			}
-			seen[p] = true
-		}
-		if !clash {
-			return n
-		}
-	}
-	return longest
+	return render.UniqueIDPrefix(ids)
 }
 
 // idColumnW is the width the id column takes, every id being printed whole.
@@ -1140,27 +1111,6 @@ func idColumnW(sums []model.Summary) int {
 		}
 	}
 	return w
-}
-
-// renderID draws the id whole, the prefix that tells these rows apart in the id's
-// own color and the rest of it a shade down. Weight rather than presence is what
-// separates the two jobs the value does: the prefix is what a reader scans the
-// column by and hands back to agentry, and the whole string is what `claude
-// --resume` requires. A caller with color off gets the same characters, since
-// dropping half of a value a reader copies would be the worse degradation.
-func renderID(id string, uniqueW int, bright, faint lipgloss.Style) string {
-	if len(id) <= uniqueW {
-		return bright.Render(id)
-	}
-	return bright.Render(id[:uniqueW]) + faint.Render(id[uniqueW:])
-}
-
-// abbrevID cuts an id to n characters, or returns it whole when it is shorter.
-func abbrevID(id string, n int) string {
-	if len(id) <= n {
-		return id
-	}
-	return id[:n]
 }
 
 // pad right-fills s with spaces to width display columns (rune count). s is

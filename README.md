@@ -147,7 +147,8 @@ a session heading, with the findings hanging off a rail beneath it, and that hea
 `search session` prints on its own. That row
 carries the session's last activity, how many of its turns matched out of how many it has, its
 project or worktree, its id in full and its title — the listing's own facts, in fixed columns so the
-match count reads down one edge, with the title last and never cut. Rows print oldest-to-newest, so
+match count reads down one edge, with the title last and never cut. It is drawn in the listing's own
+colors too, the id's unique prefix emphasized by the same rule, so the two surfaces read as one row. Rows print oldest-to-newest, so
 the most recent match is the one next to your prompt.
 
 The locator names the calls delegated through to reach the line and then which piece matched —

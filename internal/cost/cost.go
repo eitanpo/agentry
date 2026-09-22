@@ -23,6 +23,7 @@ import (
 	"github.com/eitanpo/agentry/internal/price"
 	"github.com/eitanpo/agentry/internal/schema"
 	"github.com/eitanpo/agentry/internal/spend"
+	"github.com/eitanpo/agentry/internal/theme"
 	"github.com/muesli/termenv"
 )
 
@@ -690,25 +691,18 @@ func bar(v, max float64, w int) string {
 	return out
 }
 
-// barTiers shade a bar by the share it draws, largest first. The shade repeats
-// what the bar's length and the figure beside it already say — no row is
-// distinguished by its color alone, so the table reads the same under NO_COLOR,
-// through a pipe, and to a reader who cannot separate the hues.
-var barTiers = []struct {
-	atLeast float64
-	color   lipgloss.AdaptiveColor
-}{
-	{0.80, lipgloss.AdaptiveColor{Light: "160", Dark: "203"}},
-	{0.50, lipgloss.AdaptiveColor{Light: "166", Dark: "215"}},
-	{0.25, lipgloss.AdaptiveColor{Light: "136", Dark: "179"}},
-	{0.10, lipgloss.AdaptiveColor{Light: "64", Dark: "108"}},
-	{0.00, lipgloss.AdaptiveColor{Light: "66", Dark: "109"}},
-}
+// barTiers cut a bar's shade by the share it draws, largest first. Which share
+// earns which band is this table's policy; how loud a band is drawn belongs to
+// the theme, which the rank indexes. The shade repeats what the bar's length and
+// the figure beside it already say — no row is distinguished by its color alone,
+// so the table reads the same under NO_COLOR, through a pipe, and to a reader
+// who cannot separate the hues.
+var barTiers = []float64{0.80, 0.50, 0.25, 0.10, 0.00}
 
 func barStyle(frac float64) lipgloss.Style {
-	for _, t := range barTiers {
-		if frac >= t.atLeast {
-			return lipgloss.NewStyle().Foreground(t.color)
+	for rank, atLeast := range barTiers {
+		if frac >= atLeast {
+			return theme.Magnitude(rank)
 		}
 	}
 	return lipgloss.NewStyle()
@@ -720,8 +714,8 @@ func Render(w io.Writer, r Report, opts Options) error {
 	if !opts.Color {
 		lipgloss.SetColorProfile(termenv.Ascii)
 	}
-	head := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	note := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	head := theme.Meta()
+	note := theme.Dim()
 
 	// One condition covers both reasons the three columns are dropped: an axis a
 	// turn cannot be attributed to leaves the total at zero, and so does a corpus
@@ -1194,8 +1188,8 @@ func RenderOverview(w io.Writer, o Overview, opts Options) error {
 	if !opts.Color {
 		lipgloss.SetColorProfile(termenv.Ascii)
 	}
-	head := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	note := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	head := theme.Meta()
+	note := theme.Dim()
 
 	nameW := 0
 	for _, s := range o.Scopes {
@@ -1244,7 +1238,7 @@ func RenderOverview(w io.Writer, o Overview, opts Options) error {
 			indent := nameW + gap
 			if line, peak := sparkline(costsOf(o.daily), sparkWidth(opts.Width, indent)); line != "" {
 				out.WriteString(strings.Repeat(" ", indent) +
-					lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "31", Dark: "80"}).Render(line) +
+					theme.Plot().Render(line) +
 					note.Render(fmt.Sprintf("  per day, peak %s", spend.USD(peak))) + "\n")
 			}
 		case ChartCalendar:

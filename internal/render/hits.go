@@ -16,6 +16,7 @@ import (
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/schema"
 	"github.com/eitanpo/agentry/internal/search"
+	"github.com/eitanpo/agentry/internal/theme"
 )
 
 // hitSeparator divides the fields of a turn's row and of a locator. It is the
@@ -163,13 +164,16 @@ func inDisplayOrder[T any](run []T) []T {
 	return out
 }
 
-// matchLayout is the width of each fixed column across a run of session rows.
-// Computed over the whole run before any row is written, because a column is
-// only a column if every row agrees on its width.
-type matchLayout struct{ count, label int }
+// matchLayout is the width of each fixed column across a run of session rows,
+// plus how much of an id tells these rows apart. Computed over the whole run
+// before any row is written, because a column is only a column if every row
+// agrees on its width — and because the significant half of an id is a property
+// of the set of ids, not of any one of them.
+type matchLayout struct{ count, label, unique int }
 
 func layOutMatches(matches []search.Match) matchLayout {
 	var l matchLayout
+	ids := make([]string, 0, len(matches))
 	for _, m := range matches {
 		if n := utf8.RuneCountInString(matchCount(m)); n > l.count {
 			l.count = n
@@ -177,8 +181,68 @@ func layOutMatches(matches []search.Match) matchLayout {
 		if n := utf8.RuneCountInString(m.Project); n > l.label {
 			l.label = n
 		}
+		ids = append(ids, m.Session)
 	}
+	l.unique = UniqueIDPrefix(ids)
 	return l
+}
+
+// IDFloor is the shortest id prefix any surface emphasizes. The floor is not
+// about today's collisions but about tomorrow's: three rows would otherwise
+// emphasize 1-character prefixes that stop resolving as the machine fills up,
+// and an id is copied off one listing and passed back later.
+const IDFloor = 8
+
+// UniqueIDPrefix is how much of an id a reader has to type for it to name one of
+// these rows and no other — the shortest length at which no two collide, floored
+// at IDFloor. A caller passes every id it is about to print, because the answer
+// is a property of the set and not of any one id.
+func UniqueIDPrefix(ids []string) int {
+	longest := 0
+	for _, id := range ids {
+		if n := len(id); n > longest {
+			longest = n
+		}
+	}
+	if longest <= IDFloor {
+		return longest // every id is already shorter than the floor
+	}
+	for n := IDFloor; n < longest; n++ {
+		seen := make(map[string]bool, len(ids))
+		clash := false
+		for _, id := range ids {
+			p := id
+			if len(p) > n {
+				p = p[:n]
+			}
+			if seen[p] {
+				clash = true
+				break
+			}
+			seen[p] = true
+		}
+		if !clash {
+			return n
+		}
+	}
+	return longest
+}
+
+// SessionID draws an id whole with its significant half emphasized. Weight
+// rather than presence is what separates the two jobs the value does: the prefix
+// is what a reader scans the column by and hands back to agentry, and the whole
+// string is what `claude --resume` requires, which is why both halves print. A
+// caller with color off gets the same characters, since dropping half of a value
+// a reader copies would be the worse degradation.
+//
+// One owner, so the listing and a search row emphasize the same characters. A
+// search row drew all thirty-six the same and silently dropped the only thing on
+// it that said how much to type.
+func SessionID(id string, unique int) string {
+	if len(id) <= unique {
+		return theme.Meta().Render(id)
+	}
+	return theme.Meta().Render(id[:unique]) + theme.Dim().Render(id[unique:])
 }
 
 // linesPerTurn bounds how many of a turn's matching lines print. Three, because
@@ -257,18 +321,27 @@ func (r *renderer) matchRow(m search.Match, l matchLayout) string {
 	if !m.Activity.IsZero() {
 		when = m.Activity.Local().Format(whenFormat)
 	}
-	b.WriteString(r.dim.Render(when))
+	// Every field takes the role the listing draws that same field in. The two
+	// rows carry the same facts in the same columns, so a reader moving between
+	// them should not have to learn a second colour for each one — and this row
+	// had a different one for all five: a dimmer time, a brighter count, a
+	// tool-call yellow for the project, and one flat shade over the whole id where
+	// the listing emphasizes the half a reader types.
+	b.WriteString(r.meta.Render(when))
 	b.WriteString(matchGap)
-	b.WriteString(r.body.Render(fmt.Sprintf("%*s", l.count, matchCount(m))))
+	b.WriteString(r.dim.Render(fmt.Sprintf("%*s", l.count, matchCount(m))))
 	if l.label > 0 {
 		b.WriteString(matchGap)
-		b.WriteString(r.tool.Render(padRight(m.Project, l.label)))
+		b.WriteString(r.dim.Render(padRight(m.Project, l.label)))
 	}
 	b.WriteString(matchGap)
-	b.WriteString(r.body.Render(m.Session))
+	b.WriteString(SessionID(m.Session, l.unique))
+	// The title takes the terminal's own foreground, as the listing's does. A
+	// fixed near-white is the brightest thing on a dark background and close to
+	// invisible on a light one, and the title is the field the row is read by.
 	if title := OneLine(m.Title); title != "" {
 		b.WriteString(matchGap)
-		b.WriteString(r.body.Render(title))
+		b.WriteString(r.plain.Render(title))
 	}
 	return b.String()
 }
@@ -386,7 +459,7 @@ func (r *renderer) highlight(line string, re *regexp.Regexp) string {
 			continue
 		}
 		b.WriteString(r.body.Render(line[at:s[0]]))
-		b.WriteString(r.user.Render(line[s[0]:s[1]]))
+		b.WriteString(r.match.Render(line[s[0]:s[1]]))
 		at = s[1]
 	}
 	b.WriteString(r.body.Render(line[at:]))

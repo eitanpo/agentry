@@ -1636,7 +1636,7 @@ func TestIDWidth(t *testing.T) {
 			// decides, because the id is copied out and passed back later.
 			name: "distinct ids take the floor",
 			sums: mk("aaaaaaaaaaaa", "bbbbbbbbbbbb"),
-			want: idFloor,
+			want: render.IDFloor,
 		},
 		{
 			// The case the floor cannot answer: equal through character 8.
@@ -1652,7 +1652,7 @@ func TestIDWidth(t *testing.T) {
 		{
 			name: "one row still takes the floor",
 			sums: mk("aaaaaaaaaaaa"),
-			want: idFloor,
+			want: render.IDFloor,
 		},
 	}
 	for _, tt := range tests {
@@ -1701,8 +1701,8 @@ func TestRenderWholeIDWithPrefixEmphasized(t *testing.T) {
 	if strings.Contains(out, id) {
 		t.Errorf("the id must be drawn as two styled runs, not one: %q", out)
 	}
-	if !strings.Contains(out, id[:idFloor]) || !strings.Contains(out, id[idFloor:]) {
-		t.Errorf("both halves must survive the split at %d: %q", idFloor, out)
+	if !strings.Contains(out, id[:render.IDFloor]) || !strings.Contains(out, id[render.IDFloor:]) {
+		t.Errorf("both halves must survive the split at %d: %q", render.IDFloor, out)
 	}
 }
 

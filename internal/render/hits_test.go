@@ -8,7 +8,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/search"
+	"github.com/eitanpo/agentry/internal/theme"
+	"github.com/muesli/termenv"
 )
 
 func hitFixture() []search.Hit {
@@ -393,5 +396,59 @@ func TestALocatorNamesWhichCall(t *testing.T) {
 	}
 	if strings.Contains(out, "call 0") {
 		t.Errorf("a hit in no call was numbered anyway:\n%s", out)
+	}
+}
+
+// TestASearchRowIsDrawnLikeAListingRow pins that the two surfaces draw the same
+// fact the same way. The rows already carried the same facts in the same columns
+// with the same gaps, and every one of the five was styled differently — a
+// dimmer time, a brighter count, the tool-call colour on the project label, and
+// one flat shade over the whole id where a listing emphasizes the half a reader
+// types. Nothing looked wrong on either surface read alone.
+//
+// The assertions name the role rather than a colour code, because what has to
+// hold is that the two surfaces ask for the same role — a palette change should
+// not have to be made twice.
+func TestASearchRowIsDrawnLikeAListingRow(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	when := time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC)
+	matches := []search.Match{
+		{Session: "aaaa1111-1111", Activity: when, Project: "agentry", Title: "a title", Matched: 2, Turns: 30},
+		{Session: "bbbb2222-2222", Activity: when, Project: "dotfiles", Title: "another", Matched: 1, Turns: 4},
+	}
+	var b strings.Builder
+	if err := Matches(&b, matches, true); err != nil {
+		t.Fatal(err)
+	}
+	row := strings.Split(b.String(), "\n")[0]
+
+	for _, want := range []struct {
+		what  string
+		drawn string
+	}{
+		// The listing's own roles: its time and the significant half of its id are
+		// Meta, its turn count and path label are Dim, and its title is whatever
+		// foreground the reader chose.
+		{"the time", theme.Meta().Render(when.Local().Format(whenFormat))},
+		// Padded inside the style, the count being right-aligned to the widest in
+		// the run — the column is the listing's, gaps and all.
+		{"the match count", theme.Dim().Render(" 1/4t")},
+		{"the project label", theme.Dim().Render("dotfiles")},
+		{"the id's significant half", theme.Meta().Render("bbbb2222")},
+		{"the id's tail", theme.Dim().Render("-2222")},
+		{"the title", theme.Plain().Render("another")},
+	} {
+		if !strings.Contains(row, want.drawn) {
+			t.Errorf("%s is not drawn in the listing's role: want %q in %q", want.what, want.drawn, row)
+		}
+	}
+
+	// The title carries no colour of its own, which is what lets it follow a light
+	// terminal as well as a dark one. A fixed near-white reads as the brightest
+	// thing on one and nearly the background on the other.
+	if strings.Contains(row, theme.Body().Render("another")) {
+		t.Errorf("the title is painted a fixed shade rather than the reader's own: %q", row)
 	}
 }

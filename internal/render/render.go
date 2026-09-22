@@ -26,6 +26,7 @@ import (
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/price"
 	"github.com/eitanpo/agentry/internal/spend"
+	"github.com/eitanpo/agentry/internal/theme"
 	"github.com/eitanpo/agentry/internal/trail"
 	"github.com/muesli/termenv"
 )
@@ -99,6 +100,11 @@ type renderer struct {
 	ok      lipgloss.Style
 	bad     lipgloss.Style
 	body    lipgloss.Style
+	// meta and plain are the listing's two roles, held here because the search
+	// row is the listing's row and has to be drawn from the listing's palette.
+	meta    lipgloss.Style
+	plain   lipgloss.Style
+	match   lipgloss.Style
 	brief   lipgloss.Style
 	args    lipgloss.Style
 	link    lipgloss.Style
@@ -263,29 +269,31 @@ func Session(w io.Writer, s *model.Session, opts Options) error {
 	return err
 }
 
+// initStyles takes the renderer's styles from the theme package, which owns
+// every color agentry prints. The fields stay because the render path reads them
+// on every line; what changed is that none of them names a color here, so a
+// rendered session and a listing cannot drift apart.
 func (r *renderer) initStyles() {
-	c := func(code string) lipgloss.Color { return lipgloss.Color(code) }
-	userBg := c("237")                                                            // prompt-row highlight
-	r.user = lipgloss.NewStyle().Foreground(c("6")).Bold(true).Background(userBg) // cyan ❯ on highlight
-	r.userRow = lipgloss.NewStyle().Background(userBg)
-	r.claude = lipgloss.NewStyle().Foreground(c("5")).Bold(true)    // magenta
-	r.tool = lipgloss.NewStyle().Foreground(c("3")).Bold(true)      // yellow
-	r.subnt = lipgloss.NewStyle().Foreground(c("4")).Bold(true)     // blue
-	r.think = lipgloss.NewStyle().Foreground(c("243")).Italic(true) // medium gray, readable but secondary
-	r.ok = lipgloss.NewStyle().Foreground(c("2")).Bold(true)        // green
-	r.bad = lipgloss.NewStyle().Foreground(c("1")).Bold(true)       // red
-	r.body = lipgloss.NewStyle().Foreground(c("15"))                // tool result body: bright white
-	r.brief = lipgloss.NewStyle().Foreground(c("6")).Bold(true)     // delegated instruction's ❯: the prompt's cyan without the prompt row's highlight
-	r.args = lipgloss.NewStyle().Foreground(c("248"))               // tool args parenthetical: light gray
-	r.link = lipgloss.NewStyle().Foreground(c("80"))                // hyperlink text: sky cyan, distinct from glamour's heading blue (39) (underline omitted — lipgloss renders it per-rune)
-	r.dim = lipgloss.NewStyle().Foreground(c("8"))
-	r.border = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(c("7")).
-		Padding(0, 1)
+	r.user = theme.Prompt()
+	r.userRow = theme.PromptRow()
+	r.claude = theme.Assistant()
+	r.tool = theme.Tool()
+	r.subnt = theme.Subagent()
+	r.think = theme.Thinking()
+	r.ok = theme.OK()
+	r.bad = theme.Bad()
+	r.body = theme.Body()
+	r.meta = theme.Meta()
+	r.plain = theme.Plain()
+	r.match = theme.Match()
+	r.brief = theme.Instruction()
+	r.args = theme.Args()
+	r.link = theme.Link()
+	r.dim = theme.Dim()
+	r.border = theme.Border()
 	r.userBox = r.border // prompt box: border + padding sit on the highlight
 	if r.opts.Color {    // guard: BorderBackground emits empty ANSI under the Ascii profile
-		r.userBox = r.border.Background(userBg).BorderBackground(userBg)
+		r.userBox = r.border.Background(theme.PromptBackground()).BorderBackground(theme.PromptBackground())
 	}
 }
 

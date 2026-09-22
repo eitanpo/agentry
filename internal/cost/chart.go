@@ -11,6 +11,7 @@ import (
 	"github.com/eitanpo/agentry/internal/model"
 	"github.com/eitanpo/agentry/internal/price"
 	"github.com/eitanpo/agentry/internal/spend"
+	"github.com/eitanpo/agentry/internal/theme"
 )
 
 // The pictures --chart draws in place of the rows. None is the default: a table
@@ -147,8 +148,8 @@ func lineChart(bs []Bucket, opts Options) (string, bool) {
 		prevX, prevY = x, y
 	}
 
-	line := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "31", Dark: "80"})
-	axis := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	line := theme.Plot()
+	axis := theme.Dim()
 	var out strings.Builder
 	for r := 0; r < chartHeight; r++ {
 		var row strings.Builder
@@ -250,8 +251,8 @@ func calendarChart(bs []Bucket, opts Options) (string, bool) {
 	for d := first; !d.After(last); d = d.AddDate(0, 0, 7) {
 		mondays = append(mondays, d)
 	}
-	note := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	heat := lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "94", Dark: "180"})
+	note := theme.Dim()
+	heat := theme.Heat()
 
 	var out strings.Builder
 	var months strings.Builder
