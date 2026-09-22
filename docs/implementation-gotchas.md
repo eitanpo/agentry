@@ -225,3 +225,14 @@ answering: the refusal lives in the hook rather than in an early exit from `Exec
 cuts the other way — a hook is the wrong place for anything help output depends on. Flag
 defaults are the case in point: help is rendered from `DefValue`, so the settings file has to
 be planted on the flags while the tree is being built, not in a hook that help never runs.
+
+## A parsed pattern's character class does not list its members
+
+**`syntax.Regexp.Rune` holds range pairs for an `OpCharClass` and literal runes for an
+`OpLiteral`, so one slice means two different things by op.** A membership test written
+against it reads correctly and answers a different question: `slices.Contains(re.Rune, '\n')`
+on `\s` is true because a range *boundary* is a newline, not because the caller asked for one.
+That matters for any rule about what a pattern requires — `agentry search` refuses a pattern
+that needs a line break, and refusing `\s` instead would reject the commonest way to write
+"any whitespace". The check inspects `OpLiteral` only: a class that *may* match a break is not
+a pattern that *needs* one, and only the second can never match a line.

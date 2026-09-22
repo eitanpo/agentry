@@ -103,6 +103,7 @@ agentry search "unplaced tokens"          # the most recent session, same defaul
 agentry search "unplaced tokens" 489ce01  # a session by id or unambiguous prefix
 agentry search "tally helper" --from sdk  # the most recent headless run instead
 agentry search "(?-i)Agent"               # case-insensitive by default; (?-i) makes case matter
+agentry search -F "compilePattern("       # the pattern as text, punctuation and all
 agentry search "load the skill" --format json | jq   # machine-readable hits, for piping
 ```
 
@@ -127,6 +128,12 @@ line. The middle field names the calls delegated through to reach it and then wh
 `result`, with the line's number inside that body after a colon. It searches the whole session whatever `--level` would show, so a passage you know is in the
 log is never reported missing; nothing is capped and no line is cut, so pipe to `head` when a pattern
 is broad. A pattern that matched nothing prints nothing and exits zero.
+
+The pattern is a regular expression — Go's `regexp`, whose syntax is RE2, so look-around and
+backreferences are parse errors rather than features you are missing a flag for. Text carrying `(`,
+`[` or `.` needs `-F` to be read as itself.
+A pattern containing a newline is a usage error rather than a search that can never match, a hit being
+one line.
 
 ```
 agentry cost                              # the three scopes, a calendar, and where the money went
@@ -262,7 +269,8 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--used TOKEN` | `list` | — | Catch-all over the identity axis: skill name, agent type, or command. Not tool names — use `--used-tool` for those. |
 | `--opened-pr TEXT` | `list` | — | Only sessions that opened a matching pull request, over its repository, number, and URL (case-insensitive substring, so `build-tools` selects a repository's worth and `187` picks one). Read from Claude Code's own `pr-link` record, which is written for the session as a whole — so this finds a PR opened inside a subagent, which `--used-command 'gh pr'` cannot. |
 | `--published-artifact TEXT` | `list` | — | Only sessions that published a matching artifact, over its title, its `claude.ai` URL, and the local file it was rendered from (case-insensitive substring). Same session-level record as `--opened-pr`. |
-| `--reply-matches PATTERN` | `list` | — | Only sessions whose assistant reply text matched. PATTERN is a **regular expression** (RE2), case-insensitive by default (`(?-i)` to override) — the one filter here that is not a substring match, because prose questions are positional and alternation-shaped. Tested against each assistant text block separately, so `^`/`$` anchor to one reply: `'(?m)^\*{0,2}Learnings\b'` finds the block, where the substring `Learnings` would also hit every session that merely mentioned it. Thinking blocks and subagent sidecars are not read. An unparseable pattern is a usage error. Reply text is matched but never printed or serialized — see the `--format json` note in [PRODUCT.md](PRODUCT.md) for the size reason. |
+| `--reply-matches PATTERN` | `list` | — | Only sessions whose assistant reply text matched. PATTERN is a **regular expression** (RE2), case-insensitive by default (`(?-i)` to override) — the one filter here that is not a substring match, because prose questions are positional and alternation-shaped. Tested against each assistant text block separately, so `^`/`$` anchor to one reply: `'(?m)^\*{0,2}Learnings\b'` finds the block, where the substring `Learnings` would also hit every session that merely mentioned it. Thinking blocks and subagent sidecars are not read. An unparseable pattern is a usage error, and `-F` reads PATTERN as text instead. Reply text is matched but never printed or serialized — see the `--format json` note in [PRODUCT.md](PRODUCT.md) for the size reason. |
+| `-F`, `--fixed-strings` | `search`, `list` | off | Read the pattern as text, not as a regular expression — `agentry search -F "compilePattern("` finds that call instead of erroring on the unclosed group. Matching stays case-insensitive; the flag chooses how the pattern is read, not how it is compared. On `list` it governs `--reply-matches` (and its `--not-` twin), and passing it to a listing that gave no pattern filter is a usage error rather than a flag silently doing nothing. |
 | `--not-used-*`, `--not-opened-pr`, `--not-published-artifact`, `--not-reply-matches` | `list` | — | Every filter in this family has a `--not-` twin (`--not-used-tool`, `--not-used-skill`, `--not-used-agent`, `--not-used-command`, `--not-used-file`, `--not-used`, `--not-opened-pr`, `--not-published-artifact`, `--not-reply-matches`) keeping the sessions the positive one drops. Combine the two for a compliance audit: `--used-command 'git commit' --not-used-skill review`, or count the misses of a reply rule with `--not-reply-matches`. For the `--used*` flags, absence is judged over top-level calls only, so a subagent may have used what the main thread did not; the two output filters read session-level records and carry no such gap. |
 | `--model NAME` | `list` | — | Only sessions that ran on a matching model (case-insensitive substring, so `opus` covers `claude-opus-5` and `claude-opus-4-8` while `claude-opus-5` picks one). Matches any model the session carried, so one that switched mid-way matches both. |
 | `--effort LEVEL` | `list` | — | Only sessions run at that reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Case-insensitive and **exact**, unlike the substring filters — the levels nest, so `high` must not quietly include `xhigh`. Unknown levels return nothing rather than erroring, since the set grows. |

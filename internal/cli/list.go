@@ -54,6 +54,7 @@ func addListFlags(cmd *cobra.Command) {
 		cmd.Flags().String(u.flag, "", "only sessions that "+u.did)
 		cmd.Flags().String("not-"+u.flag, "", "only sessions that never "+u.did)
 	}
+	addFixedStringsFlag(cmd)
 	cmd.Flags().String("model", "", "only sessions that ran on a matching model (substring: opus, claude-opus-5)")
 	cmd.Flags().String("effort", "", "only sessions run at this reasoning effort (exact: low, medium, high, xhigh, max)")
 	_ = cmd.RegisterFlagCompletionFunc("effort", fixedComp(effortLevels))
@@ -122,21 +123,21 @@ func sessionPaths(cmd *cobra.Command) ([]string, error) {
 var usageFilters = []struct {
 	flag string
 	did  string
-	set  func(*list.Criteria, string) error
+	set  func(c *list.Criteria, v string, literal bool) error
 }{
-	{"used-tool", "used this tool, by name (Bash, Skill, Agent, WebFetch, …)", func(c *list.Criteria, v string) error { c.Tool = v; return nil }},
-	{"used-skill", "invoked this skill", func(c *list.Criteria, v string) error { c.Skill = v; return nil }},
-	{"used-agent", "spawned this subagent type", func(c *list.Criteria, v string) error { c.Agent = v; return nil }},
-	{"used-command", "ran a Bash command matching this text", func(c *list.Criteria, v string) error { c.Command = v; return nil }},
-	{"used-file", "modified a file matching this path", func(c *list.Criteria, v string) error { c.File = v; return nil }},
-	{"used", "used this as a skill, agent, or command", func(c *list.Criteria, v string) error { c.Any = v; return nil }},
-	{"opened-pr", "opened a matching pull request, by repository, number, or url", func(c *list.Criteria, v string) error { c.PR = v; return nil }},
-	{"published-artifact", "published a matching artifact, by title, url, or local path", func(c *list.Criteria, v string) error { c.Artifact = v; return nil }},
-	{"reply-matches", "wrote a reply matching this pattern (case-insensitive regexp)", func(c *list.Criteria, v string) error {
+	{"used-tool", "used this tool, by name (Bash, Skill, Agent, WebFetch, …)", func(c *list.Criteria, v string, _ bool) error { c.Tool = v; return nil }},
+	{"used-skill", "invoked this skill", func(c *list.Criteria, v string, _ bool) error { c.Skill = v; return nil }},
+	{"used-agent", "spawned this subagent type", func(c *list.Criteria, v string, _ bool) error { c.Agent = v; return nil }},
+	{"used-command", "ran a Bash command matching this text", func(c *list.Criteria, v string, _ bool) error { c.Command = v; return nil }},
+	{"used-file", "modified a file matching this path", func(c *list.Criteria, v string, _ bool) error { c.File = v; return nil }},
+	{"used", "used this as a skill, agent, or command", func(c *list.Criteria, v string, _ bool) error { c.Any = v; return nil }},
+	{"opened-pr", "opened a matching pull request, by repository, number, or url", func(c *list.Criteria, v string, _ bool) error { c.PR = v; return nil }},
+	{"published-artifact", "published a matching artifact, by title, url, or local path", func(c *list.Criteria, v string, _ bool) error { c.Artifact = v; return nil }},
+	{"reply-matches", "wrote a reply matching this pattern (case-insensitive regexp; -F reads it as text)", func(c *list.Criteria, v string, literal bool) error {
 		if v == "" {
 			return nil // unset flag: no constraint, and "" would match every reply
 		}
-		re, err := compilePattern(v)
+		re, err := compilePattern(v, literal)
 		if err != nil {
 			return err
 		}
@@ -322,14 +323,22 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	}
 
 	get := func(name string) string { v, _ := cmd.Flags().GetString(name); return v }
+	// The flag reads a pattern, and the listing's only pattern is the reply
+	// filter. Passed without one it would do nothing at all, which is the silence
+	// the bare command used to keep about a render flag on a listing: the caller
+	// asked for something and got no sign it had been dropped.
+	if cmd.Flags().Changed(fixedStringsFlag) && get("reply-matches") == "" && get("not-reply-matches") == "" {
+		return usageErr("--%s reads a pattern and this listing gave none: pass --reply-matches or --not-reply-matches, or search a session with `agentry search -F`", fixedStringsFlag)
+	}
+	literal := literalPattern(cmd)
 	var filters list.Filters
 	for _, u := range usageFilters {
 		// Both sides are validated before any session is read, so a malformed
 		// value errors as usage rather than after a directory scan's delay.
-		if err := u.set(&filters.Used, get(u.flag)); err != nil {
+		if err := u.set(&filters.Used, get(u.flag), literal); err != nil {
 			return usageErr("--%s: %v", u.flag, err)
 		}
-		if err := u.set(&filters.NotUsed, get("not-"+u.flag)); err != nil {
+		if err := u.set(&filters.NotUsed, get("not-"+u.flag), literal); err != nil {
 			return usageErr("--not-%s: %v", u.flag, err)
 		}
 	}

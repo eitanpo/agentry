@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"os"
+	"regexp/syntax"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -24,8 +26,15 @@ import (
 // --format json ignores them.
 func newSearchCmd(noColor *bool) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:               "search <pattern> [session-id]",
-		Short:             "find where inside a session a pattern appears",
+		Use:   "search <pattern> [session-id]",
+		Short: "find where inside a session a pattern appears",
+		Long: "Find where inside one session a pattern appears.\n\n" +
+			"PATTERN is a regular expression and is matched without regard to case.\n" +
+			"Write (?-i) at its start to make case matter, or pass -F to search for the\n" +
+			"pattern as text rather than as an expression.\n\n" +
+			"Patterns are compiled by Go's regexp package, whose syntax is RE2. Look-around\n" +
+			"((?=…), (?<=…)) and backreferences (\\1) are not part of it and are reported as a\n" +
+			"parse error; no flag here makes them available.",
 		Args:              cobra.RangeArgs(1, 2),
 		ValidArgsFunction: completeSearchArgs,
 		Example: "  agentry search \"unplaced tokens\"\n" +
@@ -38,7 +47,40 @@ func newSearchCmd(noColor *bool) *cobra.Command {
 	}
 	addFormatFlag(cmd)
 	addFromFlag(cmd)
+	addFixedStringsFlag(cmd)
 	return cmd
+}
+
+// patternSpansLines reports whether the pattern needs a line break to match. A
+// literal pattern is compared byte for byte, so only a real break counts; an
+// expression is parsed, which is what catches the \n escape a caller is far more
+// likely to type than the character itself.
+func patternSpansLines(pattern string, literal bool) bool {
+	if literal {
+		return strings.Contains(pattern, "\n")
+	}
+	parsed, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		// A malformed pattern is the compiler's to report, and its message names
+		// the pattern; answering here would replace that message with this one.
+		return false
+	}
+	return holdsNewline(parsed)
+}
+
+// holdsNewline reports whether any literal in the parsed pattern is a newline.
+// One branch of an alternation is enough: that branch can match nothing here,
+// and a caller who wrote it meant it to match something.
+func holdsNewline(parsed *syntax.Regexp) bool {
+	if parsed.Op == syntax.OpLiteral && slices.Contains(parsed.Rune, '\n') {
+		return true
+	}
+	for _, sub := range parsed.Sub {
+		if holdsNewline(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // completeSearchArgs completes the session id at the second position only. The
@@ -67,9 +109,18 @@ func runSearch(cmd *cobra.Command, args []string, noColor *bool) error {
 	if err != nil {
 		return err
 	}
-	re, err := compilePattern(args[0])
+	literal := literalPattern(cmd)
+	re, err := compilePattern(args[0], literal)
 	if err != nil {
 		return err
+	}
+	// A hit is one line, so a pattern needing a break between two matches nothing
+	// and the empty result would read as the passage being absent from the
+	// session — the one answer this verb must never give wrongly. There is no
+	// multiline mode to offer, so the error points at the line to search for.
+
+	if patternSpansLines(args[0], literal) {
+		return usageErr("the pattern needs a line break to match, and a hit is one line: search for one of its lines instead")
 	}
 
 	var id string

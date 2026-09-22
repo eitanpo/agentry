@@ -59,12 +59,38 @@ var (
 // whole pattern including every branch of a top-level alternation, and a caller
 // who wants case to matter overrides it with (?-i). The error names the pattern,
 // since cobra reports only the flag.
-func compilePattern(pattern string) (*regexp.Regexp, error) {
+//
+// literal is what -F asks for: the pattern's own punctuation is escaped before
+// compiling, so a caller searching for a call or an index expression is not
+// writing a regular expression by accident. Case still does not matter — the flag
+// chooses how the pattern is read, not how it is compared — so the escaping
+// happens before the prefix rather than instead of it.
+func compilePattern(pattern string, literal bool) (*regexp.Regexp, error) {
+	if literal {
+		pattern = regexp.QuoteMeta(pattern)
+	}
 	re, err := regexp.Compile("(?i)" + pattern)
 	if err != nil {
 		return nil, fmt.Errorf("%q is not a valid regular expression: %w", pattern, err)
 	}
 	return re, nil
+}
+
+// fixedStringsFlag is the literal-pattern switch, registered on the two commands
+// that take a pattern. -F is the spelling six other searchers give it, and it is
+// agentry's only short flag: a caller who wants a literal search types it from
+// muscle memory, where every other flag here is one they read off help first.
+const fixedStringsFlag = "fixed-strings"
+
+func addFixedStringsFlag(cmd *cobra.Command) {
+	cmd.Flags().BoolP(fixedStringsFlag, "F", false, "read the pattern as text, not as a regular expression")
+}
+
+// literalPattern reports whether the caller asked for the pattern to be read as
+// text. Read by value rather than by Changed, so a settings file can set it.
+func literalPattern(cmd *cobra.Command) bool {
+	v, _ := cmd.Flags().GetBool(fixedStringsFlag)
+	return v
 }
 
 // effortLevels are the levels `claude --effort` accepts, offered as completion

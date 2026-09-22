@@ -243,3 +243,134 @@ func TestSearchIsSuggestedForAMistypedVerb(t *testing.T) {
 		t.Errorf("stderr does not suggest the verb: %q", errOut)
 	}
 }
+
+// TestSearchLiteralPatternReadsTheTextItWasGiven pins -F on both sides: the
+// punctuation a caller typed stops being an expression, and a pattern that was
+// only ever a parse error becomes a search. Case is deliberately still ignored —
+// the flag chooses how the pattern is read, not how it is compared.
+func TestSearchLiteralPatternReadsTheTextItWasGiven(t *testing.T) {
+	const id = "ba6b3ded-475b-4c3a-96fe-99698a557d14"
+
+	searchFixture(t, "sample.jsonl", id)
+	code, out, errOut := exec("search", "l. -la")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	if !strings.Contains(out, "ls -la") {
+		t.Fatalf("the expression form did not match, so the pair below proves nothing: %q", out)
+	}
+
+	searchFixture(t, "sample.jsonl", id)
+	code, out, errOut = exec("search", "-F", "l. -la")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	if out != "" {
+		t.Errorf("-F let the dot match any character: %q", out)
+	}
+
+	searchFixture(t, "sample.jsonl", id)
+	if _, out, _ = exec("search", "-F", "ls -la"); !strings.Contains(out, "ls -la") {
+		t.Errorf("-F did not find text that is really there: %q", out)
+	}
+
+	searchFixture(t, "sample.jsonl", id)
+	if _, out, _ = exec("search", "-F", "LS -LA"); !strings.Contains(out, "ls -la") {
+		t.Errorf("-F started caring about case: %q", out)
+	}
+
+	// The errand the flag exists for: punctuation that is not a pattern at all.
+	searchFixture(t, "sample.jsonl", id)
+	if code, _, _ = exec("search", "prompt("); code != exUsage {
+		t.Errorf("an unclosed group without -F exits %d, want %d (exUsage)", code, exUsage)
+	}
+	searchFixture(t, "sample.jsonl", id)
+	if code, _, errOut = exec("search", "-F", "prompt("); code != 0 {
+		t.Errorf("an unclosed group with -F exits %d, want 0 (stderr %q)", code, errOut)
+	}
+}
+
+// TestSearchRefusesAPatternThatSpansLines pins the refusal. A hit is one line, so
+// a pattern needing a break between two can only ever print nothing, and nothing
+// printed is how this verb says a passage is absent from the session.
+func TestSearchRefusesAPatternThatSpansLines(t *testing.T) {
+	const id = "ba6b3ded-475b-4c3a-96fe-99698a557d14"
+
+	searchFixture(t, "sample.jsonl", id)
+	code, out, errOut := exec("search", `second\nprompt`)
+	if code != exUsage {
+		t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+	}
+	if !strings.Contains(errOut, "line break") {
+		t.Errorf("the error does not say what is wrong with the pattern: %q", errOut)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+
+	// A real break, which is what -F has to be checked against: escaping cannot
+	// turn it into anything a line-oriented hit could hold.
+	searchFixture(t, "sample.jsonl", id)
+	if code, _, _ = exec("search", "-F", "second\nprompt"); code != exUsage {
+		t.Errorf("a literal pattern holding a break exits %d, want %d (exUsage)", code, exUsage)
+	}
+
+	// A class that may match a break is not a pattern that needs one, and
+	// rejecting it would refuse the commonest way to write "any whitespace".
+	searchFixture(t, "sample.jsonl", id)
+	if code, out, errOut = exec("search", `second\sprompt`); code != 0 {
+		t.Errorf("a whitespace class exits %d, want 0 (stderr %q)", code, errOut)
+	}
+}
+
+// TestListFixedStringsNeedsAPatternToRead pins the flag's scope on the listing.
+// It governs the reply filter, and on a listing that gave no pattern it would do
+// nothing at all — the silence the bare command used to keep about a render flag.
+func TestListFixedStringsNeedsAPatternToRead(t *testing.T) {
+	const id = "ba6b3ded-475b-4c3a-96fe-99698a557d14"
+
+	searchFixture(t, "sample.jsonl", id)
+	code, out, errOut := exec("list", "-F")
+	if code != exUsage {
+		t.Errorf("exit = %d, want %d (exUsage)", code, exUsage)
+	}
+	if !strings.Contains(errOut, "reply-matches") {
+		t.Errorf("the error does not name the flag it governs: %q", errOut)
+	}
+	if out != "" {
+		t.Errorf("stdout = %q, want nothing", out)
+	}
+
+	// Beside the filter it governs, it reads that filter's pattern as text.
+	searchFixture(t, "sample.jsonl", id)
+	if _, out, errOut = exec("list", "--reply-matches", "here i. an answer"); !strings.Contains(out, id[:8]) {
+		t.Fatalf("the expression form selected nothing, so the pair below proves nothing (stdout %q, stderr %q)", out, errOut)
+	}
+	searchFixture(t, "sample.jsonl", id)
+	if _, out, _ = exec("list", "-F", "--reply-matches", "here i. an answer"); strings.Contains(out, id[:8]) {
+		t.Errorf("-F let the dot match any character in a reply filter: %q", out)
+	}
+	searchFixture(t, "sample.jsonl", id)
+	if _, out, _ = exec("list", "-F", "--reply-matches", "here is an answer"); !strings.Contains(out, id[:8]) {
+		t.Errorf("-F did not select a session whose reply really holds that text: %q", out)
+	}
+}
+
+// TestSearchHelpNamesTheCaseDefaultAndItsEscape pins the sentence the flag help
+// owes a caller. Matching insensitively is not what someone arriving from grep
+// expects, and a default whose escape is written only in the spec is one they
+// cannot get out of from the terminal they are in.
+func TestSearchHelpNamesTheCaseDefaultAndItsEscape(t *testing.T) {
+	code, out, errOut := exec("search", "--help")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	// The engine is named because two constructs a caller reaches for are not in
+	// it, and no flag here can supply them: found by tripping over it, that reads
+	// as a defect in the search rather than a property of the engine.
+	for _, want := range []string{"without regard to case", "(?-i)", "-F", "RE2", "Look-around", "backreferences"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the help does not mention %q: %q", want, out)
+		}
+	}
+}
