@@ -236,3 +236,14 @@ That matters for any rule about what a pattern requires — `agentry search` ref
 that needs a line break, and refusing `\s` instead would reject the commonest way to write
 "any whitespace". The check inspects `OpLiteral` only: a class that *may* match a break is not
 a pattern that *needs* one, and only the second can never match a line.
+
+## git names worktrees by their resolved path
+
+**`git worktree list --porcelain` prints every path with symlinks resolved, while a session's
+recorded `cwd` and `os.Getwd` keep the path as it was reached.** On macOS a temp directory
+under `/var` is `/private/var` to git, so comparing the caller's directory against git's list
+as typed says no directory is ever a working tree's top folder, and the worktree rule silently
+never fires. `locate.Worktrees` compares both forms of the caller's directory. Matching a
+session against a worktree still compares git's resolved path with the recorded `cwd`, so a
+session started through a symlinked path to an outside worktree is not reached by the rule;
+tests build their fixtures under a resolved temp directory for the same reason.

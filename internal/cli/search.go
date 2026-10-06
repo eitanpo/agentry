@@ -310,7 +310,7 @@ func searchSessions(cmd *cobra.Command, noun string, re *regexp.Regexp, format s
 	for _, p := range paths {
 		byID[strings.TrimSuffix(filepath.Base(p), ".jsonl")] = p
 	}
-	labels, labelKeepsTail := list.RowLabels(selected)
+	labels, labelKeepsTail := list.RowLabels(selected, scopeWorktrees(cmd))
 
 	groups := searchEach(selected, byID, labels, re)
 

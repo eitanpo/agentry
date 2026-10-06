@@ -86,6 +86,9 @@ type Options struct {
 	// counts thirty-one turns, three follow it, and nothing says whether the rest
 	// were excluded or failed.
 	Selected *model.TurnRange
+	// Here is the directory agentry was run from, "" where unknown. The card's
+	// resume row opens with a cd where the session ran somewhere else.
+	Here string
 }
 
 type renderer struct {
@@ -1376,9 +1379,43 @@ func (r *renderer) card(s *model.Session) string {
 	// Both commands take the id in full rather than a prefix: the listing can
 	// shorten one because it knows every id beside it, and a single render knows
 	// none of them, so a prefix printed here could name two sessions.
-	row("render", "agentry "+m.ID, false)
-	row("resume", "claude --resume "+m.ID, false)
+	// The two command rows are written whole rather than through row: a command
+	// cut short runs something else or nothing, so a long one wraps instead. They
+	// are the card's only colored values, being the lines a reader copies: the
+	// words typed to run something take the instruction color, the joiner and the
+	// flag are quiet, the id is a row fact, and the directory stays plain as the
+	// fact acted on. With color off they are the same text.
+	command := func(label, value string) {
+		b.WriteString(sectionIndent + r.dim.Render(fmt.Sprintf("%-*s", cardLabelWidth, label)) + value + "\n")
+	}
+	command("render", r.brief.Render("agentry")+" "+r.meta.Render(m.ID))
+	// `claude` works in the directory it starts in, so a session that ran
+	// elsewhere is resumed from its own directory. One line, because every card
+	// line carries the rail and the label, and a selection spanning two would
+	// paste them into the shell.
+	resume := r.brief.Render("claude") + " " + r.args.Render("--resume") + " " + r.meta.Render(m.ID)
+	if m.Cwd != "" && r.opts.Here != "" && path.Clean(m.Cwd) != path.Clean(r.opts.Here) {
+		resume = r.brief.Render("cd") + " " + r.plain.Render(shellQuote(m.Cwd)) + " " + r.args.Render("&&") + " " + resume
+	}
+	command("resume", resume)
 	return r.railHeaded(b.String())
+}
+
+// shellQuote returns s as one shell word: unchanged where every character is
+// one no shell splits or expands, else single-quoted with any single quote
+// closed, escaped and reopened.
+func shellQuote(s string) string {
+	safe := true
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("/._-+,:@%", c)) {
+			safe = false
+			break
+		}
+	}
+	if safe && s != "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // spent is one axis's share of what the session's tokens are worth: a model, a

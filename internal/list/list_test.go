@@ -2,6 +2,7 @@ package list
 
 import (
 	"encoding/json"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -385,7 +386,7 @@ func TestProjectLabels(t *testing.T) {
 			for i, c := range tt.cwds {
 				sums = append(sums, model.Summary{ID: string(rune('a' + i)), Cwd: c})
 			}
-			got := projectLabels(sums)
+			got := projectLabels(sums, nil)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
@@ -501,7 +502,7 @@ func TestWorktreeLabels(t *testing.T) {
 			for i, c := range tt.cwds {
 				sums = append(sums, model.Summary{ID: string(rune('a' + i)), Cwd: c})
 			}
-			got := worktreeLabels(sums)
+			got := worktreeLabels(sums, nil)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
@@ -587,7 +588,7 @@ func TestArrangeGroupsForks(t *testing.T) {
 		{ID: "orig", RootUUID: "R", Born: born(0), End: act(12)},
 		{ID: "solo", Born: born(0), End: act(9)},
 	}
-	rows := arrange(sums)
+	rows := arrange(sums, nil)
 	// Top-to-bottom: solo (family anchor 09:00, oldest) then family R (anchor
 	// 18:00): original first, fork indented beneath it.
 	want := []struct {
@@ -612,7 +613,7 @@ func TestForkInheritedTitleShownByDivergentPrompt(t *testing.T) {
 		Prompts: []string{"set up the parser", "fix the bug"}}
 	fork := model.Summary{ID: "fork", RootUUID: "R", Born: day(1), Title: "shared title",
 		Prompts: []string{"set up the parser", "fix the bug", "try a different approach"}}
-	rows := arrange([]model.Summary{fork, parent}) // most-recent first
+	rows := arrange([]model.Summary{fork, parent}, nil) // most-recent first
 
 	titleOf := func(id string) string {
 		for _, r := range rows {
@@ -634,13 +635,13 @@ func TestForkInheritedTitleShownByDivergentPrompt(t *testing.T) {
 	// keeps the shared title.
 	fork2 := fork
 	fork2.Title = "its own summary"
-	rows = arrange([]model.Summary{fork2, parent})
+	rows = arrange([]model.Summary{fork2, parent}, nil)
 	if got := titleOf2(rows, "fork"); got != "its own summary" {
 		t.Errorf("regenerated fork title = %q, want it kept", got)
 	}
 	noNew := model.Summary{ID: "fork", RootUUID: "R", Born: day(1), Title: "shared title",
 		Prompts: []string{"set up the parser", "fix the bug"}}
-	rows = arrange([]model.Summary{noNew, parent})
+	rows = arrange([]model.Summary{noNew, parent}, nil)
 	if got := titleOf2(rows, "fork"); got != "shared title" {
 		t.Errorf("fork with no new prompt = %q, want the shared title", got)
 	}
@@ -1574,7 +1575,7 @@ func TestWorktreeTitleFallThrough(t *testing.T) {
 		}
 	}
 	titleOf := func(sums []model.Summary, id string) string {
-		for _, r := range arrange(sums) {
+		for _, r := range arrange(sums, nil) {
 			if r.s.ID == id {
 				return r.s.Title
 			}
@@ -2024,4 +2025,77 @@ func TestRenderJSONLEmptyWritesNothing(t *testing.T) {
 	if b.String() != "" {
 		t.Errorf("empty listing wrote %q, want nothing", b.String())
 	}
+}
+
+// TestOutsideWorktreeLabels pins how a row from a worktree outside the repository
+// folder reads once the scope has read the repository from git: as a worktree of
+// the repository, named by its own folder behind an elided path that says the
+// code is in another folder — never as the checkout's "—", never like a worktree
+// inside the repository, and never as a project of its own beside it.
+func TestOutsideWorktreeLabels(t *testing.T) {
+	t.Setenv("HOME", "/x")
+	const (
+		repo   = "/p/me/app"
+		feat   = "/x/.tool/worktrees/app/feat" // under the home directory
+		shared = "/srv/trees/app-hotfix"       // outside it
+		inside = "/p/me/app/.wt/local"         // inside the repository folder
+	)
+	trees := map[string]string{repo: repo, feat: repo, shared: repo, inside: repo}
+	mk := func(id, cwd, title string, prompts ...string) model.Summary {
+		return model.Summary{
+			ID: id, Cwd: cwd, Title: title, Prompts: prompts,
+			Start: time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC),
+			End:   time.Date(2026, 6, 3, 14, 5, 0, 0, time.UTC),
+		}
+	}
+	sums := []model.Summary{
+		mk("a", repo, "alpha"),
+		mk("b", feat, "beta"),
+		mk("c", feat+"/pkg", "gamma"),
+		// A title repeating the worktree's name is replaced by the first prompt,
+		// as it is for a worktree inside the repository.
+		mk("d", feat, "feat", "wire the importer"),
+		mk("e", shared, "epsilon"),
+		mk("f", inside, "zeta"),
+	}
+
+	t.Run("labels", func(t *testing.T) {
+		got, keepTail := RowLabels(sums, trees)
+		want := map[string]string{
+			repo:          "—",
+			feat:          "~/…/feat",
+			feat + "/pkg": "~/…/feat/pkg",
+			shared:        "/…/app-hotfix",
+			inside:        "local",
+		}
+		if keepTail || !maps.Equal(got, want) {
+			t.Errorf("RowLabels = %v (keepTail %v), want worktree labels %v", got, keepTail, want)
+		}
+	})
+
+	t.Run("rendered row", func(t *testing.T) {
+		var b strings.Builder
+		if err := Render(&b, sums, Options{Width: 160, Color: false, Worktrees: trees}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		for _, s := range []string{"~/…/feat/pkg", "wire the importer", "—"} {
+			if !strings.Contains(out, s) {
+				t.Errorf("missing %q: %q", s, out)
+			}
+		}
+		// The repository's project label would be a cell of its own; app-hotfix
+		// inside a worktree label is not one.
+		if regexp.MustCompile(`\sapp\s`).MatchString(out) {
+			t.Errorf("one repository must not draw the project column: %q", out)
+		}
+	})
+
+	t.Run("without the repository read, it is a project of its own", func(t *testing.T) {
+		// --all-projects reads no repository, so nothing says the folder belongs
+		// to one.
+		if _, keepTail := RowLabels(sums, nil); !keepTail {
+			t.Error("want the project column when no repository was read")
+		}
+	})
 }

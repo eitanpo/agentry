@@ -3,7 +3,10 @@ package locate
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -570,4 +573,113 @@ func TestConfigDirProjectResolves(t *testing.T) {
 	if got != dir {
 		t.Errorf("ProjectDir(%q) = %q, want %q", cwd, got, dir)
 	}
+}
+
+// gitRepo builds a real repository at <base>/repo holding one commit, with the
+// user's git config shut out so a signing or hook setting cannot fail the
+// fixture. Skips where git is not installed: the rule under test reads git's
+// record, and a machine without git gets the subtree alone by design.
+func gitRepo(t *testing.T) (base, repo string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// git reports worktree paths with symlinks resolved, and so does a session's
+	// recorded cwd on a machine whose temp dir is reached through one.
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo = filepath.Join(base, "repo")
+	runGit(t, base, "init", "-q", repo)
+	runGit(t, repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init")
+	return base, repo
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestSessionsUnderReachesOutsideWorktrees pins the worktree rule: the top folder
+// of a working tree reaches every worktree git records for the repository, even
+// one outside the repository folder, which the subtree rule alone cannot see.
+func TestSessionsUnderReachesOutsideWorktrees(t *testing.T) {
+	base, repo := gitRepo(t)
+	outside := filepath.Join(base, "tools", "feat")
+	gone := filepath.Join(base, "tools", "gone")
+	runGit(t, repo, "worktree", "add", "-q", "-b", "feat", outside)
+	runGit(t, repo, "worktree", "add", "-q", "-b", "gone", gone)
+	// Removed without pruning, so git still records it: only the folder's absence
+	// says the worktree no longer exists.
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	old := ProjectsRoot
+	ProjectsRoot = root
+	t.Cleanup(func() { ProjectsRoot = old })
+	writeSession(t, root, repo, "own")
+	writeSession(t, root, filepath.Join(repo, "sub"), "sub")
+	writeSession(t, root, outside, "outside")
+	writeSession(t, root, filepath.Join(outside, "pkg"), "outside-pkg")
+	writeSession(t, root, gone, "gone")
+	// A sibling of the outside worktree that is no worktree at all.
+	writeSession(t, root, filepath.Join(base, "tools", "other"), "other")
+
+	ids := func(paths []string) []string {
+		var out []string
+		for _, p := range paths {
+			out = append(out, strings.TrimSuffix(filepath.Base(p), ".jsonl"))
+		}
+		sort.Strings(out)
+		return out
+	}
+	want := []string{"outside", "outside-pkg", "own", "sub"}
+
+	for _, top := range []struct{ name, dir string }{
+		{"the main checkout", repo},
+		{"a linked worktree", outside},
+	} {
+		t.Run("the top folder of "+top.name+" lists every live worktree", func(t *testing.T) {
+			got, err := SessionsUnder(top.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if g := ids(got); !slices.Equal(g, want) {
+				t.Errorf("SessionsUnder(%s) = %v, want %v", top.name, g, want)
+			}
+		})
+	}
+
+	t.Run("a subfolder lists only its own subtree", func(t *testing.T) {
+		got, err := SessionsUnder(filepath.Join(repo, "sub"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g := ids(got); !slices.Equal(g, []string{"sub"}) {
+			t.Errorf("got %v, want only the subfolder's session", g)
+		}
+	})
+
+	t.Run("every worktree maps to the main checkout", func(t *testing.T) {
+		trees := Worktrees(outside)
+		if len(trees) != 2 || trees[repo] != repo || trees[outside] != repo {
+			t.Errorf("Worktrees = %v, want the checkout and the live outside worktree, both mapped to %s", trees, repo)
+		}
+	})
+
+	t.Run("a folder outside any repository reads no worktrees", func(t *testing.T) {
+		if trees := Worktrees(base); trees != nil {
+			t.Errorf("Worktrees(non-repo) = %v, want nil", trees)
+		}
+	})
 }

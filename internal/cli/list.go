@@ -117,6 +117,23 @@ func sessionPaths(cmd *cobra.Command) ([]string, error) {
 	return locate.SessionsUnder(cwd)
 }
 
+// scopeWorktrees is the repository worktrees sessionPaths' scope took in, for the
+// rows' labels: an outside worktree labels as part of the repository only where
+// the scope read the repository. nil under --all-projects, which reads none.
+func scopeWorktrees(cmd *cobra.Command) map[string]string {
+	if all, _ := cmd.Flags().GetBool("all-projects"); all {
+		return nil
+	}
+	if project, _ := cmd.Flags().GetString("project"); project != "" {
+		return locate.Worktrees(project)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	return locate.Worktrees(cwd)
+}
+
 // usageFilters is the single source for the what-a-session-did filter surface:
 // each entry registers its flag and the --not- twin of the same name, and fills
 // the matching field on both sides of list.Filters. One list rather than three
@@ -444,6 +461,7 @@ func runList(cmd *cobra.Command, noColor *bool) error {
 	if err := list.Render(cmd.OutOrStdout(), selected, list.Options{
 		Width: width, Color: color, Prompts: showPrompts, Tools: showTools, Files: showFiles,
 		Model: showModel, Cost: showCost, Outputs: showOutputs, LastReply: showLastReply,
+		Worktrees: scopeWorktrees(cmd),
 	}); err != nil {
 		return &exitError{code: 1, err: err}
 	}

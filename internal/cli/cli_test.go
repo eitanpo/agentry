@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1927,5 +1928,57 @@ func TestJSONLListingIsNotCapped(t *testing.T) {
 	_, text, _ := exec("list")
 	if strings.Count(text, "\n") > n {
 		t.Errorf("text listing was not capped:\n%s", text)
+	}
+}
+
+// TestListReachesOutsideWorktree pins the worktree rule end to end: standing at a
+// repository's top folder, a bare listing includes a worktree kept outside the
+// repository folder and labels its row by the worktree's folder name in the
+// worktree column, with no project column treating it as a second project.
+func TestListReachesOutsideWorktree(t *testing.T) {
+	if _, err := osexec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(base, "repo")
+	outside := filepath.Join(base, "tools", "feat")
+	git := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := osexec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git(base, "init", "-q", repo)
+	git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init")
+	git(repo, "worktree", "add", "-q", "-b", "feat", outside)
+
+	root := t.TempDir()
+	orig := locate.ProjectsRoot
+	locate.ProjectsRoot = root
+	t.Cleanup(func() { locate.ProjectsRoot = orig })
+	writeProject(t, root, repo, ownID)
+	writeProject(t, root, outside, outsideID)
+
+	t.Chdir(repo)
+	_, out, _ := exec("list")
+	if !strings.Contains(out, outsideID) {
+		t.Fatalf("a bare listing at the repository's top folder missed the outside worktree: %q", out)
+	}
+	if !strings.Contains(out, "/…/feat") || !strings.Contains(out, "—") {
+		t.Errorf("want the worktree column marking feat as another folder, and — for the checkout: %q", out)
+	}
+	if strings.Contains(out, "repo") {
+		t.Errorf("one repository must not draw the project column: %q", out)
+	}
+
+	t.Chdir(base)
+	_, viaFlag, _ := exec("list", "--project", repo)
+	if !strings.Contains(viaFlag, outsideID) {
+		t.Errorf("--project naming the repository missed its outside worktree: %q", viaFlag)
 	}
 }

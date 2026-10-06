@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -45,6 +47,10 @@ type Options struct {
 	// final reply rather than every reply. PRODUCT.md's --include section owns why,
 	// and the channel's name is what carries the exception to a caller.
 	LastReply bool // --include last-reply
+	// Worktrees maps each worktree of the repository the listing covers to its
+	// main checkout (locate.Worktrees), so a worktree outside the repository
+	// folder labels as part of the repository. nil where no repository was read.
+	Worktrees map[string]string
 }
 
 // Prompt blocks reuse the renderer's turn chrome: a left rail closed by a rule.
@@ -565,7 +571,7 @@ type frow struct {
 // first, then each fork indented beneath in birth order. Families are ordered by
 // their most-recently-active member, oldest first, so the newest prints last
 // (bottom), matching the ungrouped layout.
-func arrange(sums []model.Summary) []frow {
+func arrange(sums []model.Summary, trees map[string]string) []frow {
 	groups := map[string][]model.Summary{}
 	var order []string // family keys in first-seen (most-recent-first) order
 	for i, s := range sums {
@@ -601,7 +607,7 @@ func arrange(sums []model.Summary) []frow {
 			// already carries the string. Falls to the first prompt, which the list
 			// already excludes /clear from. Checked after the fork rule so a rewritten
 			// fork title is judged rather than the inherited one.
-			if wt := worktreeName(s.Cwd); wt != "" && strings.TrimSpace(s.Title) == wt && len(s.Prompts) > 0 {
+			if wt := worktreeName(s.Cwd, trees); wt != "" && strings.TrimSpace(s.Title) == wt && len(s.Prompts) > 0 {
 				s.Title = s.Prompts[0]
 			}
 			rows = append(rows, frow{s: s, fork: i > 0})
@@ -675,7 +681,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 	// one needs more than one project and the other exactly one, so the title
 	// never pays for two path columns. A project label is a path suffix and keeps
 	// its tail; a worktree name keeps its head, which is the part someone chose.
-	labels, keepTail := RowLabels(sums)
+	labels, keepTail := RowLabels(sums, opts.Worktrees)
 	projW := 0
 	for _, l := range labels {
 		if n := utf8.RuneCountInString(l); n > projW {
@@ -712,7 +718,7 @@ func Render(w io.Writer, sums []model.Summary, opts Options) error {
 		promptW = 10
 	}
 	var b strings.Builder
-	rows := arrange(sums)
+	rows := arrange(sums, opts.Worktrees)
 	for _, r := range rows {
 		s := r.s
 		// The when column shows the session's last activity (its most recent turn's
@@ -876,22 +882,63 @@ func varyingTags(sums []model.Summary) map[string]string {
 const worktreeMarker = "/.claude/worktrees/"
 
 // projectRoot is the repository a cwd belongs to: itself, or the repo holding it
-// when it is one of that repo's worktrees. The listing's scope rule already
-// treats a repo's worktrees as the repo, and a label that disagreed reported one
-// project as several.
-func projectRoot(cwd string) string {
+// when it is one of that repo's worktrees — under the marker, or one of trees
+// (see Options.Worktrees). The listing's scope rule already treats a repo's
+// worktrees as the repo, and a label that disagreed reported one project as
+// several.
+func projectRoot(cwd string, trees map[string]string) string {
 	if i := strings.Index(cwd, worktreeMarker); i >= 0 {
 		return cwd[:i]
+	}
+	if tree := linkedWorktree(cwd, trees); tree != "" {
+		return trees[tree]
 	}
 	return cwd
 }
 
-// worktreeName is the worktree a cwd names, or "" for a repo's own checkout.
-func worktreeName(cwd string) string {
+// worktreeName is the worktree a cwd names, or "" for a repo's own checkout. A
+// worktree from trees is named by its own folder, the part someone or some tool
+// chose, as one under the marker is; a subfolder of either follows the name.
+func worktreeName(cwd string, trees map[string]string) string {
 	if i := strings.Index(cwd, worktreeMarker); i >= 0 {
 		return cwd[i+len(worktreeMarker):]
 	}
+	if tree := linkedWorktree(cwd, trees); tree != "" {
+		return filepath.Base(tree) + cwd[len(tree):]
+	}
 	return ""
+}
+
+// outsideMark is the elided path a worktree label opens with when the worktree
+// sits outside its repository's folder — "~/…/" under the home directory, "/…/"
+// elsewhere — and "" otherwise. Resuming a session puts the code where it ran, so
+// a worktree in another folder must not read like the ones inside the repository;
+// the elided middle is the part the column cannot hold.
+func outsideMark(cwd string, trees map[string]string) string {
+	tree := linkedWorktree(cwd, trees)
+	if tree == "" || strings.HasPrefix(tree, trees[tree]+string(filepath.Separator)) {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(tree, home+string(filepath.Separator)) {
+		return "~/…/"
+	}
+	return "/…/"
+}
+
+// linkedWorktree is the worktree in trees holding cwd, other than the main
+// checkout, or "". The innermost wins, because a worktree can sit inside the
+// main checkout's folder and must not read as the checkout.
+func linkedWorktree(cwd string, trees map[string]string) string {
+	best := ""
+	for tree, main := range trees {
+		if tree == main || len(tree) <= len(best) {
+			continue
+		}
+		if cwd == tree || strings.HasPrefix(cwd, tree+string(filepath.Separator)) {
+			best = tree
+		}
+	}
+	return best
 }
 
 // projectLabels maps each distinct session cwd to the shortest suffix of path
@@ -918,11 +965,14 @@ func worktreeName(cwd string) string {
 // session exactly as a listing row does, where one session labelled two ways
 // reads as two sessions. Reading only the project half is what left a search
 // across one repository's worktrees with no label on any row.
-func RowLabels(sums []model.Summary) (map[string]string, bool) {
-	if labels := projectLabels(sums); labels != nil {
+//
+// trees is the repository's worktrees where the scope read them
+// (Options.Worktrees), nil otherwise.
+func RowLabels(sums []model.Summary, trees map[string]string) (map[string]string, bool) {
+	if labels := projectLabels(sums, trees); labels != nil {
 		return labels, true
 	}
-	return worktreeLabels(sums), false
+	return worktreeLabels(sums, trees), false
 }
 
 // Activity is the time a row shows and the time the rows are ordered by: the
@@ -938,14 +988,14 @@ func Activity(start, end time.Time) time.Time {
 	return start
 }
 
-func projectLabels(sums []model.Summary) map[string]string {
+func projectLabels(sums []model.Summary, trees map[string]string) map[string]string {
 	roots := map[string]bool{}
 	byCwd := map[string]string{}
 	for _, s := range sums {
 		if s.Cwd == "" {
 			continue
 		}
-		root := projectRoot(s.Cwd)
+		root := projectRoot(s.Cwd, trees)
 		roots[root] = true
 		byCwd[s.Cwd] = root
 	}
@@ -966,7 +1016,7 @@ func projectLabels(sums []model.Summary) map[string]string {
 // work from another. Returns nil unless the listing holds exactly one project and
 // more than one place within it — so it is never drawn beside the project column,
 // and never drawn when every session sat in the same place.
-func worktreeLabels(sums []model.Summary) map[string]string {
+func worktreeLabels(sums []model.Summary, trees map[string]string) map[string]string {
 	roots := map[string]bool{}
 	labels := map[string]string{}
 	places := map[string]bool{}
@@ -974,11 +1024,12 @@ func worktreeLabels(sums []model.Summary) map[string]string {
 		if s.Cwd == "" {
 			continue
 		}
-		roots[projectRoot(s.Cwd)] = true
-		name := worktreeName(s.Cwd)
+		roots[projectRoot(s.Cwd, trees)] = true
+		name := worktreeName(s.Cwd, trees)
 		if name == "" {
 			name = "—"
 		}
+		name = outsideMark(s.Cwd, trees) + name
 		labels[s.Cwd] = name
 		places[name] = true
 	}

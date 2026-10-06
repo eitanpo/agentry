@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/muesli/termenv"
 )
 
 // TestSessionJSON pins the --format json shape: the full model, event kinds as
@@ -1474,6 +1476,72 @@ func TestSessionCard(t *testing.T) {
 		}
 	})
 
+	t.Run("a session that ran elsewhere resumes from its own directory", func(t *testing.T) {
+		// claude works in the directory it starts in, so the resume command opens
+		// with a cd where the reader stands somewhere else — the common case for a
+		// worktree outside the repository, listed from the repository's folder.
+		elsewhere := *sess
+		elsewhere.Meta.Cwd = "/Users/dev/.t3/worktrees/agentry/t3code-7a61f0a8-with-a-long-generated-suffix"
+		var b strings.Builder
+		if err := Session(&b, &elsewhere, Options{Width: 80, Color: false, Here: "/Users/dev/Projects/me/agentry"}); err != nil {
+			t.Fatal(err)
+		}
+		out := b.String()
+		// Whole at 80 columns, where the card's other rows truncate: a command cut
+		// short runs something else.
+		want := "resume   cd " + elsewhere.Meta.Cwd + " && claude --resume 7a8a84e4-7e68-4e4a-9549-4047e0c7a48d\n"
+		if !strings.Contains(out, want) {
+			t.Errorf("card missing %q: %q", want, out)
+		}
+	})
+
+	t.Run("the command rows color the words typed, and copy the same text", func(t *testing.T) {
+		lipgloss.SetColorProfile(termenv.TrueColor)
+		defer lipgloss.SetColorProfile(termenv.Ascii)
+		elsewhere := *sess
+		elsewhere.Meta.Cwd = "/Users/dev/.t3/worktrees/agentry/t3code-7a61f0a8"
+		here := Options{Width: 120, Here: "/Users/dev/Projects/me/agentry"}
+		var colored, plain strings.Builder
+		here.Color = true
+		if err := Session(&colored, &elsewhere, here); err != nil {
+			t.Fatal(err)
+		}
+		here.Color = false
+		if err := Session(&plain, &elsewhere, here); err != nil {
+			t.Fatal(err)
+		}
+		out := colored.String()
+		for _, word := range []string{"agentry", "cd", "claude"} {
+			if !regexp.MustCompile(`\x1b\[[0-9;]*m` + word + `\x1b\[0?m `).MatchString(out) {
+				t.Errorf("%q is not colored as a word typed: %q", word, out)
+			}
+		}
+		// The directory keeps the terminal's foreground: no escape opens it.
+		if !regexp.MustCompile(`\x1b\[0?m ` + regexp.QuoteMeta(elsewhere.Meta.Cwd) + ` \x1b\[`).MatchString(out) {
+			t.Errorf("the directory must stay plain: %q", out)
+		}
+		// Color only marks the parts: stripped, the rows are the colorless text.
+		visible, _ := stripANSI(out)
+		for _, line := range []string{
+			"render   agentry 7a8a84e4-7e68-4e4a-9549-4047e0c7a48d\n",
+			"resume   cd " + elsewhere.Meta.Cwd + " && claude --resume 7a8a84e4-7e68-4e4a-9549-4047e0c7a48d\n",
+		} {
+			if !strings.Contains(visible, line) || !strings.Contains(plain.String(), line) {
+				t.Errorf("row %q differs with color on and off", line)
+			}
+		}
+	})
+
+	t.Run("a session that ran here resumes without a cd", func(t *testing.T) {
+		var b strings.Builder
+		if err := Session(&b, sess, Options{Width: 120, Color: false, Here: sess.Meta.Cwd + "/"}); err != nil {
+			t.Fatal(err)
+		}
+		if out := b.String(); strings.Contains(out, "cd /") {
+			t.Errorf("a cd to where the reader stands says nothing: %q", out)
+		}
+	})
+
 	t.Run("it restates the header's size and spend", func(t *testing.T) {
 		// The restatement is the point: on a long session the header has scrolled
 		// away by the time a reader decides what to do with what they read. Counted
@@ -2469,5 +2537,20 @@ func TestAProseBlockNamesItsNumber(t *testing.T) {
 	}
 	if strings.Contains(quiet.String(), "block 1") {
 		t.Errorf("a hidden reasoning block still printed its number:\n%s", quiet.String())
+	}
+}
+
+// TestShellQuote pins the one word the resume row's cd line pastes: a path a
+// shell would split or expand is quoted, and an ordinary one is left readable.
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{
+		"/Users/dev/.t3/worktrees/app": "/Users/dev/.t3/worktrees/app",
+		"/Users/dev/My Projects/app":   "'/Users/dev/My Projects/app'",
+		"/Users/dev/it's/app":          `'/Users/dev/it'\''s/app'`,
+		"/Users/dev/$HOME/app":         "'/Users/dev/$HOME/app'",
+	} {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %s, want %s", in, got, want)
+		}
 	}
 }

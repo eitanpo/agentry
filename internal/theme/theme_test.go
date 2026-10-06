@@ -24,6 +24,11 @@ import (
 //
 // Test files are exempt: a test asserting an exact escape sequence is checking
 // what shipped, which is the one place a literal code says something.
+//
+// The walk covers the directories `go build ./...` does and no others, skipping
+// what `go help packages` says the "..." wildcard excludes. Skipping only .git
+// read a worktree checked out under .claude/worktrees/ — whose .git is a file —
+// as part of this module, and failed on another branch's code.
 func TestNoColorIsNamedOutsideTheTheme(t *testing.T) {
 	root := filepath.Join("..", "..")
 	var named []string
@@ -32,8 +37,15 @@ func TestNoColorIsNamedOutsideTheTheme(t *testing.T) {
 			return err
 		}
 		if info.IsDir() {
-			if info.Name() == ".git" {
+			if path == root {
+				return nil
+			}
+			name := info.Name()
+			if name == "vendor" || name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
 				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+				return filepath.SkipDir // another module
 			}
 			return nil
 		}

@@ -190,7 +190,7 @@ func renderSession(cmd *cobra.Command, args []string, noColor *bool, isRoot bool
 
 	color, width := terminal(*noColor)
 	if err := render.Session(cmd.OutOrStdout(), sess, render.Options{
-		Width: width, Color: color, Channels: channels, Selected: selected,
+		Width: width, Color: color, Channels: channels, Selected: selected, Here: cwd,
 	}); err != nil {
 		return &exitError{code: 1, err: err}
 	}

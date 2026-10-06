@@ -87,7 +87,7 @@ agentry list --all-projects --limit all --format json \
   | jq -r '.[] | select(.prs) | "\(.id) \(.prs | map(.url) | join(" "))"'   # every session that opened any PR
 agentry list                               # this directory and every project nested under it
 agentry list --all-projects                # every project, not just this directory
-agentry list --project ~/Projects/me/app   # that repo and every worktree nested in it
+agentry list --project ~/Projects/me/app   # that repo and every worktree of it, wherever it lives
 agentry list --project ~/Projects/me       # every repo under that directory
 agentry list --from app                    # only sessions started in the desktop app
 agentry list --from all                    # include headless runs, hidden by default
@@ -255,7 +255,9 @@ in `--format json`. These are the same facts `list --include files`, `--include 
 render with the session's id, its title, the directory it ran in, the conversation root it shares
 with any fork of itself, the log file it was read from, its counts and its spend, then the two
 commands that reach it again —
-`agentry <id>` to re-render it and `claude --resume <id>` to pick it back up. Before this, a render
+`agentry <id>` to re-render it and `claude --resume <id>` to pick it back up, prefixed with
+`cd <dir> &&` when the session ran somewhere other than where you are, such as a worktree outside
+the repo. Before this, a render
 named the session nowhere: you had to go back to a listing to find the id of the session you were
 looking at.
 
@@ -274,14 +276,17 @@ one kind, each row gains a 3-letter tag: `cli` (terminal), `app` (desktop), `sdk
 
 **A listing covers this directory and everything nested under it.** That matters because Claude
 Code gives every git worktree its own project folder, so a repo's sessions are split across them —
-standing in the main checkout lists the worktrees' sessions too. `--project PATH` applies the same
-subtree rule from a root you name instead, and `--all-projects` covers every project there is. All
+standing in the main checkout lists the worktrees' sessions too. At the top folder of any working
+tree that includes every worktree git records for the repository, even one a tool keeps in its own
+directory outside the repo; a subfolder lists only its own subtree. `--project PATH` applies the same
+rules from a root you name instead, and `--all-projects` covers every project there is. All
 three reach projects whose directory you have since deleted or renamed, which walking directories
 yourself cannot. When a listing spans more than one project, each row gains a project column before
 the title, labelled by the repository — a worktree's sessions carry the repo's name, not the
 worktree's, so one repo reads as one project. Inside a single repository that slot carries a
-worktree column instead, naming which worktree each session ran in (`—` for the repo's own
-checkout); it appears only when the sessions span more than one. `--format json` carries the full
+worktree column instead, naming which worktree each session ran in by its folder name (`—` for the
+repo's own checkout, and `~/…/name` for a worktree outside the repo, so you know to `cd` there
+before resuming it); it appears only when the sessions span more than one. `--format json` carries the full
 path as `cwd` on every session. Rendering follows the
 same scope, so an id copied off a listing opens where you read it — no `cd` into the worktree
 first — and `agentry view` with no id reaches the whole subtree too, picking the most recently
@@ -316,7 +321,7 @@ Sessions print oldest-to-newest, so the most recent is at the bottom, next to yo
 | `--by total\|day\|week\|month\|model\|agent\|project\|session` | `cost` | `total` | Which bucket the dollars are added up in. Time buckets print oldest first; `model`, `agent`, `project` and `session` print priciest first. Days begin at local midnight and weeks at Monday. `agent` groups by what the tokens were delegated to — a subagent type, a forked skill with its leading slash, or `(main thread)`; a delegation that delegates again is charged to the call you made, so a skill's row is what invoking it cost in full. `project` groups by the directory each session ran in, read from the log, cut at its first hidden segment — so a repo's worktrees under `.claude-worktrees` count with the repo while a sibling repo does not. Every row carries a bar for its share of the total, drawn from block characters so it survives `NO_COLOR` and a pipe; it is the last column and the first one dropped on a narrow terminal. There is no `--limit`, so the rows always account for the total line. |
 | `--chart auto\|none\|spark\|line\|calendar` | `cost` | `auto` | Which picture is drawn above the rows. `auto` draws one wherever the buckets are a span of time — a calendar for `--by day`, a sparkline for `--by week` and `--by month`, none for the axes with no time order — and a calendar in the summary's Day by day section, where `spark` asks for the compact line under the machine row instead. The rows, total and notes are always kept; `none` prints the table alone. `line` is a braille plot at four times the horizontal resolution of block characters; `calendar` shades each square by which quarter of the spending days it falls in, and on a roll-up needs `--by day`. A picture with too few buckets, or a terminal too narrow for it, is simply absent. Rejected, naming both flags, for an explicit picture on an axis with no time order and alongside `--format json`. |
 | `--all-projects` | `list`, `cost` | — | Every project under the projects root (`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/` when set), not just this directory's. Mutually exclusive with `--project`. |
-| `--project PATH` | `list`, `cost` | — | PATH's sessions instead of this directory's, including every project nested under PATH. It moves the root, not the depth — a listing already covers what is nested under the current directory, which is how standing in a repo picks up its git worktrees. |
+| `--project PATH` | `list`, `cost` | — | PATH's sessions instead of this directory's, including every project nested under PATH. It moves the root, not the depth — a listing already covers what is nested under the current directory, which is how standing in a repo picks up its git worktrees. A repository's top folder also reaches its worktrees outside it. |
 | `--from cli\|app\|sdk\|all` | `list`, `view`, `search`, `cost` | `cli`+`app` | Where the session was run. `sdk` is anything non-interactive (`claude -p`, a hook, CI) and is **hidden by default**; `all` restores it. On `view` and `search` (no id) it picks which kind the most-recent lookup walks back to; it cannot be combined with a session id. |
 | `schema [verb\|record]` | — | — | Print the shape of the machine-readable output: every `--format json` document, every `--format jsonl` record type, and the envelope those lines carry. Read off the Go types the emitters pass, so it cannot drift from what you receive. Bare prints everything; an argument narrows to one verb (`agentry schema view`) or one record type (`agentry schema hit`). Each key prints with its type, its nesting, and whether it is absent rather than empty. `--format json` emits the same description as data. |
 | `--format json\|jsonl\|text` | render, `search`, `list`, `cost`, `config`, `schema` | `text` | `json` emits machine-readable output for piping. On the render path it's the full session model (`meta` + `turns`, ignoring `--level`/channels and color but honoring `--turn`, which is a selector rather than a view), with `meta.effort` beside `meta.model`, `meta.prs` and `meta.artifacts` carrying what the session produced, and each tool call carrying the `identity` that `list --include tools` groups by plus the `model` an `Agent` call delegated to and the `prompt` it delegated, whole; on `list` it's a JSON array of per-session summaries, each carrying its `cwd`, the `files` it modified as absolute paths, its `denials`, its `model` and `effort`, its `usage`, `dailyUsage` (that same tally split per model per local day, which is what `agentry cost` buckets), `costUSD`, `linesAdded` and `linesRemoved` — the token tally over the main thread and every subagent, plus Claude Code's own dollar and line totals where the log recorded them, the same number the render path reports as `meta.usage`, which is what makes a cross-project cost tally one call instead of one render per session — and its outputs, `prs` (`{repository, number, url}`) and `artifacts` (`{title, url, path}`) (ignoring `--include` and color), and stdout is always a valid array — a directory with no project, or a project with no sessions, prints `[]` while still reporting the error on stderr and exiting non-zero, so you can pipe into `jq` without a guard. On `search` it is an array of hits, each carrying `turn`, `delegation`, `part`, `tool`, `identity`, `model`, `line` and `text`, and always well-formed — `[]` where nothing matched. On `cost` it is one object — `by`, `buckets`, `total`, `recorded`, `unpricedModels`, `pricesVerified` — emitted even when nothing matched. `jsonl` emits the same facts one JSON value per line, for large sessions, streaming consumers, and merging two sessions with `cat`. Each line is an envelope — `type`, `tool`, `sessionId`, `ordinal`, `time`, `payload`. The render path emits a `meta` record, a `turn` record per turn carrying its prompt, and an `event` record per event, with a subagent's events following their tool call at one greater `depth` rather than nested inside it; `list` emits one `session` record per row; `search` emits one `hit` record per match, whose envelope `sessionId` says which session it came from; `cost` emits a `report` (or `overview`) header, then `bucket` (or `scope`) records, then a `total`. `jq -s .` turns a stream back into the document `json` would have given you. Run `agentry schema` for the keys of any of these without reading this table. |

@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // ErrNoProject means $PWD has no matching folder under the projects root.
@@ -315,6 +317,11 @@ func SessionsAll() ([]string, error) {
 // other than the one its name encodes — a session relocated into the folder, or
 // one predating the cwd field. Taking the root by name is exactly what the narrow
 // lookup did before the default widened, so standing in a project always lists it.
+//
+// At the top folder of a git working tree the scope also takes every worktree of
+// that repository (Worktrees), since one kept outside the repository folder is
+// out of the subtree's reach and a caller would otherwise have to know its path
+// to find its sessions.
 func SessionsUnder(root string) ([]string, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -324,6 +331,7 @@ func SessionsUnder(root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	trees := Worktrees(abs)
 	var matched []string
 	// rootDir is "" when root has no folder of its own, and no folder name is
 	// ever empty, so the skip below needs no second test.
@@ -339,7 +347,7 @@ func SessionsUnder(root string) ([]string, error) {
 		if err != nil || cwd == "" {
 			continue
 		}
-		if underPath(abs, cwd) {
+		if underPath(abs, cwd) || inWorktree(trees, cwd) {
 			matched = append(matched, dir)
 		}
 	}
@@ -347,6 +355,96 @@ func SessionsUnder(root string) ([]string, error) {
 		return nil, ErrNoProject
 	}
 	return sessionsIn(matched)
+}
+
+func inWorktree(trees map[string]string, cwd string) bool {
+	for tree := range trees {
+		if underPath(tree, cwd) {
+			return true
+		}
+	}
+	return false
+}
+
+// Worktrees maps each worktree of the repository whose working tree has its top
+// folder at root — the main checkout's or any linked worktree's — to that
+// repository's main checkout, the main checkout itself included. nil where root
+// is not a working tree's top folder, or git cannot answer: a subfolder gets no
+// widening, so changing into one keeps narrowing a listing, and a machine
+// without git lists the subtree alone, as it did before this rule.
+//
+// The set is git's own record, so a worktree outside the repository folder is
+// found wherever a tool put it. Only worktrees whose folder still exists are
+// kept: once one is removed its sessions leave the repository's scope, while
+// git may still record it until pruned.
+//
+// Memoized per root, because one command asks twice — once for the scope and
+// once for the rows' labels — and the answer cannot change between the two.
+func Worktrees(root string) map[string]string {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil
+	}
+	if v, ok := worktreeCache.Load(abs); ok {
+		return v.(map[string]string)
+	}
+	trees := readWorktrees(abs)
+	worktreeCache.Store(abs, trees)
+	return trees
+}
+
+var worktreeCache sync.Map
+
+func readWorktrees(abs string) map[string]string {
+	out, err := exec.Command("git", "-C", abs, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil
+	}
+	// git reports each path with symlinks resolved, so root is compared in that
+	// form too: on macOS a temp directory under /var is /private/var to git.
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		real = abs
+	}
+	var main string
+	trees := map[string]string{}
+	top := false
+	// Porcelain output is one stanza per worktree, each opening with a
+	// "worktree <path>" line, and the main checkout's stanza comes first. A bare
+	// repository's stanza has no checkout to have run a session in, and is
+	// skipped like a removed worktree is.
+	for _, stanza := range strings.Split(string(out), "\n\n") {
+		var path string
+		bare := false
+		for _, line := range strings.Split(stanza, "\n") {
+			if p, ok := strings.CutPrefix(line, "worktree "); ok {
+				path = filepath.Clean(p)
+			}
+			if line == "bare" {
+				bare = true
+			}
+		}
+		if path == "" {
+			continue
+		}
+		if main == "" {
+			main = path
+		}
+		if bare {
+			continue
+		}
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			continue
+		}
+		trees[path] = main
+		if path == real || path == abs {
+			top = true
+		}
+	}
+	if !top {
+		return nil
+	}
+	return trees
 }
 
 // underPath reports whether path is root or lives inside it, compared by whole
