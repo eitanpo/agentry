@@ -129,7 +129,11 @@ mean a prompt was injected, so the marker heuristic below is still required.
   each field against its own spelling.
 - `attributionSkill` (assistant entries) — names the **inline** skill whose execution
   produced this main-chain turn (see Subagent stitching). Absent on turns not run under
-  a skill.
+  a skill. **It names the skill in effect, not the skill's own work**: it appears on every
+  assistant entry after the skill loads — through a `Skill` call, or from the first entry
+  when a typed slash command loaded it — and stays until the turn ends or another skill
+  loads. A new turn starts untagged, a turn opened by an injected message included, so a
+  skill loaded at a turn's start as guidance tags all of that turn's work.
 - `attributionAgent` / `attributionMcpServer` / `attributionMcpTool` — the same idea for
   the other three things a turn can be run under: a subagent type, an MCP server, an MCP
   tool. They co-occur with `attributionSkill` rather than replacing it.

@@ -805,7 +805,7 @@ func axisHeading(by string) string {
 	case ByModel:
 		return "Model"
 	case ByAgent:
-		return "Delegated to"
+		return "Spent under" // not "Delegated to": the main thread and inline skills are rows too
 	case ByProject:
 		return "Project"
 	case BySession:

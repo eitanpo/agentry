@@ -476,6 +476,19 @@ func TestBuildByAgentSplitsTheBillWithoutGrowingIt(t *testing.T) {
 	}
 }
 
+// TestRenderByAgentHeadsTheColumnForEveryRow pins the agent axis's header to
+// one that is true of the main-thread row as well as the delegated ones.
+func TestRenderByAgentHeadsTheColumnForEveryRow(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, Build(delegating(), ByAgent, time.Time{}, time.Time{}), Options{Width: 100}); err != nil {
+		t.Fatal(err)
+	}
+	header, _, _ := strings.Cut(buf.String(), "\n")
+	if !strings.HasPrefix(header, "Spent under ") {
+		t.Errorf("header = %q, want it to open with \"Spent under\"", header)
+	}
+}
+
 // TestTurnsLandInTheBucketTheyStartedIn pins the reason turns are carried per
 // day rather than per session: a day row has to divide that day's dollars by
 // that day's turns, not by every turn of every session that touched it.

@@ -1262,6 +1262,39 @@ func TestDelegatedTokensCarryTheirCallersName(t *testing.T) {
 	}
 }
 
+// TestInlineSkillTokensCarryTheSkillsName pins the inline half of the agent
+// axis: a response written under an inline skill lands on that skill's row,
+// spelled with the slash a forked run of it gets, a plugin's prefix kept; only
+// responses under no skill stay on the main thread. The repeated req_2 checks
+// that labelling did not split one response into two tallies.
+func TestInlineSkillTokensCarryTheSkillsName(t *testing.T) {
+	path := filepath.Join("testdata", "inline-skill.jsonl")
+	want := map[string]int{"": 150, "/recall": 250, "/eval:lookup": 300}
+	byAgent := func(daily []model.DailyUsage) map[string]int {
+		got := map[string]int{}
+		for _, d := range daily {
+			got[d.Agent] += d.Usage.Output
+		}
+		return got
+	}
+	s, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string]map[string]int{"Summarize": byAgent(s.DailyUsage), "Load": byAgent(sess.Meta.DailyUsage)} {
+		if !maps.Equal(got, want) {
+			t.Errorf("%s: output tokens by agent = %v, want %v", name, got, want)
+		}
+	}
+	if s.Usage.Output != 700 {
+		t.Errorf("session output = %d, want 700", s.Usage.Output)
+	}
+}
+
 // TestNestedDelegationChargesTheCallTheSessionMade pins where a chain's cost
 // lands: on the delegation the session itself chose, not on a row naming
 // something it never invoked and could not decide to stop running.

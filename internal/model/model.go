@@ -364,8 +364,9 @@ func (u *Usage) Add(o Usage) {
 type DailyUsage struct {
 	Day   string `json:"day"`
 	Model string `json:"model,omitempty"`
-	// Agent is what the tokens were delegated to — a subagent type, or a forked
-	// skill written with its leading slash. Empty for the main thread, which is
+	// Agent is what the tokens were delegated to or spent under — a subagent
+	// type, or a skill written with its leading slash, whether it forked or ran
+	// inline. Empty for the main thread under no skill, which is
 	// the majority of every session and is named rather than labelled so the
 	// agent axis sums to the session's total instead of to its delegated part.
 	Agent string `json:"agent,omitempty"`

@@ -1183,6 +1183,9 @@ type entry struct {
 	// denialKind is why a call was refused, on the user entry carrying its
 	// tool_result. Empty on every other entry and on results that ran.
 	denialKind string
+	// inlineSkill is the skill in effect on an assistant entry, without the
+	// slash it is invoked by. Empty under no skill and on every other entry type.
+	inlineSkill string
 	// trackingPath (file-history-delta) and trackedPaths (file-history-snapshot)
 	// are Claude Code's own record of which files changed, in the log's own mix of
 	// repo-relative and absolute forms — sessionFiles resolves them.
@@ -1256,6 +1259,10 @@ type rawEntry struct {
 	// tool_result. Not to be confused with permission-mode entries, which record
 	// the mode in effect and never a per-call decision.
 	ToolDenialKind string `json:"toolDenialKind"`
+	// AttributionSkill names the inline skill in effect when an assistant entry
+	// was written; docs/session-format.md (`attributionSkill`) says how long a
+	// skill stays in effect.
+	AttributionSkill string `json:"attributionSkill"`
 	// TrackingPath is the file a file-history-delta entry records a change to,
 	// and Snapshot the cumulative tracked set on a file-history-snapshot entry.
 	// Both are Claude Code's own record of what changed, independent of tools.
@@ -1571,7 +1578,7 @@ func loadEntries(path string) ([]entry, error) {
 			typ: re.Type, uuid: re.UUID, title: re.AiTitle + re.CustomTitle + re.AgentName,
 			isCompactSummary: re.IsCompactSummary, cwd: re.Cwd, entrypoint: re.Entrypoint,
 			effort:     re.Effort,
-			denialKind: re.ToolDenialKind, trackingPath: re.TrackingPath,
+			denialKind: re.ToolDenialKind, inlineSkill: re.AttributionSkill, trackingPath: re.TrackingPath,
 			requestID: re.RequestID, promptID: re.PromptID, turnCompanion: re.TurnCompanion,
 			harnessReminder: re.IsMeta && re.SourceToolUseID != "", meta: re.IsMeta,
 		}
@@ -1833,6 +1840,11 @@ func sumUsage(entries []entry) model.Usage {
 // mainTally reads the main log's assistant entries into one tally. fallback is
 // the timestamp a record takes when its own entry carries none, so a response
 // still lands on a day; callers with no day to answer for pass the zero time.
+//
+// A response written under an inline skill is labelled with that skill the way
+// a forked run of it is, so both land on one row of the agent axis. Records
+// read from a sidecar take its delegation's label afterwards in
+// labelledRecords, whatever skill was in effect inside it.
 func mainTally(entries []entry, fallback time.Time) usageTally {
 	var t usageTally
 	for _, e := range entries {
@@ -1841,6 +1853,7 @@ func mainTally(entries []entry, fallback time.Time) usageTally {
 		}
 		t.add(usageKey(e.requestID, e.uuid), usageRecord{
 			day: dayOf(e.t, fallback), model: e.model, usage: e.usage,
+			agent: spawnLabel("Skill", e.inlineSkill),
 		})
 	}
 	return t
