@@ -1,6 +1,6 @@
 # Claude Code session log format
 
-Reverse-engineered from real logs, spanning Claude Code 2.1.195 through 2.1.263. **Not an official spec** —
+Reverse-engineered from real logs, spanning Claude Code 2.1.195 through 2.1.319. **Not an official spec** —
 Claude Code may change it without notice; re-verify against live files before relying
 on a detail here. `internal/parse` and `internal/locate` encode this format.
 
@@ -10,8 +10,8 @@ Code installs as one large binary with its JavaScript bundle embedded as plain t
 the log — the field names it emits, the values it validates, and the table it keys entry
 types by. Use it for the question a corpus sweep cannot answer: whether a type missing from the logs was removed or was simply never written on this machine. Two mechanics: give the pattern a window on one side only, because a two-sided window exceeds some `grep` implementations' complexity limit and errors instead of matching; and label every fact drawn
 this way with the build it came from, since the next release rewrites the bundle. A fact
-below naming a build — 2.1.263 or 2.1.268 — comes from that build's binary rather than from a
-log, and the builds differ because the file was extended at two different times.
+below naming a build — 2.1.263, 2.1.268 or 2.1.319 — comes from that build's binary rather
+than from a log, and the builds differ because the file was extended at different times.
 
 Re-verify with `scripts/schema-scan.sh` (see [DEVELOPMENT.md](../DEVELOPMENT.md)). It reports
 every field, entry type, `system` subtype, content-block type and `entrypoint` value in the
@@ -88,7 +88,18 @@ The set grows over time and is additive — Claude Code adds fields without remo
 existing ones, so unknown fields are expected and the parser ignores them. Fields seen
 since the initial observation, with their meaning:
 
-- `entrypoint` — where the session was started: `cli`, `sdk-cli`, or `claude-desktop`. The
+- `entrypoint` — where the session was started: `cli`, `sdk-cli`, `sdk-ts`, or
+`claude-desktop`. `sdk-ts` is the TypeScript Agent SDK and `sdk-py` the Python one: the binary
+(2.1.319) groups them with `sdk-cli` as its three SDK entrypoints, read from
+`CLAUDE_CODE_ENTRYPOINT`, and `sdk-ts` entries carry no `promptSource`. **The TypeScript SDK
+keeps a value it inherits**, writing `sdk-ts` only when the variable is unset, while the
+Python SDK always overwrites it with `sdk-py`. Claude Code exports `cli` to the shells it
+runs, so a TypeScript SDK script launched from inside a session inherits `cli` — and is
+logged as `sdk-cli`, the value a `claude -p` run writes, not as `cli`. Such a run stays
+in the SDK group under the other name: `sdk-ts` alone undercounts TypeScript SDK runs, and
+only the full set of three finds them all. The same build knows further values no log here has
+written (`sdk-py`, `mcp`, `claude-vscode`, `claude-code-github-action`, `local-agent`, and a
+`remote*` family), so read an unfamiliar value as a client rather than as corruption. The
 desktop app writes ordinary logs to the same `~/.claude/projects/` tree, so nothing but this
 field separates a desktop session from a terminal one. It ships its own bundled Claude Code
 build, which lags the CLI's, so a desktop session's `version` can be older than anything the
@@ -113,21 +124,32 @@ interactive prompts, not merely the absence of the field.
 is inferable from the entries carrying them. Present only on prompt-bearing `user` entries,
 never on the ones carrying a `tool_result`. **A positive signal only**: its absence does not
 mean a prompt was injected, so the marker heuristic below is still required.
+- `turnOrigin` (`user` entries, since 2.1.278) — a flat string mirroring `origin.kind`, but
+  spelled differently: `task_notification` where `origin` says `task-notification`. Match
+  each field against its own spelling.
 - `attributionSkill` (assistant entries) — names the **inline** skill whose execution
   produced this main-chain turn (see Subagent stitching). Absent on turns not run under
   a skill.
 - `attributionAgent` / `attributionMcpServer` / `attributionMcpTool` — the same idea for
   the other three things a turn can be run under: a subagent type, an MCP server, an MCP
   tool. They co-occur with `attributionSkill` rather than replacing it.
+- `attributionPlugin` — the plugin a skill came from. `attributionSkill` is then prefixed
+  `<plugin>:` (`eval:lookup`), so an exact match on a skill name misses a plugin's copy.
 - `toolDenialKind` — on the `user` entry carrying a **denied** call's `tool_result`. One of
   `permission-rule` (a settings deny rule fired), `automode-blocked` (the auto-mode
   classifier refused), `automode-unavailable`, or `user-rejected` (the human said no). This
-  is the only per-call permission signal in the log; `permission-mode` entries record the
-  mode in effect and nothing about individual calls. Logs before 2.1.198 lack the field —
+  says why a call was refused; `permissionDecision` (below) records every call's outcome,
+  approvals included. `permission-mode` entries record the mode in effect and nothing about
+  individual calls. Logs before 2.1.198 lack the field —
   there, a denial is a `tool_result` with `is_error` whose body starts `Permission to use`
   or reads `The user doesn't want to proceed with this tool use`. Never apply that free-text
   fallback to an `mcp__*` tool: a tool_result body is authored by the tool, so a hostile MCP
   server can emit the same sentence and manufacture a denial that never happened.
+- `permissionDecision` (`user` entries carrying a `tool_result`, since 2.1.293) — the
+  permission outcome of the call: `decision` (`accept` / `reject`), `source` (`config`,
+  `hook`, `user_permanent`, `user_temporary`) and an optional `reasonType` (`classifier`,
+  `rule`, `subcommandResults`, `hook`, `mode`, `other`). A `reject` always pairs with a
+  `toolDenialKind`; an `accept` never does. This is the only record of *who approved* a call.
 - `toolUseResult` — a top-level **structured** mirror of a tool's result, on the same
   `user` entry that carries the `tool_result` block. Shape varies by tool (e.g. `Edit`
   → `structuredPatch`/`userModified`; `Bash` → `stdout`/`stderr`; sometimes just a
@@ -181,10 +203,13 @@ itself — so it annotates one of the `<synthetic>` entries described under
   `system` entry below.
 - `system` entries carry `subtype` — `stop_hook_summary`, `turn_duration`,
 `away_summary`, `local_command`, `compact_boundary`, `informational`,
-`api_error`, `scheduled_task_fire`, `model_refusal_fallback` — and
+`api_error`, `scheduled_task_fire`, `model_refusal_fallback`, `bridge_status` — and
 sometimes `level` (`info`, `suggestion`). `stop_hook_summary` entries also carry
   `hasOutput`, `stopReason`, `preventedContinuation` and `toolUseID`; `turn_duration` carries
-  `durationMs` and `messageCount`.
+  `durationMs` and `messageCount`. `bridge_status` carries `url`, the session's
+  remote-control link on claude.ai. `local_command` entries also carry `commandRun`
+  (`command`, `args`, and `plugin` for a plugin's command) since 2.1.273 — the structured
+  form of the `<command-name>` markers.
 
   `scheduled_task_fire` is a wake-up from a scheduled task or a `/loop`: `taskId`, `taskKind`
 and `cronKind` (both seen as `loop`), the `cron` expression, and the `prompt`
@@ -225,13 +250,30 @@ error subtypes (`api_error`, `model_refusal_fallback`); it does not explain this
   `totalLinesRemoved` / `startTime` / `modelUsage` / `hasUnknownModelCost`
   (`cost-state`), and `v` / `artifacts` / `accountUuid` (the two artifact bookkeeping
   types).
+- Assistant-entry request metadata, added between 2.1.267 and 2.1.319: `perTurnEffort`,
+  `requestedModel` (the model id asked for, beside `message.model`'s answer),
+  `advisorModel`, `thinkingDisplay` (`summarized` / `omitted`), `thinkingDurationMs`,
+  `toolInputStreamMs`, `promptCacheRequested` (`1h`), `requestRef` (the `id` of the
+  `api-request` entry recording the call), `serverClassifierRequest`, and `wireToolInputs` /
+  `wireIngestContext` — tool inputs as sent, keyed by `tool_use` id.
+- User-entry metadata from the same span: `turnPosition` (`promptIndex`, `turnIndex`),
+  `toolEndsTurn`, `sandboxed`, `serverClassifierContext` (the context sent with a server-side
+  classifier request, git state included), `summarizedTurnPromptUuids`,
+  `joinedNoticeLengths` / `joinedNoticeOwn` / `joinedNoticeRunIds`, `queueTranscriptOnly`,
+  and `queueSkipSlashCommands`.
+- `attachment` entries carry `rendered` (the reminder text as sent to the model),
+  `renderedRole`, `renderedInHumanTurn` and `renderedBesideToolResult`.
+- `queue-operation` entries gain `commandUuid` and `deliveryId`; `last-prompt` entries gain
+  `explicit`.
 - Fields observed but not yet explained, each rare enough that no purpose was inferable:
-  `pendingBackgroundAgentCount`, `classifierMetaLines`, `sessionKind`, `source`, `mcpMeta`.
+  `pendingBackgroundAgentCount`, `classifierMetaLines`, `sessionKind`, `source`, `mcpMeta`,
+  `commandOutcome`, `isAbortedMidStream`, `wakeupSource`, `usageLimitNote`,
+  `interruptedBySendNow`, `scope`, `supersedesUuids`, `toolResultRemedy`.
   They are listed so the next sweep reports them as known-unexplained rather than as new.
 
 ### Entry types
 
-Twenty-three types are documented here, and the binary names fifteen more that none of these
+Thirty-two types are documented here, and the binary names eleven more that none of these
 logs holds. **Only `assistant` and `user` carry renderable content**; ignore the rest —
 but ignore by skipping what you do not recognize, never by matching a closed list, because
 this list has grown at every re-verification.
@@ -239,21 +281,22 @@ this list has grown at every re-verification.
 Content: `assistant`, `user`.
 
 **The full roster is in the binary, grouped by what Claude Code does with each type.** At
-2.1.263 it keys every type it can write to one of four retention classes, and a type the
+2.1.319 it keys every type it can write to one of four retention classes, and a type the
 table omits defaults to `accumulate`. `scripts/schema-scan.sh` re-reads this table on every run and reports what it finds against the
 logs it scans, so the copy below is a snapshot to read rather than the thing to re-derive by hand:
 
 | Class | Meaning | Types |
 |:--|:--|:--|
 | `transcript` | the conversation itself, chained by `uuid` | `user`, `assistant`, `system`, `attachment` |
-| `boundary-cleared` | dropped for everything before the last compaction boundary | `progress`, `file-history-snapshot`, `file-history-delta`, `last-prompt`, `continued-in`, `marble-origami-commit`, `marble-origami-snapshot`, `marble-origami-reset` |
-| `accumulate` | every entry kept | `content-replacement`, `fork-context-ref`, `frame-link`, `artifact-comment-monitor` |
-| `last-wins` | only the newest entry of the type matters | `summary`, `custom-title`, `ended-by-model`, `ai-title`, `tag`, `relocated`, `agent-name`, `agent-color`, `agent-setting`, `pr-link`, `artifact-autoreact-ledger`, `bridge-session`, `history-suppression`, `attribution-snapshot`, `mode`, `permission-mode`, `isolation-latch`, `atis-latch`, `worktree-state`, `cost-state`, `queue-operation`, `observer-ref` |
+| `boundary-cleared` | dropped for everything before the last compaction boundary | `progress`, `file-history-snapshot`, `file-history-delta`, `last-prompt`, `continued-in`, `resume-head-vouch`, `api-request-shape`, `api-request-blob`, `api-request` |
+| `accumulate` | every entry kept | `content-replacement`, `fork-context-ref`, `frame-link`, `artifact-comment-monitor`, `memory-mode` |
+| `last-wins` | only the newest entry of the type matters | `summary`, `custom-title`, `ended-by-model`, `ai-title`, `tag`, `relocated`, `agent-name`, `agent-color`, `agent-setting`, `pr-link`, `artifact-autoreact-ledger`, `bridge-session`, `history-suppression`, `attribution-snapshot`, `mode`, `permission-mode`, `isolation-latch`, `session-owner`, `dev-mods`, `atis-latch`, `tools-used`, `worktree-state`, `cost-state`, `queue-operation`, `observer-ref` |
 
-Fifteen of those 38 names never appear in a log examined here: `progress`, `continued-in`, the three
-`marble-origami-*` types, `content-replacement`, `summary`, `ended-by-model`, `tag`,
-`agent-color`, `bridge-session`, `history-suppression`, `attribution-snapshot`,
-`isolation-latch`, and `observer-ref`. Take the roster as the set of names a reader can meet
+Eleven of those 43 names never appear in a log examined here: `progress`,
+`resume-head-vouch`, `content-replacement`, `memory-mode`, `summary`, `ended-by-model`,
+`tag`, `agent-color`, `history-suppression`, `attribution-snapshot`, and `observer-ref`.
+The three `marble-origami-*` types the 2.1.263 table carried are gone from it.
+Take the roster as the set of names a reader can meet
 and as Claude Code's own grouping of them — not as two other things it looks like:
 
 - **The classes describe a rewrite Claude Code plans, not the file on disk.** The routine
@@ -276,13 +319,13 @@ the build and time of the surrounding lines.
 `attributionAgent` (`docs-reviewer`, …).
 - `mode` — the session's mode. Only `normal` observed.
 - `permission-mode` — the permission mode in effect (`auto`, …). Records the mode and never
-  a per-call outcome; for that read `toolDenialKind`.
+  a per-call outcome; for that read `permissionDecision`, or `toolDenialKind` for a refusal.
 - `last-prompt` — `lastPrompt` plus `leafUuid`, the anchor a resume attaches to.
 - `atis-latch` — a `sessionId` plus `atis`, a printable-ASCII string (the binary at 2.1.263
 validates it against `/^[\x21-\x7e]*$/`) latched at the entry a branch is taken from. Its
 meaning is **unknown**: every entry seen carries the empty string, so
 nothing here says what a non-empty one would mean. The binary writes it beside an
-`isolation-latch` entry, which carries a `side` and has not been observed in any log. Present
+`isolation-latch` entry, which carries a `side` (`connectors` and `web` observed). Present
 since 2.1.234 and in every recent session, so any survey meets it immediately — and it holds
 nothing a transcript reader can use.
 
@@ -347,7 +390,7 @@ evidence that nothing changed.
   `AGENTS.md`, which resolves to `<repo>/AGENTS.md`. So the two records can name one edit twice, at two paths. This case is rare —
 meaning the tracked record adds almost nothing over
 reading tool arguments, and what it does add may be a path that never existed.
-- `system` — carries `subtype`; the nine observed values are listed under Common
+- `system` — carries `subtype`; the ten observed values are listed under Common
   top-level fields above.
 - `cost-state` — the session's running totals, rewritten as it goes: `totalCostUSD`,
   `totalDuration`, `totalAPIDuration`, `totalAPIDurationWithoutRetries`,
@@ -464,9 +507,32 @@ looks like rather than a gap.
   and the ledger also carries `accountUuid`. For what a session actually published, read
   `frame-link`.
 - `fork-context-ref` — appears only inside subagent sidecars; see Subagent stitching.
+- `api-request`, `api-request-shape`, `api-request-blob` (since 2.1.300) — a record of each
+  API call Claude Code sent, stored content-addressed. `api-request` is one call: `id` (the
+  `requestRef` an assistant entry points back with), `querySource`, `params` (model, betas,
+  `max_tokens`, thinking and effort settings), `cacheControl`, `shapeHash`, a `base` and a
+  `tail` of blob hashes, `keep`, and `requestDigest`. `api-request-shape` holds the system
+  prompt and tool definitions in `shape`, once per `shapeHash`. `api-request-blob` holds one message per
+  `hash`. Sidecars write all three too, each with an `agentId`.
+
+  **A blob carries a `message` with `role: "user"` or `"system"`, and is not a turn.** It is
+  the prompt as sent, reminders and all, so a reader that keys on `message` rather than on
+  `type` replays every request as a fresh conversation. Skip by `type`. The `tool_addition`
+  and `tool_removal` content blocks occur only inside these blobs — mid-conversation changes
+  to the tool definitions — never in a `user` or `assistant` entry. These types also make up
+  a sizeable share of a session's bytes, which a reader timing its parse will notice.
+- `session-owner` — `accountUuid` and `organizationUuid` of the account running the session.
+- `tools-used` — `tools`, the names of every tool the session has called so far. Each entry
+  re-lists the whole set, so read the last one.
+- `dev-mods` — `folder`, a directory under the config home named for the session.
+- `bridge-session` — the link to a remote-control session: `bridgeSessionId`,
+  `lastSequenceNum`, and usually `ownerAccountUuid` / `ownerOrganizationUuid`.
+- `continued-in` — the conversation moved to a background session, named by
+  `continuedInSessionId`; see [Session continuation and
+  forking](#session-continuation-and-forking).
 
 `progress` is real and simply not written here. It is still in the binary's own type table
-at 2.1.263, in the `boundary-cleared` class, though absent from every log examined. A log
+at 2.1.319, in the `boundary-cleared` class, though absent from every log examined. A log
 sweep alone cannot tell whether an absent type was removed or was simply never triggered;
 reading the binary settles it.
 
@@ -577,9 +643,9 @@ easy to get wrong:
   counting top-level calls only will legitimately miss part of the total.
   `permission-mode` entries are **not** this signal —
   they record the mode in effect, never a per-call decision.
-- `image` (94 occurrences), `document` (3) — pasted or attached media. Inline images are a
+- `image`, `document` — pasted or attached media. Inline images are a
   stated non-goal, so a renderer skips these rather than failing on them.
-- `fallback` (1) — not content at all but a model swap mid-turn, shaped
+- `fallback` — rare, and not content at all but a model swap mid-turn, shaped
   `{"type":"fallback","from":{"model":…},"to":{"model":…}}`. It occupies a content slot, so
   a renderer that assumes every block has text must skip it by type.
 
@@ -776,9 +842,19 @@ continuation **appends to the same file** or **opens a new file**:
 - **New file (new `sessionId`):** `/clear` and `--fork-session`/`/branch`. These differ
   in whether prior history is carried into the new file:
   - **`/clear`** starts the new session with **empty** context — no prior lines are
-    copied, so the new file shares no `uuid`s with the old one. The only cross-file link
-    is the `custom-title` that `/clear NAME` writes back onto the **previous** file (see
+    copied, so the new file shares no `uuid`s with the old one. The `custom-title` that
+    `/clear NAME` writes back onto the **previous** file is one cross-file link (see
     [Entry types](#entry-types)).
+
+A `continued-in` entry (`continuedInSessionId`, `timestamp`; since 2.1.266) is a second
+cross-file link: it records that the conversation moved to a background session — the
+binary (2.1.319) words it as "Your most recent conversation moved to a background session".
+**A later turn cancels it.** Claude Code reads the newest `continued-in` from the end of the
+file and discards it when a finished `user` or `assistant` entry follows, which is how a log
+can hold one and then go on taking turns. It hides the session from `/resume` only when
+`<same project folder>/<continuedInSessionId>.jsonl` exists and reads as a session, so the
+named file being absent is a state the format allows, not corruption. Treat the id as a
+hint to look for, never as a file guaranteed to exist.
   - **`--fork-session` / `/branch`** copies the parent's linear message chain verbatim into `<new-uuid>.jsonl`. Each copied line
     keeps its original `uuid` and `parentUuid`; new turns append after, chaining onto the
     last copied line. Every copied line's `sessionId` is **rewritten** to the new id, and
