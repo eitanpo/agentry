@@ -202,6 +202,9 @@ func TestTag(t *testing.T) {
 		{"terminal", model.Summary{Entrypoint: "cli"}, "cli"},
 		{"desktop app", model.Summary{Entrypoint: "claude-desktop"}, "app"},
 		{"headless", model.Summary{Entrypoint: "sdk-cli"}, "sdk"},
+		// The Agent SDKs write their own values; each is the same kind of run.
+		{"typescript agent sdk", model.Summary{Entrypoint: "sdk-ts"}, "sdk"},
+		{"python agent sdk", model.Summary{Entrypoint: "sdk-py"}, "sdk"},
 		// Claude Code adds entrypoints without notice. A blank would read as "no
 		// data" and hide the new value; "?" says a value exists and is unmapped.
 		{"unrecognized value", model.Summary{Entrypoint: "future-client"}, "?"},
@@ -228,6 +231,8 @@ func TestFilterByFrom(t *testing.T) {
 		{ID: "c", Entrypoint: "sdk-cli"},
 		{ID: "d", Entrypoint: "future-client"},
 		{ID: "e"},
+		{ID: "f", Entrypoint: "sdk-ts"},
+		{ID: "g", Entrypoint: "sdk-py"},
 	}
 	ids := func(got []model.Summary) string {
 		var b strings.Builder
@@ -246,10 +251,10 @@ func TestFilterByFrom(t *testing.T) {
 		// An unrecognized entrypoint is kept — a new value is more likely a new
 		// way of working than a new kind of noise — and so is a session with none.
 		{"default hides only headless", "", "abde"},
-		{"all keeps everything", entrypoint.All, "abcde"},
+		{"all keeps everything", entrypoint.All, "abcdefg"},
 		{"cli alone", entrypoint.CLI, "a"},
 		{"app alone", entrypoint.App, "b"},
-		{"sdk alone", entrypoint.SDK, "c"},
+		{"sdk alone", entrypoint.SDK, "cfg"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

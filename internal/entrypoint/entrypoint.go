@@ -9,6 +9,7 @@
 package entrypoint
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/eitanpo/agentry/internal/trail"
@@ -25,24 +26,25 @@ const (
 // Names are the accepted --from values, for validation and suggestions.
 var Names = []string{CLI, App, SDK, All}
 
-// logHeadless is the log's value for a non-interactive run. Named once so the
-// string does not spread across the listing default, `view`'s no-id resolution,
-// and session-id completion, which all mean the same thing by "headless".
-const logHeadless = "sdk-cli"
+// headlessLogValues are the log's values for a non-interactive run;
+// docs/session-format.md (`entrypoint`) says which client writes each. Named
+// once so the listing default, `view`'s no-id resolution and session-id
+// completion share it.
+var headlessLogValues = []string{"sdk-cli", "sdk-ts", "sdk-py"}
 
 // logValues maps each selector to the log values it covers. All is absent: it
 // constrains nothing, so a lookup that misses is the correct answer for it.
 var logValues = map[string][]string{
 	CLI: {"cli"},
 	App: {"claude-desktop"},
-	SDK: {logHeadless},
+	SDK: headlessLogValues,
 }
 
 // IsHeadless reports whether a session was a non-interactive run — a `claude -p`
-// from a script, a hook, a CI step. A session started headless and resumed
-// interactively is not headless: the resolved entrypoint is the last one, and
-// somebody worked in it.
-func IsHeadless(logValue string) bool { return logValue == logHeadless }
+// from a script, a hook, a CI step, or an Agent SDK program. A session started
+// headless and resumed interactively is not headless: the resolved entrypoint is
+// the last one, and somebody worked in it.
+func IsHeadless(logValue string) bool { return slices.Contains(headlessLogValues, logValue) }
 
 // Matches reports whether a log value satisfies a selector. The empty selector
 // is the default — everything except non-interactive runs.
@@ -71,10 +73,11 @@ func Tag(logValue string) string {
 		return CLI
 	case "claude-desktop":
 		return App
-	case logHeadless:
-		return SDK
 	case "":
 		return ""
+	}
+	if IsHeadless(logValue) {
+		return SDK
 	}
 	return "?"
 }
