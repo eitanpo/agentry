@@ -459,23 +459,12 @@ func ranOnParts(m model.Meta) []string {
 	return parts
 }
 
-// failedAndDenied counts the session's own top-level calls that failed and that
-// were refused, matching the tool count beside them — a call made inside a
-// subagent is not counted, the rule the per-turn tool count already follows.
-//
-// A refusal is tested first and on Denial alone: the log marks a refused call as
-// an error too, so testing IsError first would file every refusal as a failure.
-func failedAndDenied(s *model.Session) (failed, denied int) {
-	for _, t := range s.Turns {
-		f, d := failedAndDeniedIn(t.Events)
-		failed, denied = failed+f, denied+d
-	}
-	return failed, denied
-}
-
 // failedAndDeniedIn counts one stream's own calls, which is what the rule under
 // a turn reports. Nested subagent streams are not walked, so a turn's counts add
 // up to the session's.
+//
+// A refusal is tested first and on Denial alone: the log marks a refused call as
+// an error too, so testing IsError first would file every refusal as a failure.
 func failedAndDeniedIn(events []model.Event) (failed, denied int) {
 	for _, e := range events {
 		if e.Kind != model.EventTool || e.Tool == nil {

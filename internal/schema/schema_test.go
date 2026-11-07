@@ -20,7 +20,8 @@ type node struct {
 	Children []node `json:"children,omitempty"`
 	Parent   *node  `json:"parent,omitempty"`
 	Ignored  string `json:"-"`
-	unseen   string //nolint:unused // an unexported field is not serialized
+	//lint:ignore U1000 the subject of the check that unexported fields stay out of the schema
+	unseen   string
 	Untagged int
 	When     time.Time      `json:"when"`
 	Count    int            `json:"count"`

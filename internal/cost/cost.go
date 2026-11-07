@@ -1294,18 +1294,6 @@ func RenderOverviewJSON(w io.Writer, o Overview) error {
 // which days it covers.
 const dayTitle = "Day by day"
 
-// machineScope is the widest of the summary's rows, which the picture beneath
-// them is of. A zero value where the row is absent, so a caller printing its
-// window gets an empty heading rather than a wrong one.
-func machineScope(o Overview) Scope {
-	for _, s := range o.Scopes {
-		if s.Scope == ScopeMachine {
-			return s
-		}
-	}
-	return Scope{}
-}
-
 // Shapes describes what a roll-up writes in its machine-readable forms. The two
 // header records carry the document-level fields of the report and of the
 // three-scope summary, their rows following as records of their own.

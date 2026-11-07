@@ -364,6 +364,9 @@ func TestSearchRefusesAPatternThatSpansLines(t *testing.T) {
 	if code, out, errOut = exec("search", `second\sprompt`); code != 0 {
 		t.Errorf("a whitespace class exits %d, want 0 (stderr %q)", code, errOut)
 	}
+	if !strings.Contains(out, "second prompt") {
+		t.Errorf("a whitespace class was accepted but did not find the prompt it spans: %q", out)
+	}
 }
 
 // TestListFixedStringsNeedsAPatternToRead pins the flag's scope on the listing.
