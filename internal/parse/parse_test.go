@@ -371,6 +371,33 @@ func TestIsClearCmd(t *testing.T) {
 	}
 }
 
+// TestTitlePromptSkipsBareSlashCommand pins the title ladder's last rung: a
+// slash command typed alone names a setting, not the session, while one with
+// arguments and a typed path are kept because either can be the task itself.
+func TestTitlePromptSkipsBareSlashCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		prompts []string
+		want    string
+	}{
+		{"bare command skipped", []string{"/model", "fix the parser"}, "fix the parser"},
+		{"plugin-scoped command skipped", []string{"/eval:lookup", "fix the parser"}, "fix the parser"},
+		{"every skip kind in a row", []string{"/clear", "! git status", "/effort", "fix the parser"}, "fix the parser"},
+		{"command with arguments kept", []string{"/lookup rate limits", "fix the parser"}, "/lookup rate limits"},
+		{"typed path kept", []string{"/Users/me/notes.md", "fix the parser"}, "/Users/me/notes.md"},
+		{"lone slash kept", []string{"/", "fix the parser"}, "/"},
+		{"nothing but commands keeps the first", []string{"/model", "/context"}, "/model"},
+		{"no prompts", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := TitlePrompt(tt.prompts); got != tt.want {
+				t.Errorf("TitlePrompt(%q) = %q, want %q", tt.prompts, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoad(t *testing.T) {
 	sess, err := Load(filepath.Join("testdata", "sample.jsonl"))
 	if err != nil {
@@ -2171,8 +2198,10 @@ func TestTypedCommandOnASystemEntryBecomesItsOwnTurn(t *testing.T) {
 		t.Errorf("second text = %q, want the report the command wrote into the conversation", texts[1])
 	}
 
-	if sess.Meta.Title != "/context" {
-		t.Errorf("title = %q, want the command the session opened with", sess.Meta.Title)
+	// Neither the report nor the bare /context it came from names the session, so
+	// the title ladder passes both and lands on the first prompt somebody typed.
+	if sess.Meta.Title != "now trim the skills" {
+		t.Errorf("title = %q, want the first prompt after the command the session opened with", sess.Meta.Title)
 	}
 
 	// The report is the only entry in that turn carrying a prompt id, and a forked

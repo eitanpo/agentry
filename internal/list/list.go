@@ -23,6 +23,7 @@ import (
 	"github.com/eitanpo/agentry/internal/entrypoint"
 	"github.com/eitanpo/agentry/internal/jsonl"
 	"github.com/eitanpo/agentry/internal/model"
+	"github.com/eitanpo/agentry/internal/parse"
 	"github.com/eitanpo/agentry/internal/render"
 	"github.com/eitanpo/agentry/internal/schema"
 	"github.com/eitanpo/agentry/internal/spend"
@@ -604,11 +605,11 @@ func arrange(sums []model.Summary, trees map[string]string) []frow {
 			}
 			// A title that only repeats the row's worktree is a launch handle, not a
 			// description: one argument named both, and the worktree column beside it
-			// already carries the string. Falls to the first prompt, which the list
-			// already excludes /clear from. Checked after the fork rule so a rewritten
-			// fork title is judged rather than the inherited one.
+			// already carries the string. Falls to the prompt the title ladder would
+			// pick. Checked after the fork rule so a rewritten fork title is judged
+			// rather than the inherited one.
 			if wt := worktreeName(s.Cwd, trees); wt != "" && strings.TrimSpace(s.Title) == wt && len(s.Prompts) > 0 {
-				s.Title = s.Prompts[0]
+				s.Title = parse.TitlePrompt(s.Prompts)
 			}
 			rows = append(rows, frow{s: s, fork: i > 0})
 		}
@@ -616,19 +617,15 @@ func arrange(sums []model.Summary, trees map[string]string) []frow {
 	return rows
 }
 
-// firstDivergentPrompt returns the fork's first prompt beyond the prefix it
-// shares with its parent — the first turn unique to the fork. Prompt lists
-// already exclude /clear (see parse.Summarize), so a leading /clear is skipped
-// for free. Empty when the fork has added no new prompt yet.
+// firstDivergentPrompt returns the prompt the title ladder would pick from the
+// fork's prompts beyond the prefix it shares with its parent — the turns unique
+// to the fork. Empty when the fork has added no new prompt yet.
 func firstDivergentPrompt(parent, fork model.Summary) string {
 	i := 0
 	for i < len(parent.Prompts) && i < len(fork.Prompts) && parent.Prompts[i] == fork.Prompts[i] {
 		i++
 	}
-	if i < len(fork.Prompts) {
-		return fork.Prompts[i]
-	}
-	return ""
+	return parse.TitlePrompt(fork.Prompts[i:])
 }
 
 // familyActivity is a fork family's position key: the most-recent activity among

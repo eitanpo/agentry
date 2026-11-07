@@ -1109,8 +1109,7 @@ var manualTitleTypes = []string{"custom-title", "agent-name"}
 
 // sessionTitle picks a listing title by a fallback ladder: a manual title the
 // user chose (see manualTitleTypes) if present, else Claude Code's ai-title,
-// else the first turn's prompt skipping a leading /clear (which resets context
-// and describes nothing), else the first prompt.
+// else the prompt TitlePrompt picks from the session's turns.
 func sessionTitle(manualTitle, aiTitle string, turns []rawTurn) string {
 	if t := strings.TrimSpace(manualTitle); t != "" {
 		return t
@@ -1118,15 +1117,44 @@ func sessionTitle(manualTitle, aiTitle string, turns []rawTurn) string {
 	if t := strings.TrimSpace(aiTitle); t != "" {
 		return t
 	}
-	for _, t := range turns {
-		if !isClearCmd(t.prompt) && !isTypedShell(t.prompt) {
-			return t.prompt
+	prompts := make([]string, len(turns))
+	for i, t := range turns {
+		prompts[i] = t.prompt
+	}
+	return TitlePrompt(prompts)
+}
+
+// TitlePrompt returns the prompt a title falls back to: the first one
+// skippedForTitle passes, else the first prompt, else "". The listing's fork and
+// worktree rules title a row from a prompt too, and call this so all three skip
+// the same prompts.
+func TitlePrompt(prompts []string) string {
+	for _, p := range prompts {
+		if !skippedForTitle(p) {
+			return p
 		}
 	}
-	if len(turns) > 0 {
-		return turns[0].prompt
+	if len(prompts) > 0 {
+		return prompts[0]
 	}
 	return ""
+}
+
+// skippedForTitle reports whether a prompt names something someone did rather
+// than what the session was for: a /clear, a typed shell command, or a slash
+// command typed alone.
+func skippedForTitle(prompt string) bool {
+	return isClearCmd(prompt) || isTypedShell(prompt) || isBareSlashCommand(prompt)
+}
+
+// isBareSlashCommand reports whether a prompt is a slash command typed with no
+// arguments, such as "/model". One with arguments is not, since a skill's
+// arguments are usually the task itself. The name may carry no further slash,
+// which keeps a path typed as a prompt ("/Users/me/notes.md") from matching.
+func isBareSlashCommand(prompt string) bool {
+	s := strings.TrimSpace(prompt)
+	name := strings.TrimLeft(s, "/")
+	return name != s && len(strings.Fields(name)) == 1 && !strings.Contains(name, "/")
 }
 
 // isTypedShell reports whether a turn prompt is a shell command the caller ran

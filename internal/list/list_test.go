@@ -644,6 +644,13 @@ func TestForkInheritedTitleShownByDivergentPrompt(t *testing.T) {
 	if got := titleOf2(rows, "fork"); got != "its own summary" {
 		t.Errorf("regenerated fork title = %q, want it kept", got)
 	}
+	// The fork's own prompts skip what the title ladder skips.
+	cmdFirst := fork
+	cmdFirst.Prompts = []string{"set up the parser", "fix the bug", "/model", "try a different approach"}
+	rows = arrange([]model.Summary{cmdFirst, parent}, nil)
+	if got := titleOf2(rows, "fork"); got != "try a different approach" {
+		t.Errorf("fork opening on a bare command = %q, want the prompt after it", got)
+	}
 	noNew := model.Summary{ID: "fork", RootUUID: "R", Born: day(1), Title: "shared title",
 		Prompts: []string{"set up the parser", "fix the bug"}}
 	rows = arrange([]model.Summary{noNew, parent}, nil)
@@ -1592,6 +1599,13 @@ func TestWorktreeTitleFallThrough(t *testing.T) {
 		sums := []model.Summary{mk("a", wt("plan"), "plan", "draft the migration gantt")}
 		if got := titleOf(sums, "a"); got != "draft the migration gantt" {
 			t.Errorf("title = %q, want the first prompt", got)
+		}
+	})
+
+	t.Run("the fallback skips what the title ladder skips", func(t *testing.T) {
+		sums := []model.Summary{mk("a", wt("plan"), "plan", "/model", "draft the migration gantt")}
+		if got := titleOf(sums, "a"); got != "draft the migration gantt" {
+			t.Errorf("title = %q, want the prompt after the bare command", got)
 		}
 	})
 

@@ -117,7 +117,7 @@ type Summary struct {
 	ID       string     `json:"id"`
 	Start    time.Time  `json:"start"`
 	End      time.Time  `json:"end"`
-	Title    string     `json:"title"`             // chosen title (ai-title, else first non-/clear prompt)
+	Title    string     `json:"title"`             // chosen title (manual, else ai-title, else parse.TitlePrompt)
 	Prompts  []string   `json:"prompts,omitempty"` // user prompts in order, /clear omitted (for --include prompts)
 	NumTurns int        `json:"numTurns"`
 	Tools    []ToolStat `json:"tools,omitempty"`    // top-level tool calls aggregated by identity (for --include tools)
