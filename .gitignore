@@ -6,6 +6,8 @@
 # go test artifacts
 *.test
 *.out
+# per-machine run record written by `make test`
+/.test-runs.jsonl
 
 # throwaway phase design docs — kept local, never committed
 /design/

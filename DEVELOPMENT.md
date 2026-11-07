@@ -34,7 +34,11 @@ reflected in the global `agentry`.
 
 ## Tests
 
-- Run: `go test ./...`
+- Run: `make test` — `go test ./...` with its own output and exit status, plus one JSON line
+  per run appended to `.test-runs.jsonl` (gitignored): start, wall seconds, outcome, packages
+  passed and failed, and each package's seconds. Pass `go test` arguments as `ARGS`:
+  `make test ARGS='-run TestTag ./internal/list/'`. Run the suite this way, not with bare
+  `go test`, so a change to its speed can be judged against earlier runs.
 - Tests sit beside the code as `*_test.go`; fixtures live in `testdata/` (e.g.
   `internal/parse/testdata/sample.jsonl`). Add a fixture session there to cover new parsing
   cases.
@@ -46,7 +50,7 @@ reflected in the global `agentry`.
 ## Auto build-test-install hook (optional, per-developer)
 
 A local [`.claude/settings.local.json`](.claude/settings.local.json) `Stop` hook can run
-`go build ./... && go test ./...` after each change and `make install` on success — blocking
+`go build ./... && make test` after each change and `make install` on success — blocking
 and reporting the failure otherwise. It is gitignored (personal, not shared). After creating
 or editing it, open `/hooks` once or restart so Claude Code reloads the config.
 

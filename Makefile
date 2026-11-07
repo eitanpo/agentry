@@ -14,12 +14,18 @@ LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 # is the install step on its own, reused by `release`.
 .DEFAULT_GOAL := build
 
-.PHONY: build fmt install release release-dry schema-scan schema-scan-new schema-scan-test
+.PHONY: build fmt install test release release-dry schema-scan schema-scan-new schema-scan-test
 build: fmt
 	go build ./...
 	go install $(LDFLAGS) .
 install:
 	go install $(LDFLAGS) .
+
+# The suite's entry point: go test's own output and exit status, plus one line per run
+# appended to .test-runs.jsonl, so a change to the suite's speed is measured against
+# earlier runs. go test arguments go in ARGS: make test ARGS='-run TestTag ./internal/list/'.
+test:
+	scripts/test.sh $(ARGS)
 
 # Fail the build on an unformatted file, rather than leaving the drift for whoever
 # next runs gofmt by hand: two files had been unformatted for long enough that
