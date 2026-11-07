@@ -2522,7 +2522,12 @@ func splitTurns(entries []entry) []rawTurn {
 			if prompt, ok := userPrompt(e); ok {
 				// An entry recording a command of its own never lands here: Claude Code
 				// files an expanded command with the pair userPrompt already refuses.
-				if cur != nil && awaitingReport && e.meta {
+				if isSkillRefusal(prompt) {
+					// The refusal renders as the reply of the command's turn rather than
+					// opening one. With no turn open yet there is nothing to attach it to,
+					// and it is dropped like any entry before the first prompt.
+					e.localCommandOutput = prompt
+				} else if cur != nil && awaitingReport && e.meta {
 					// The report renders where what the command printed renders, and its
 					// prompt id becomes the turn's — the system entry naming the command
 					// carries none, and that id is what charges a forked command to the
@@ -2556,6 +2561,19 @@ func splitTurns(entries []entry) []rawTurn {
 		turns = append(turns, *cur)
 	}
 	return turns
+}
+
+// skillRefusalPrefix opens the line Claude Code writes when a caller types a
+// skill only Claude may invoke. The line is filed as a plain user entry with no
+// flag or marker, so this wording is the only way to tell it from a prompt (see
+// docs/session-format.md); if Claude Code rewords it, the refusal reads as a
+// prompt again.
+const skillRefusalPrefix = "This skill can only be invoked by Claude, not directly by users."
+
+// isSkillRefusal reports whether a prompt is Claude Code's refusal of a typed
+// skill rather than anything a person typed.
+func isSkillRefusal(prompt string) bool {
+	return strings.HasPrefix(prompt, skillRefusalPrefix)
 }
 
 var (

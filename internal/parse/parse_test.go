@@ -398,6 +398,41 @@ func TestTitlePromptSkipsBareSlashCommand(t *testing.T) {
 	}
 }
 
+// TestSkillRefusalIsTheCommandsReply pins where Claude Code's refusal of a typed
+// skill goes. It is filed as a plain user entry, so read as a prompt it opened a
+// turn nobody typed and, with the bare command before it skipped, titled the
+// session. It belongs to the command's turn as the reply the caller read.
+func TestSkillRefusalIsTheCommandsReply(t *testing.T) {
+	path := filepath.Join("testdata", "skill-refusal.jsonl")
+	sess, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts := make([]string, 0, len(sess.Turns))
+	for _, tn := range sess.Turns {
+		prompts = append(prompts, tn.Prompt)
+	}
+	want := []string{"/defuddle", "read https://example.com/post with defuddle"}
+	if !slices.Equal(prompts, want) {
+		t.Fatalf("prompts = %q, want %q", prompts, want)
+	}
+	texts := eventTexts(sess.Turns[0].Events)
+	if len(texts) != 1 || !strings.Contains(texts[0], "can only be invoked by Claude") {
+		t.Errorf("command turn texts = %q, want the refusal as its one reply", texts)
+	}
+	if sess.Meta.Title != want[1] {
+		t.Errorf("title = %q, want the prompt typed after the refused command", sess.Meta.Title)
+	}
+
+	sum, err := Summarize(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sum.Prompts, want) {
+		t.Errorf("listing prompts = %q, want %q", sum.Prompts, want)
+	}
+}
+
 func TestLoad(t *testing.T) {
 	sess, err := Load(filepath.Join("testdata", "sample.jsonl"))
 	if err != nil {

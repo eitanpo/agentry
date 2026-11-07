@@ -730,6 +730,16 @@ carries `isMeta: true` and no `sourceToolUseID`, and it arrives before any `assi
 entry. Code that reads only the first shape sees no command and reads the report as a
 typed prompt.
 
+**A skill only Claude may invoke, typed as a slash command, is refused in a plain `user`
+entry.** The command itself is written as plain string content (`/defuddle`, after a
+`<local-command-caveat>` entry), and the refusal follows as a second plain string — `This
+skill can only be invoked by Claude, not directly by users. Ask Claude to use the "<name>"
+skill for you.` — with no `isMeta`, no `turnCompanion` and no marker, seen as of 2.1.294.
+Nothing structural separates it from a typed prompt: it shares the command's `promptId`,
+but so do prompts a person types in quick succession or queues, so a `promptId` test drops
+real prompts. Claude Code's wording is the only test, and a rewording upstream silently
+turns the refusal back into a prompt.
+
 ## Subagent stitching
 
 A `tool_use` that spawns a child session writes a sidecar; stitching maps the call to it.
